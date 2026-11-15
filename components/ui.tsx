@@ -1,0 +1,177 @@
+"use client";
+
+import type { ReactNode } from "react";
+
+export function Card({
+  title,
+  sub,
+  actions,
+  children,
+  tight,
+  className,
+}: {
+  title?: string;
+  sub?: string;
+  actions?: ReactNode;
+  children?: ReactNode;
+  tight?: boolean;
+  className?: string;
+}) {
+  return (
+    <section className={`card${tight ? " tight" : ""}${className ? ` ${className}` : ""}`}>
+      {(title || actions) && (
+        <header className="card-head" style={tight ? { padding: "16px 18px 0", marginBottom: 12 } : undefined}>
+          <div>
+            {title && <div className="card-title">{title}</div>}
+            {sub && <div className="card-sub">{sub}</div>}
+          </div>
+          {actions && <div className="row-end row">{actions}</div>}
+        </header>
+      )}
+      {children}
+    </section>
+  );
+}
+
+export function Stat({ label, value, note, accent }: { label: string; value: ReactNode; note?: string; accent?: boolean }) {
+  return (
+    <div className={`stat${accent ? " accent" : ""}`}>
+      <div className="stat-label">{label}</div>
+      <div className="stat-value">{value}</div>
+      {note && <div className="stat-note">{note}</div>}
+    </div>
+  );
+}
+
+export function Badge({ tone, children }: { tone?: string; children: ReactNode }) {
+  return (
+    <span className="badge" data-tone={tone}>
+      {children}
+    </span>
+  );
+}
+
+export function Field({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {
+  return (
+    <label className="field">
+      <span className="label">{label}</span>
+      {children}
+      {hint && <span className="hint">{hint}</span>}
+    </label>
+  );
+}
+
+export function Empty({ title, children }: { title: string; children?: ReactNode }) {
+  return (
+    <div className="empty">
+      <strong>{title}</strong>
+      {children}
+    </div>
+  );
+}
+
+export function Banner({ tone, children }: { tone?: string; children: ReactNode }) {
+  return (
+    <div className="banner" data-tone={tone}>
+      <div>{children}</div>
+    </div>
+  );
+}
+
+export function Progress({ label }: { label: string }) {
+  return (
+    <div className="progress">
+      <span className="spinner" />
+      <span>{label}</span>
+    </div>
+  );
+}
+
+export function Modal({
+  open,
+  onClose,
+  title,
+  children,
+  large,
+}: {
+  open: boolean;
+  onClose: () => void;
+  title: string;
+  children: ReactNode;
+  large?: boolean;
+}) {
+  if (!open) return null;
+  return (
+    <div className="modal-backdrop" onClick={onClose} role="presentation">
+      <div
+        className={`modal${large ? " modal-lg" : ""}`}
+        onClick={(event) => event.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
+      >
+        <div className="row" style={{ marginBottom: 14 }}>
+          <h2 style={{ fontSize: 17 }}>{title}</h2>
+          <div className="row-end">
+            <button className="btn btn-ghost btn-sm" onClick={onClose} type="button">
+              Close
+            </button>
+          </div>
+        </div>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+export function Pager({
+  page,
+  pageSize,
+  total,
+  onPage,
+}: {
+  page: number;
+  pageSize: number;
+  total: number;
+  onPage: (page: number) => void;
+}) {
+  const pages = Math.max(1, Math.ceil(total / pageSize));
+  return (
+    <div className="pager">
+      <span>
+        {total === 0 ? "0" : `${(page - 1) * pageSize + 1}–${Math.min(page * pageSize, total)}`} of {total}
+      </span>
+      <button className="btn btn-sm" disabled={page <= 1} onClick={() => onPage(page - 1)} type="button">
+        Previous
+      </button>
+      <span className="num">
+        {page} / {pages}
+      </span>
+      <button className="btn btn-sm" disabled={page >= pages} onClick={() => onPage(page + 1)} type="button">
+        Next
+      </button>
+    </div>
+  );
+}
+
+export function Toggle({
+  checked,
+  onChange,
+  label,
+  hint,
+}: {
+  checked: boolean;
+  onChange: (value: boolean) => void;
+  label: string;
+  hint?: string;
+}) {
+  return (
+    <label className="check">
+      <input type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} />
+      <span>
+        <span className="label" style={{ display: "block" }}>{label}</span>
+        {hint && <span className="hint">{hint}</span>}
+      </span>
+    </label>
+  );
+}

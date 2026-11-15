@@ -1,0 +1,17 @@
+node_modules/
+.next/
+.open-next/
+out/
+.wrangler/
+.vercel/
+.freebuff/
+*.tsbuildinfo
+next-env.d.ts
+cookies.txt
+.env
+.env.*
+!.env.example
+.dev.vars
+.dev.vars.*
+*.log
+.DS_Store

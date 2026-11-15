@@ -1,0 +1,335 @@
+"use client";
+
+import { useEffect, useState } from "react";
+import { api, errorMessage, useApi } from "@/lib/client";
+import { Badge, Banner, Card, Empty, Field, Progress } from "@/components/ui";
+
+interface KnowledgeSource {
+  id: string;
+  label: string;
+  kind: string;
+  url: string | null;
+  content: string | null;
+  fetched_at: string | null;
+  created_at: string;
+}
+
+interface KnowledgeEntry {
+  id: string;
+  title: string;
+  content: string;
+  category: string | null;
+  sort: number;
+  updated_at: string;
+}
+
+interface Payload {
+  master: string;
+  entries: KnowledgeEntry[];
+  sources: KnowledgeSource[];
+}
+
+export default function KnowledgePage() {
+  const { data, loading, error, reload } = useApi<Payload>("/api/knowledge");
+  const [master, setMaster] = useState("");
+  const [savedMaster, setSavedMaster] = useState("");
+  const [savingMaster, setSavingMaster] = useState(false);
+  const [note, setNote] = useState<{ tone: string; text: string } | null>(null);
+
+  const [label, setLabel] = useState("");
+  const [kind, setKind] = useState("url");
+  const [url, setUrl] = useState("");
+  const [sourceText, setSourceText] = useState("");
+  const [addingSource, setAddingSource] = useState(false);
+
+  const [entryTitle, setEntryTitle] = useState("");
+  const [entryBody, setEntryBody] = useState("");
+  const [entryId, setEntryId] = useState<string | null>(null);
+  const [savingEntry, setSavingEntry] = useState(false);
+
+  useEffect(() => {
+    if (!data) return;
+    setMaster(data.master ?? "");
+    setSavedMaster(data.master ?? "");
+  }, [data]);
+
+  const saveMaster = async () => {
+    setSavingMaster(true);
+    setNote(null);
+    try {
+      await api.put("/api/knowledge", { master });
+      setSavedMaster(master);
+      setNote({ tone: "good", text: "Master knowledge saved. Every new email will use it." });
+    } catch (err) {
+      setNote({ tone: "bad", text: errorMessage(err) });
+    } finally {
+      setSavingMaster(false);
+    }
+  };
+
+  const addSource = async () => {
+    setAddingSource(true);
+    setNote(null);
+    try {
+      await api.post("/api/knowledge", { label, kind, url, content: sourceText });
+      setLabel("");
+      setUrl("");
+      setSourceText("");
+      await reload();
+      setNote({ tone: "good", text: "Source added. It is read when the AI writes for you." });
+    } catch (err) {
+      setNote({ tone: "bad", text: errorMessage(err) });
+    } finally {
+      setAddingSource(false);
+    }
+  };
+
+  const removeSource = async (id: string) => {
+    try {
+      await api.del(`/api/knowledge?sourceId=${encodeURIComponent(id)}`);
+      await reload();
+    } catch (err) {
+      setNote({ tone: "bad", text: errorMessage(err) });
+    }
+  };
+
+  const saveEntry = async () => {
+    setSavingEntry(true);
+    setNote(null);
+    try {
+      await api.put("/api/knowledge", { id: entryId ?? undefined, title: entryTitle, content: entryBody });
+      setEntryTitle("");
+      setEntryBody("");
+      setEntryId(null);
+      await reload();
+      setNote({ tone: "good", text: "Saved." });
+    } catch (err) {
+      setNote({ tone: "bad", text: errorMessage(err) });
+    } finally {
+      setSavingEntry(false);
+    }
+  };
+
+  const removeEntry = async (id: string) => {
+    try {
+      await api.del(`/api/knowledge?id=${encodeURIComponent(id)}`);
+      await reload();
+    } catch (err) {
+      setNote({ tone: "bad", text: errorMessage(err) });
+    }
+  };
+
+  const dirty = master !== savedMaster;
+
+  return (
+    <main className="page">
+      <div className="page-head">
+        <div>
+          <h1 className="page-title">Knowledge base</h1>
+          <p className="page-sub">
+            This is the AI&apos;s only source of truth about your business. Everything it researches, qualifies and
+            writes is grounded here: your offers, prices, proof, tone and rules.
+          </p>
+        </div>
+      </div>
+
+      {error && <Banner tone="bad">{error}</Banner>}
+      {note && <Banner tone={note.tone}>{note.text}</Banner>}
+      {loading && !data && <Progress label="Loading your knowledge…" />}
+
+      {data && (
+        <div className="stack">
+          {!savedMaster.trim() && (
+            <Banner tone="warn">
+              <strong>Start here.</strong> Paste everything the AI should know about your business into the master box
+              below: what you sell, who for, prices, results, objections and how you write. The more concrete it is, the
+              better the outreach.
+            </Banner>
+          )}
+
+          <Card
+            title="Master knowledge"
+            sub="The main input. Used on every research, qualification and email run."
+            actions={
+              <button className="btn btn-primary btn-sm" onClick={saveMaster} disabled={savingMaster || !dirty} type="button">
+                {savingMaster ? "Saving…" : dirty ? "Save knowledge" : "Saved"}
+              </button>
+            }
+          >
+            <textarea
+              className="input"
+              style={{ minHeight: 320, fontFamily: "var(--mono, ui-monospace), monospace", fontSize: 13 }}
+              value={master}
+              onChange={(event) => setMaster(event.target.value)}
+              placeholder={`Example:
+
+What we do: We build custom websites and referral automation for clinics and local service businesses.
+Who we help: Owners of 1-10 location clinics with an outdated site and no follow-up system.
+Offer: A 3-week build, fixed price from $2,400, includes booking, SEO basics and follow-up automations.
+Proof: 34 clinics migrated, average 28% more booked appointments in 90 days.
+Tone: Calm, direct, no hype, short sentences. Never use the word "revolutionary".
+Rules: Never discount below $2,000. Always mention the 3-week timeline.`}
+            />
+            <div className="row" style={{ marginTop: 8 }}>
+              <span className="tiny">{master.length.toLocaleString()} characters</span>
+              <div className="row-end">
+                {dirty ? <span className="tiny">Unsaved changes</span> : <span className="tiny">All changes saved</span>}
+              </div>
+            </div>
+          </Card>
+
+          <Card
+            title="Sources"
+            sub="Web pages, case studies or documents the AI should read alongside your master knowledge."
+          >
+            <div className="grid grid-2" style={{ alignItems: "start", marginBottom: 12 }}>
+              <Field label="Label">
+                <input className="input" value={label} onChange={(e) => setLabel(e.target.value)} placeholder="Pricing page" />
+              </Field>
+              <Field label="Type">
+                <select className="input" value={kind} onChange={(e) => setKind(e.target.value)}>
+                  <option value="url">Web page (read automatically)</option>
+                  <option value="text">Pasted text</option>
+                </select>
+              </Field>
+            </div>
+            {kind === "url" ? (
+              <Field label="URL" hint="Public pages work best: pricing, services, case studies, about.">
+                <input
+                  className="input"
+                  value={url}
+                  onChange={(e) => setUrl(e.target.value)}
+                  placeholder="https://yourbusiness.com/services"
+                />
+              </Field>
+            ) : (
+              <Field label="Text">
+                <textarea
+                  className="input"
+                  style={{ minHeight: 120 }}
+                  value={sourceText}
+                  onChange={(e) => setSourceText(e.target.value)}
+                  placeholder="Paste a proposal, case study, FAQ or any document the AI should use."
+                />
+              </Field>
+            )}
+            <div className="row" style={{ marginTop: 10 }}>
+              <div className="row-end">
+                <button
+                  className="btn btn-primary btn-sm"
+                  onClick={addSource}
+                  disabled={addingSource || !label.trim() || (kind === "url" ? !url.trim() : !sourceText.trim())}
+                  type="button"
+                >
+                  {addingSource ? "Adding…" : "Add source"}
+                </button>
+              </div>
+            </div>
+
+            <div style={{ marginTop: 14 }}>
+              {data.sources.length === 0 ? (
+                <Empty title="No sources yet">Add your website, pricing page or a past proposal.</Empty>
+              ) : (
+                <div className="stack" style={{ gap: 8 }}>
+                  {data.sources.map((source) => (
+                    <div key={source.id} className="row" style={{ gap: 10, alignItems: "center" }}>
+                      <Badge tone={source.kind === "url" ? "info" : "neutral"}>{source.kind === "url" ? "URL" : "Text"}</Badge>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div className="strong" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          {source.label}
+                        </div>
+                        <div className="tiny" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          {source.kind === "url" ? source.url : `${(source.content ?? "").length.toLocaleString()} characters`}
+                        </div>
+                      </div>
+                      <button className="btn btn-sm btn-ghost" onClick={() => removeSource(source.id)} type="button">
+                        Remove
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </Card>
+
+          <Card
+            title="Additional notes"
+            sub="Smaller facts, objections, testimonials or policies. Each note is passed to the AI with your master knowledge."
+          >
+            <div className="stack">
+              <Field label={entryId ? "Editing note" : "Title"}>
+                <input className="input" value={entryTitle} onChange={(e) => setEntryTitle(e.target.value)} placeholder="Common objection: too expensive" />
+              </Field>
+              <Field label="Content">
+                <textarea
+                  className="input"
+                  style={{ minHeight: 110 }}
+                  value={entryBody}
+                  onChange={(e) => setEntryBody(e.target.value)}
+                  placeholder="What the AI should know or say about this."
+                />
+              </Field>
+              <div className="row">
+                <div className="row-end">
+                  {entryId && (
+                    <button
+                      className="btn btn-sm btn-ghost"
+                      onClick={() => {
+                        setEntryId(null);
+                        setEntryTitle("");
+                        setEntryBody("");
+                      }}
+                      type="button"
+                    >
+                      Cancel
+                    </button>
+                  )}
+                  <button
+                    className="btn btn-primary btn-sm"
+                    onClick={saveEntry}
+                    disabled={savingEntry || !entryTitle.trim() || !entryBody.trim()}
+                    type="button"
+                  >
+                    {savingEntry ? "Saving…" : entryId ? "Update note" : "Add note"}
+                  </button>
+                </div>
+              </div>
+
+              {data.entries.length === 0 ? (
+                <Empty title="No notes yet">Optional, but useful for objections and proof points.</Empty>
+              ) : (
+                <div className="stack" style={{ gap: 8, marginTop: 6 }}>
+                  {data.entries.map((entry) => (
+                    <div key={entry.id} className="row" style={{ gap: 10, alignItems: "flex-start" }}>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div className="strong">{entry.title}</div>
+                        <div className="tiny" style={{ whiteSpace: "pre-wrap" }}>
+                          {entry.content.slice(0, 240)}
+                          {entry.content.length > 240 ? "…" : ""}
+                        </div>
+                      </div>
+                      <button
+                        className="btn btn-sm btn-ghost"
+                        onClick={() => {
+                          setEntryId(entry.id);
+                          setEntryTitle(entry.title);
+                          setEntryBody(entry.content);
+                        }}
+                        type="button"
+                      >
+                        Edit
+                      </button>
+                      <button className="btn btn-sm btn-ghost" onClick={() => removeEntry(entry.id)} type="button">
+                        Delete
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </Card>
+        </div>
+      )}
+    </main>
+  );
+}
