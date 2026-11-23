@@ -29,7 +29,7 @@ export async function getSupabaseSettingsServer(): Promise<Settings | null> {
     .single();
 
   if (error) {
-    if ((error as { code?: string }).code === "PGRST_NOT_FOUND") return null;
+    if ((error as { code?: string }).code === "PGRST_NOT_FOUND" || (error as { code?: string }).code === "PGRST116") return null;
     console.error("[supabase-server] getSettings error:", error);
     return null;
   }

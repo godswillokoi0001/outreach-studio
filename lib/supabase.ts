@@ -36,7 +36,6 @@ export async function getSupabaseSettings(uid: string): Promise<Settings | null>
   const { data, error } = await supabase
     .from("settings")
     .select("ai_provider, ai_api_key, ai_base_url, ai_verified_at, ai_key_hint")
-    .eq("ownerId", uid)
     .single();
 
   if (error) {
