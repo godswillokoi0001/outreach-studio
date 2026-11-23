@@ -107,7 +107,7 @@ service cloud.firestore {
         data.ownerId == request.auth.uid &&
         isReqStr(data, 'category', 1, 64) &&
         isReqStr(data, 'title', 1, 200) &&
-        isReqStr(data, 'content', 0, 50000) &&
+        isReqStr(data, 'content', 0, 700000) &&
         isReqInt(data, 'sort', 0, 10000) &&
         data.is_master is bool &&
         data.createdAt is timestamp &&
@@ -122,7 +122,7 @@ service cloud.firestore {
         isReqStr(data, 'label', 1, 200) &&
         data.kind in ['url', 'text', 'document', 'note'] &&
         isOptStr(data, 'url', 1000) &&
-        isOptStr(data, 'content', 30000) &&
+        isOptStr(data, 'content', 700000) &&
         data.createdAt is timestamp &&
         data.updatedAt is timestamp;
     }
@@ -307,6 +307,23 @@ service cloud.firestore {
         isReqStr(data, 'entity_id', 1, 128) &&
         isOptMap(data, 'detail') &&
         data.createdAt is timestamp;
+    }
+
+    // Open-tracking events are written by the public pixel endpoint, so the
+    // create is unauthenticated but constrained to a real owner and message.
+    match /tracking/{eventId} {
+      allow read: if isSignedIn() && resource.data.ownerId == request.auth.uid;
+      allow create: if isValidId(eventId) &&
+        incoming().keys().hasAll(['ownerId', 'message_id', 'opened_at']) &&
+        incoming().keys().hasOnly(['ownerId', 'message_id', 'lead_id', 'opened_at', 'user_agent']) &&
+        isValidId(incoming().ownerId) &&
+        isValidId(incoming().message_id) &&
+        (!('lead_id' in incoming()) || incoming().lead_id == null || isValidId(incoming().lead_id)) &&
+        isReqStr(incoming(), 'opened_at', 10, 64) &&
+        isOptStr(incoming(), 'user_agent', 400) &&
+        exists(/databases/$(database)/documents/users/$(incoming().ownerId)) &&
+        exists(/databases/$(database)/documents/users/$(incoming().ownerId)/messages/$(incoming().message_id));
+      allow update, delete: if false;
     }
 
     match /users/{userId} {

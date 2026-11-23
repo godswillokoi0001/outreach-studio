@@ -1,9 +1,10 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { FileUp, Loader2, Paperclip } from "lucide-react";
 import { useAuth } from "@/components/AuthProvider";
 import { Badge, Banner, Card, Empty, Field, Progress } from "@/components/ui";
-import { errorMessage } from "@/lib/client";
+import { authedUpload, errorMessage } from "@/lib/client";
 import {
   addKnowledgeSource,
   deleteKnowledgeEntry,
@@ -41,6 +42,10 @@ export default function KnowledgePage() {
   const [entryBody, setEntryBody] = useState("");
   const [entryId, setEntryId] = useState<string | null>(null);
   const [savingEntry, setSavingEntry] = useState(false);
+
+  const [uploading, setUploading] = useState<string | null>(null);
+  const [dragging, setDragging] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const reload = useCallback(async () => {
     setLoading(true);
@@ -111,6 +116,46 @@ export default function KnowledgePage() {
       setNote({ tone: "bad", text: errorMessage(err) });
     } finally {
       setAddingSource(false);
+    }
+  };
+
+  const uploadFiles = async (files: FileList | File[]) => {
+    const list = Array.from(files);
+    if (!list.length) return;
+    setNote(null);
+    let added = 0;
+    const failures: string[] = [];
+    for (const file of list) {
+      setUploading(file.name);
+      try {
+        const form = new FormData();
+        form.append("file", file);
+        const extracted = await authedUpload<{
+          label: string;
+          kind: "pdf" | "text";
+          text: string;
+          characters: number;
+          truncated: boolean;
+        }>("/api/knowledge/extract", form);
+        await addKnowledgeSource(user.uid, {
+          label: extracted.label,
+          kind: "document",
+          content: extracted.text,
+        });
+        added += 1;
+      } catch (err) {
+        failures.push(`${file.name}: ${errorMessage(err)}`);
+      }
+    }
+    setUploading(null);
+    if (added) await reload();
+    if (added && !failures.length) {
+      setNote({
+        tone: "ok",
+        text: `${added} file${added === 1 ? "" : "s"} added to your knowledge. The AI reads them on every run.`,
+      });
+    } else if (failures.length) {
+      setNote({ tone: "bad", text: failures.slice(0, 3).join(" · ") });
     }
   };
 
@@ -210,7 +255,9 @@ Tone: Calm, direct, no hype, short sentences. Never use the word "revolutionary"
 Rules: Never discount below $2,000. Always mention the 3-week timeline.`}
             />
             <div className="row" style={{ marginTop: 8 }}>
-              <span className="tiny">{master.length.toLocaleString()} characters</span>
+              <span className="tiny">
+                {master.length.toLocaleString()} characters · no practical limit (up to ~700k per entry)
+              </span>
               <div className="row-end">
                 {dirty ? <span className="tiny">Unsaved changes</span> : <span className="tiny">All changes saved</span>}
               </div>
@@ -218,9 +265,57 @@ Rules: Never discount below $2,000. Always mention the 3-week timeline.`}
           </Card>
 
           <Card
-            title="Sources"
-            sub="Web pages, case studies or documents the AI should read alongside your master knowledge."
+            title="Sources & files"
+            sub="Upload PDFs, text files and web pages, or paste any amount of text. Everything here is read alongside your master knowledge."
           >
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              accept=".pdf,.txt,.md,.markdown,.csv,.tsv,.json,.html,.htm,.rtf,.log,text/*,application/pdf"
+              style={{ display: "none" }}
+              onChange={(event) => {
+                if (event.target.files) void uploadFiles(event.target.files);
+                event.target.value = "";
+              }}
+            />
+            <div
+              className="upload-zone"
+              data-active={dragging ? "true" : undefined}
+              onDragOver={(event) => {
+                event.preventDefault();
+                setDragging(true);
+              }}
+              onDragLeave={() => setDragging(false)}
+              onDrop={(event) => {
+                event.preventDefault();
+                setDragging(false);
+                if (event.dataTransfer.files) void uploadFiles(event.dataTransfer.files);
+              }}
+            >
+              <span className="upload-icon">
+                {uploading ? <Loader2 size={18} className="spin-icon" /> : <FileUp size={18} />}
+              </span>
+              <div className="upload-copy">
+                <strong>{uploading ? `Reading ${uploading}…` : "Drop files here, or choose them"}</strong>
+                <span>
+                  PDF, TXT, MD, CSV, JSON, HTML, RTF · up to 12 MB each. Text is extracted and stored with this
+                  workspace. Scanned PDFs need OCR, so paste those instead.
+                </span>
+              </div>
+              <button
+                type="button"
+                className="btn btn-primary btn-sm"
+                disabled={Boolean(uploading)}
+                onClick={() => fileInputRef.current?.click()}
+              >
+                <Paperclip size={13} />
+                {uploading ? "Working…" : "Choose files"}
+              </button>
+            </div>
+
+            <div className="divider" />
+
             <div className="grid grid-2" style={{ alignItems: "start", marginBottom: 12 }}>
               <Field label="Label">
                 <input
@@ -254,10 +349,10 @@ Rules: Never discount below $2,000. Always mention the 3-week timeline.`}
               <Field label="Text">
                 <textarea
                   className="input"
-                  style={{ minHeight: 120 }}
+                  style={{ minHeight: 140, lineHeight: 1.55 }}
                   value={sourceText}
                   onChange={(e) => setSourceText(e.target.value)}
-                  placeholder="Paste a proposal, case study, FAQ or any document the AI should use."
+                  placeholder="Paste a proposal, case study, FAQ or any document the AI should use. Long text is fine."
                 />
               </Field>
             )}
@@ -324,7 +419,7 @@ Rules: Never discount below $2,000. Always mention the 3-week timeline.`}
               <Field label="Content">
                 <textarea
                   className="input"
-                  style={{ minHeight: 110 }}
+                  style={{ minHeight: 130 }}
                   value={entryBody}
                   onChange={(e) => setEntryBody(e.target.value)}
                   placeholder="What the AI should know or say about this."

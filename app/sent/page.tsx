@@ -4,9 +4,9 @@ import { useEffect, useMemo, useState } from "react";
 import { useAuth } from "@/components/AuthProvider";
 import { Badge, Banner, Card, Empty, Modal, Pager, Progress } from "@/components/ui";
 import { errorMessage } from "@/lib/client";
-import { listLeads, listMessages } from "@/lib/firestore-store";
+import { listLeads, listMessages, listOpenEvents } from "@/lib/firestore-store";
 import { fmtDate, label, statusTone } from "@/lib/format";
-import type { Lead, Message } from "@/lib/types";
+import type { EmailOpen, Lead, Message } from "@/lib/types";
 
 interface SentRow extends Message {
   business: string | null;
@@ -22,16 +22,18 @@ export default function SentPage() {
   const [open, setOpen] = useState<SentRow | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [leads, setLeads] = useState<Lead[]>([]);
+  const [opens, setOpens] = useState<EmailOpen[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let active = true;
-    Promise.all([listMessages(user.uid), listLeads(user.uid)]).then(
-      ([m, l]) => {
+    Promise.all([listMessages(user.uid), listLeads(user.uid), listOpenEvents(user.uid)]).then(
+      ([m, l, o]) => {
         if (!active) return;
         setMessages(m);
         setLeads(l);
+        setOpens(o);
         setLoading(false);
       },
       (err) => {
@@ -56,6 +58,20 @@ export default function SentPage() {
       };
     });
   }, [messages, leads]);
+
+  const openStats = useMemo(() => {
+    const map = new Map<string, { count: number; last: string }>();
+    for (const event of opens) {
+      const current = map.get(event.message_id);
+      if (!current) {
+        map.set(event.message_id, { count: 1, last: event.opened_at });
+      } else {
+        current.count += 1;
+        if (event.opened_at > current.last) current.last = event.opened_at;
+      }
+    }
+    return map;
+  }, [opens]);
 
   const counts = useMemo(() => {
     const map: Record<string, number> = {};
@@ -127,6 +143,7 @@ export default function SentPage() {
                     <th>Subject</th>
                     <th>Type</th>
                     <th>Status</th>
+                    <th>Opened</th>
                     <th>Sent</th>
                   </tr>
                 </thead>
@@ -142,6 +159,15 @@ export default function SentPage() {
                       <td>
                         <Badge tone={statusTone(message.status)}>{label(message.status)}</Badge>
                         {message.error && <div className="tiny">{message.error.slice(0, 90)}</div>}
+                      </td>
+                      <td>
+                        {openStats.get(message.id) ? (
+                          <Badge tone="ok">Opened {openStats.get(message.id)!.count}×</Badge>
+                        ) : message.status === "sent" ? (
+                          <span className="tiny">Not yet</span>
+                        ) : (
+                          <span className="tiny">—</span>
+                        )}
                       </td>
                       <td className="tiny nowrap">{fmtDate(message.sent_at)}</td>
                     </tr>
@@ -166,6 +192,24 @@ export default function SentPage() {
               </span>
             </div>
             <pre className="pre">{open.body}</pre>
+            <div className="divider" />
+            <div className="open-summary" data-open={openStats.get(open.id) ? "true" : "false"}>
+              <span className="open-summary-dot" />
+              {openStats.get(open.id) ? (
+                <span>
+                  <strong>
+                    Opened {openStats.get(open.id)!.count} time
+                    {openStats.get(open.id)!.count === 1 ? "" : "s"}
+                  </strong>{" "}
+                  · last {fmtDate(openStats.get(open.id)!.last)}
+                </span>
+              ) : (
+                <span>
+                  <strong>No open recorded</strong> — either it has not been read yet, or the recipient&apos;s mail
+                  client blocks remote images.
+                </span>
+              )}
+            </div>
             <div className="divider" />
             <dl className="kv">
               <dt>Gmail message ID</dt>

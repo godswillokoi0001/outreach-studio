@@ -97,6 +97,33 @@ export async function authedPost<T>(
   throw new Error("Request failed after retrying. Please try again.");
 }
 
+export async function authedUpload<T>(path: string, form: FormData): Promise<T> {
+  const firebaseToken = await getFirebaseIdToken();
+  if (!firebaseToken) throw new Error("Sign in with Google to continue.");
+  const res = await fetch(path, {
+    method: "POST",
+    headers: { "X-Firebase-Token": firebaseToken, Accept: "application/json" },
+    body: form,
+    cache: "no-store",
+    credentials: "same-origin",
+  });
+  const text = await res.text();
+  let data: unknown = null;
+  try {
+    data = text ? JSON.parse(text) : null;
+  } catch {
+    data = null;
+  }
+  if (!res.ok) {
+    const message =
+      data && typeof data === "object" && "error" in data
+        ? String((data as { error: unknown }).error)
+        : `Upload failed (HTTP ${res.status}).`;
+    throw new Error(message);
+  }
+  return data as T;
+}
+
 export function errorMessage(err: unknown): string {
   if (err instanceof Error) {
     const nested = extractErrorMessageFromJson(err.message);

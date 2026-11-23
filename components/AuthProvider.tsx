@@ -10,7 +10,7 @@ import {
   startGoogleConnection,
   workspaceStatus,
 } from "@/lib/workspace";
-import { LoginGate } from "./LoginGate";
+import { PreAuth } from "./PreAuth";
 import { Shell } from "./Shell";
 
 interface AuthContextValue {
@@ -145,8 +145,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   if (loading) {
     return (
-      <div className="login-wrap">
-        <div className="login-card login-loading">
+      <div className="auth-shell">
+        <div className="auth-aurora" aria-hidden="true" />
+        <div className="auth-loading">
           <div className="login-brand" style={{ justifyContent: "center" }}>
             <div className="brand-mark">OS</div>
             <div style={{ textAlign: "left" }}>
@@ -164,7 +165,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }
 
   if (!user) {
-    return <LoginGate onGoogleAuth={handleGoogleAuth} busy={signingIn} error={authError} />;
+    return <PreAuth onGoogleAuth={handleGoogleAuth} busy={signingIn} error={authError} />;
   }
 
   return (

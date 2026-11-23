@@ -199,6 +199,15 @@ export interface Suppression {
   updated_at: string;
 }
 
+export interface EmailOpen {
+  id: string;
+  ownerId: string;
+  message_id: string;
+  lead_id: string | null;
+  opened_at: string;
+  user_agent: string | null;
+}
+
 export interface SendLog {
   id: string;
   lead_id: string;

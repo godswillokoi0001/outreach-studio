@@ -125,6 +125,34 @@ export interface RawEmailInput {
   rfcMessageId: string;
   inReplyTo?: string | null;
   unsubscribeEmail?: string;
+  /** Absolute URL of the 1x1 open-tracking pixel. Omit to send plain text only. */
+  openPixelUrl?: string | null;
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function plainTextToHtml(body: string): string {
+  return body
+    .split(/\n{2,}/)
+    .map((paragraph) => `<p style="margin:0 0 14px;">${escapeHtml(paragraph).replace(/\n/g, "<br />")}</p>`)
+    .join("");
+}
+
+/** Builds a signed-less but unguessable tracking URL for one sent message. */
+export function buildOpenPixelUrl(
+  origin: string,
+  params: { ownerId: string; messageId: string; leadId?: string | null },
+): string {
+  const base = origin.replace(/\/$/, "");
+  const query = new URLSearchParams({ u: params.ownerId, m: params.messageId });
+  if (params.leadId) query.set("l", params.leadId);
+  return `${base}/api/track/open?${query.toString()}`;
 }
 
 export function buildRawEmail(input: RawEmailInput): string {
@@ -138,16 +166,47 @@ export function buildRawEmail(input: RawEmailInput): string {
     `Date: ${new Date().toUTCString().replace("GMT", "+0000")}`,
     `Message-ID: ${input.rfcMessageId}`,
     `MIME-Version: 1.0`,
-    `Content-Type: text/plain; charset="UTF-8"`,
-    `Content-Transfer-Encoding: base64`,
     `X-Outreach-Message-Id: ${input.rfcMessageId.replace(/[<>]/g, "")}`,
   ];
   if (input.inReplyTo) headers.push(`In-Reply-To: ${input.inReplyTo}`);
   if (input.unsubscribeEmail) {
     headers.push(`List-Unsubscribe: <mailto:${input.unsubscribeEmail}?subject=unsubscribe>`);
   }
-  const encodedBody = wrapBase64(btoa(bytesToBinary(new TextEncoder().encode(body))));
-  return `${headers.join("\r\n")}\r\n\r\n${encodedBody}`;
+
+  const pixel = input.openPixelUrl
+    ? `<img src="${escapeHtml(input.openPixelUrl)}" width="1" height="1" alt="" style="display:block;width:1px;height:1px;border:0;opacity:0;" />`
+    : "";
+
+  if (!pixel) {
+    const encodedBody = wrapBase64(btoa(bytesToBinary(new TextEncoder().encode(body))));
+    headers.push(`Content-Type: text/plain; charset="UTF-8"`);
+    headers.push(`Content-Transfer-Encoding: base64`);
+    return `${headers.join("\r\n")}\r\n\r\n${encodedBody}`;
+  }
+
+  const boundary = `os_alt_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+  const html = `<!doctype html><html><body style="margin:0;padding:0;"><div style="font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;font-size:15px;line-height:1.6;color:#1c1d1a;">${plainTextToHtml(
+    body,
+  )}</div>${pixel}</body></html>`;
+  headers.push(`Content-Type: multipart/alternative; boundary="${boundary}"`);
+
+  const textPart = [
+    `--${boundary}`,
+    `Content-Type: text/plain; charset="UTF-8"`,
+    `Content-Transfer-Encoding: base64`,
+    "",
+    wrapBase64(btoa(bytesToBinary(new TextEncoder().encode(body)))),
+  ].join("\r\n");
+
+  const htmlPart = [
+    `--${boundary}`,
+    `Content-Type: text/html; charset="UTF-8"`,
+    `Content-Transfer-Encoding: base64`,
+    "",
+    wrapBase64(btoa(bytesToBinary(new TextEncoder().encode(html)))),
+  ].join("\r\n");
+
+  return `${headers.join("\r\n")}\r\n\r\n${textPart}\r\n${htmlPart}\r\n--${boundary}--`;
 }
 
 export function encodeBase64Url(value: string): string {
