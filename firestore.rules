@@ -314,13 +314,13 @@ service cloud.firestore {
       allow list: if false;
       allow create: if isOwner(userId) && isValidId(userId) &&
         isValidUserProfile(incoming()) &&
-        incoming().createdAt == request.time &&
-        incoming().updatedAt == request.time;
+        incoming().createdAt is timestamp &&
+        incoming().updatedAt is timestamp;
       allow update: if isOwner(userId) && isValidId(userId) &&
         isValidUserProfile(incoming()) &&
         incoming().uid == existing().uid &&
         incoming().createdAt == existing().createdAt &&
-        incoming().updatedAt == request.time &&
+        incoming().updatedAt is timestamp &&
         incoming().diff(existing()).affectedKeys().hasOnly(['email', 'displayName', 'photoURL', 'updatedAt']);
       allow delete: if false;
 
@@ -329,14 +329,14 @@ service cloud.firestore {
         allow list: if isOwner(userId) && existing().ownerId == request.auth.uid;
         allow create: if isOwner(userId) && isValidId(settingId) &&
           isValidUserSettings(incoming()) &&
-          incoming().createdAt == request.time &&
-          incoming().updatedAt == request.time &&
+          incoming().createdAt is timestamp &&
+          incoming().updatedAt is timestamp &&
           hasValidParentUser(userId);
         allow update: if isOwner(userId) && isValidId(settingId) &&
           isValidUserSettings(incoming()) &&
           incoming().ownerId == existing().ownerId &&
           incoming().createdAt == existing().createdAt &&
-          incoming().updatedAt == request.time &&
+          incoming().updatedAt is timestamp &&
           hasValidParentUser(userId) &&
           incoming().diff(existing()).affectedKeys().hasOnly([
             'sender_name', 'sender_role', 'sender_company', 'sender_email', 'signature',
@@ -352,14 +352,14 @@ service cloud.firestore {
         allow list: if isOwner(userId) && existing().ownerId == request.auth.uid;
         allow create: if isOwner(userId) && isValidId(entryId) &&
           isValidKnowledgeEntry(incoming()) &&
-          incoming().createdAt == request.time &&
-          incoming().updatedAt == request.time &&
+          incoming().createdAt is timestamp &&
+          incoming().updatedAt is timestamp &&
           hasValidParentUser(userId);
         allow update: if isOwner(userId) && isValidId(entryId) &&
           isValidKnowledgeEntry(incoming()) &&
           incoming().ownerId == existing().ownerId &&
           incoming().createdAt == existing().createdAt &&
-          incoming().updatedAt == request.time &&
+          incoming().updatedAt is timestamp &&
           hasValidParentUser(userId) && (
             // Action: Edit knowledge content or metadata
             incoming().diff(existing()).affectedKeys().hasOnly(['category', 'title', 'content', 'sort', 'updatedAt'])
@@ -374,14 +374,14 @@ service cloud.firestore {
         allow list: if isOwner(userId) && existing().ownerId == request.auth.uid;
         allow create: if isOwner(userId) && isValidId(sourceId) &&
           isValidKnowledgeSource(incoming()) &&
-          incoming().createdAt == request.time &&
-          incoming().updatedAt == request.time &&
+          incoming().createdAt is timestamp &&
+          incoming().updatedAt is timestamp &&
           hasValidParentUser(userId);
         allow update: if isOwner(userId) && isValidId(sourceId) &&
           isValidKnowledgeSource(incoming()) &&
           incoming().ownerId == existing().ownerId &&
           incoming().createdAt == existing().createdAt &&
-          incoming().updatedAt == request.time &&
+          incoming().updatedAt is timestamp &&
           hasValidParentUser(userId) &&
           incoming().diff(existing()).affectedKeys().hasOnly(['label', 'kind', 'url', 'content', 'updatedAt']);
         allow delete: if isOwner(userId) && isValidId(sourceId) && hasValidParentUser(userId);
@@ -392,15 +392,15 @@ service cloud.firestore {
         allow list: if isOwner(userId) && existing().ownerId == request.auth.uid;
         allow create: if isOwner(userId) && isValidId(campaignId) &&
           isValidCampaign(incoming()) &&
-          incoming().createdAt == request.time &&
-          incoming().updatedAt == request.time &&
+          incoming().createdAt is timestamp &&
+          incoming().updatedAt is timestamp &&
           hasValidParentUser(userId);
         allow update: if isOwner(userId) && isValidId(campaignId) &&
           isValidCampaign(incoming()) &&
           existing().status != 'archived' &&
           incoming().ownerId == existing().ownerId &&
           incoming().createdAt == existing().createdAt &&
-          incoming().updatedAt == request.time &&
+          incoming().updatedAt is timestamp &&
           hasValidParentUser(userId) && (
             // Action: Approve, pause, resume, complete, or archive campaign
             incoming().diff(existing()).affectedKeys().hasOnly(['status', 'approved_at', 'updatedAt']) ||
@@ -415,8 +415,8 @@ service cloud.firestore {
         allow list: if isOwner(userId) && existing().ownerId == request.auth.uid;
         allow create: if isOwner(userId) && isValidId(leadId) &&
           isValidLead(incoming()) &&
-          incoming().createdAt == request.time &&
-          incoming().updatedAt == request.time &&
+          incoming().createdAt is timestamp &&
+          incoming().updatedAt is timestamp &&
           hasValidParentUser(userId) &&
           (!('campaign_id' in incoming()) || incoming().campaign_id == null ||
             exists(/databases/$(database)/documents/users/$(userId)/campaigns/$(incoming().campaign_id)));
@@ -424,7 +424,7 @@ service cloud.firestore {
           isValidLead(incoming()) &&
           incoming().ownerId == existing().ownerId &&
           incoming().createdAt == existing().createdAt &&
-          incoming().updatedAt == request.time &&
+          incoming().updatedAt is timestamp &&
           hasValidParentUser(userId) && (
             // Action: Assign lead to campaign
             incoming().diff(existing()).affectedKeys().hasOnly(['campaign_id', 'status', 'updatedAt']) ||
@@ -445,7 +445,7 @@ service cloud.firestore {
         allow list: if isOwner(userId) && existing().ownerId == request.auth.uid;
         allow create: if isOwner(userId) && isValidId(eventId) &&
           isValidLeadEvent(incoming()) &&
-          incoming().createdAt == request.time &&
+          incoming().createdAt is timestamp &&
           hasValidParentUser(userId) &&
           exists(/databases/$(database)/documents/users/$(userId)/leads/$(incoming().lead_id));
         allow update: if false;
@@ -457,8 +457,8 @@ service cloud.firestore {
         allow list: if isOwner(userId) && existing().ownerId == request.auth.uid;
         allow create: if isOwner(userId) && isValidId(messageId) &&
           isValidMessage(incoming()) &&
-          incoming().createdAt == request.time &&
-          incoming().updatedAt == request.time &&
+          incoming().createdAt is timestamp &&
+          incoming().updatedAt is timestamp &&
           hasValidParentUser(userId) &&
           exists(/databases/$(database)/documents/users/$(userId)/leads/$(incoming().lead_id));
         allow update: if isOwner(userId) && isValidId(messageId) &&
@@ -467,7 +467,7 @@ service cloud.firestore {
           incoming().ownerId == existing().ownerId &&
           incoming().lead_id == existing().lead_id &&
           incoming().createdAt == existing().createdAt &&
-          incoming().updatedAt == request.time &&
+          incoming().updatedAt is timestamp &&
           hasValidParentUser(userId) && (
             // Action: Edit or regenerate draft content
             incoming().diff(existing()).affectedKeys().hasOnly(['subject', 'body', 'angle', 'rationale', 'service', 'updatedAt']) ||
@@ -484,15 +484,15 @@ service cloud.firestore {
         allow list: if isOwner(userId) && existing().ownerId == request.auth.uid;
         allow create: if isOwner(userId) && isValidId(replyId) &&
           isValidReply(incoming()) &&
-          incoming().createdAt == request.time &&
-          incoming().updatedAt == request.time &&
+          incoming().createdAt is timestamp &&
+          incoming().updatedAt is timestamp &&
           hasValidParentUser(userId);
         allow update: if isOwner(userId) && isValidId(replyId) &&
           isValidReply(incoming()) &&
           incoming().ownerId == existing().ownerId &&
           incoming().gmail_id == existing().gmail_id &&
           incoming().createdAt == existing().createdAt &&
-          incoming().updatedAt == request.time &&
+          incoming().updatedAt is timestamp &&
           hasValidParentUser(userId) &&
           incoming().diff(existing()).affectedKeys().hasOnly(['handled', 'updatedAt']);
         allow delete: if isOwner(userId) && isValidId(replyId) && hasValidParentUser(userId);
@@ -503,15 +503,15 @@ service cloud.firestore {
         allow list: if isOwner(userId) && existing().ownerId == request.auth.uid;
         allow create: if isOwner(userId) && isValidId(suppressionId) &&
           isValidSuppression(incoming()) &&
-          incoming().createdAt == request.time &&
-          incoming().updatedAt == request.time &&
+          incoming().createdAt is timestamp &&
+          incoming().updatedAt is timestamp &&
           hasValidParentUser(userId);
         allow update: if isOwner(userId) && isValidId(suppressionId) &&
           isValidSuppression(incoming()) &&
           incoming().ownerId == existing().ownerId &&
           incoming().email == existing().email &&
           incoming().createdAt == existing().createdAt &&
-          incoming().updatedAt == request.time &&
+          incoming().updatedAt is timestamp &&
           hasValidParentUser(userId) &&
           incoming().diff(existing()).affectedKeys().hasOnly(['reason', 'updatedAt']);
         allow delete: if isOwner(userId) && isValidId(suppressionId) && hasValidParentUser(userId);
@@ -522,7 +522,7 @@ service cloud.firestore {
         allow list: if isOwner(userId) && existing().ownerId == request.auth.uid;
         allow create: if isOwner(userId) && isValidId(logId) &&
           isValidSendLog(incoming()) &&
-          incoming().createdAt == request.time &&
+          incoming().createdAt is timestamp &&
           hasValidParentUser(userId) &&
           exists(/databases/$(database)/documents/users/$(userId)/leads/$(incoming().lead_id)) &&
           exists(/databases/$(database)/documents/users/$(userId)/messages/$(incoming().message_id));
@@ -534,7 +534,7 @@ service cloud.firestore {
         allow list: if isOwner(userId) && existing().ownerId == request.auth.uid;
         allow create: if isOwner(userId) && isValidId(logId) &&
           isValidAuditLog(incoming()) &&
-          incoming().createdAt == request.time &&
+          incoming().createdAt is timestamp &&
           hasValidParentUser(userId);
         allow update, delete: if false;
       }

@@ -140,15 +140,17 @@ export function Modal({
             exit={{ opacity: 0, y: 12, scale: 0.98 }}
             transition={{ type: "spring", stiffness: 340, damping: 30 }}
           >
-            <div className="row" style={{ marginBottom: 14 }}>
+            <div className="row">
               <h2 style={{ fontSize: 17 }}>{title}</h2>
               <div className="row-end">
-                <button className="btn btn-ghost btn-sm" onClick={onClose} type="button">
-                  Close
+                <button className="btn btn-ghost btn-sm" onClick={onClose} type="button" aria-label="Close dialog">
+                  ✕
                 </button>
               </div>
             </div>
-            {children}
+            <div className="modal-body">
+              {children}
+            </div>
           </motion.div>
         </motion.div>
       )}

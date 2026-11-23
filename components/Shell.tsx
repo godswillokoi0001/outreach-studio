@@ -225,58 +225,61 @@ function ShellInner({ children }: { children: ReactNode }) {
           </button>
           <div className="topbar-title">Outreach Studio</div>
           <div className="topbar-spacer" />
-          {syncNote && <span className="tiny" style={{ maxWidth: 280 }}>{syncNote}</span>}
-          {workspaceToken ? (
-            <span
-              className="badge"
-              data-tone="ok"
-              title={
-                workspacePersistent
-                  ? `Connected${workspaceEmail ? ` as ${workspaceEmail}` : ""} - stays connected across reloads`
-                  : `Connected${workspaceEmail ? ` as ${workspaceEmail}` : ""} for this session`
-              }
-            >
-              <CheckCircle2 size={12} />
-              <span className="nowrap">
-                {workspaceEmail ? workspaceEmail.split("@")[0] : "Google"} connected
+          <div className="topbar-actions">
+            {syncNote && <span className="tiny" style={{ maxWidth: 240 }}>{syncNote}</span>}
+            {workspaceToken ? (
+              <span
+                className="badge"
+                data-tone="ok"
+                title={
+                  workspacePersistent
+                    ? `Connected${workspaceEmail ? ` as ${workspaceEmail}` : ""} - stays connected across reloads`
+                    : `Connected${workspaceEmail ? ` as ${workspaceEmail}` : ""} for this session`
+                }
+              >
+                <CheckCircle2 size={12} />
+                <span className="nowrap">
+                  {workspaceEmail ? workspaceEmail.split("@")[0] : "Google"} connected
+                </span>
               </span>
-            </span>
-          ) : (
+            ) : (
+              <button
+                className="btn btn-sm btn-primary"
+                onClick={() => void reconnectWorkspace()}
+                type="button"
+                title="Grant Google Sheets and Gmail access"
+              >
+                <Plug size={13} />
+                <span>Connect Google</span>
+              </button>
+            )}
+            <span className="topbar-sep" aria-hidden="true" />
             <button
-              className="btn btn-sm btn-primary"
-              onClick={() => void reconnectWorkspace()}
+              className={`btn btn-sm${chatOpen ? " btn-primary" : ""}`}
+              onClick={() => setChatOpen((v) => !v)}
               type="button"
-              title="Grant Google Sheets and Gmail access"
+              aria-pressed={chatOpen}
             >
-              <Plug size={13} />
-              <span>Connect Google</span>
+              <Sparkles size={13} />
+              <span>AI Operator</span>
             </button>
-          )}
-          <button
-            className={`btn btn-sm${chatOpen ? " btn-primary" : ""}`}
-            onClick={() => setChatOpen((v) => !v)}
-            type="button"
-            aria-pressed={chatOpen}
-          >
-            <Sparkles size={13} />
-            <span>AI Operator</span>
-          </button>
-          <button className="btn btn-sm" onClick={() => void runSync()} disabled={syncing} type="button">
-            <RefreshCw size={13} className={syncing ? "spin-icon" : undefined} />
-            <span>{syncing ? "Syncing…" : "Sync replies"}</span>
-          </button>
-          <div className="user-chip" title={user.email ?? undefined}>
-            <span className="user-dot">{displayName.slice(0, 1).toUpperCase()}</span>
-            <span className="nowrap">{displayName}</span>
+            <button className="btn btn-sm" onClick={() => void runSync()} disabled={syncing} type="button">
+              <RefreshCw size={13} className={syncing ? "spin-icon" : undefined} />
+              <span>{syncing ? "Syncing…" : "Sync"}</span>
+            </button>
+            <span className="topbar-sep" aria-hidden="true" />
+            <div className="user-chip" title={user.email ?? undefined}>
+              <span className="user-dot">{displayName.slice(0, 1).toUpperCase()}</span>
+              <span className="nowrap">{displayName}</span>
+            </div>
+            <button className="btn btn-sm btn-ghost" onClick={() => void signOut()} type="button" aria-label="Sign out">
+              <LogOut size={13} />
+            </button>
           </div>
-          <button className="btn btn-sm btn-ghost" onClick={() => void signOut()} type="button">
-            <LogOut size={13} />
-            <span>Sign out</span>
-          </button>
         </header>
 
         <PageMotion>{children}</PageMotion>
       </div>
     </div>
   );
-}
+}

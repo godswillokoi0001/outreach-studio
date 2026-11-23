@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { motion } from "framer-motion";
+import { AnimatePresence, motion } from "framer-motion";
 import {
   ArrowRight,
   CheckCircle2,
@@ -131,12 +131,22 @@ export function LoginGate({
             </button>
           </div>
 
-          <h1>{mode === "signup" ? "Create your workspace" : "Welcome back"}</h1>
-          <p className="tiny" style={{ marginBottom: 18, fontSize: 13 }}>
-            {mode === "signup"
-              ? "One Google account creates your private workspace and connects Gmail and Google Sheets at the same time."
-              : "Sign in with the Google account you use for outreach. Your campaigns, research and replies come back exactly as you left them."}
-          </p>
+          <AnimatePresence mode="wait" initial={false}>
+            <motion.div
+              key={mode}
+              initial={{ opacity: 0, y: 6 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -4 }}
+              transition={{ duration: 0.18, ease: "easeOut" }}
+            >
+              <h1>{mode === "signup" ? "Create your workspace" : "Welcome back"}</h1>
+              <p className="tiny" style={{ marginBottom: 18, fontSize: 13 }}>
+                {mode === "signup"
+                  ? "One Google account creates your private workspace and connects Gmail and Google Sheets at the same time."
+                  : "Sign in with the Google account you use for outreach. Your campaigns, research and replies come back exactly as you left them."}
+              </p>
+            </motion.div>
+          </AnimatePresence>
 
           {error && (
             <div className="banner" data-tone="bad" style={{ marginBottom: 14 }}>
