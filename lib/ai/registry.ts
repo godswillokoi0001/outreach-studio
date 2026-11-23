@@ -140,6 +140,18 @@ export const AI_PROVIDERS: AiProviderMeta[] = [
     ],
   },
   {
+    id: "numes",
+    label: "Numes",
+    blurb: "OpenAI-compatible access to Numes model catalogue.",
+    style: "openai",
+    baseUrl: "https://api.numes.ai/v1",
+    modelsPath: "/models",
+    keyPrefixes: ["sk-numes-v1-"],
+    docsUrl: "https://api.numes.ai",
+    docsLabel: "Numes API",
+    defaultModel: "",
+  },
+  {
     id: "custom",
     label: "Custom / self-hosted",
     blurb: "Any OpenAI-compatible endpoint: Azure-compatible gateways, Ollama, vLLM, LiteLLM and more.",
@@ -185,6 +197,7 @@ export function guessProviderId(rawKey: string): AiProviderId | null {
   if (key.startsWith("xai-")) return "xai";
   if (key.startsWith("pplx-")) return "perplexity";
   if (key.startsWith("fw_")) return "fireworks";
+  if (key.startsWith("sk-numes-v1-")) return "numes";
   if (key.startsWith("sk-proj-")) return "openai";
   if (key.startsWith("sk-")) return "openai";
   return null;
@@ -210,6 +223,7 @@ export function pickRecommendedModel(meta: AiProviderMeta, models: AiModelOption
     together: ["llama-3.3-70b", "llama"],
     fireworks: ["llama-v3p3-70b", "llama"],
     perplexity: ["sonar-pro", "sonar"],
+    numes: ["gpt-4o-mini", "gpt-4.1-mini", "claude", "gemini", "llama", "qwen", "deepseek", "chat"],
     custom: [],
   };
   for (const needle of preferred[meta.id] ?? []) {

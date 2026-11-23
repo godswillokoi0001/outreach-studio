@@ -10,6 +10,7 @@ export type AiProviderId =
   | "together"
   | "fireworks"
   | "perplexity"
+  | "numes"
   | "custom";
 
 export type AiApiStyle = "gemini" | "openai" | "anthropic";

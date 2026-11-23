@@ -13,7 +13,7 @@ import {
   Trash2,
   Zap,
 } from "lucide-react";
-import { AI_PROVIDERS, getProvider } from "@/lib/ai/registry";
+import { AI_PROVIDERS, getProvider, guessProviderId } from "@/lib/ai/registry";
 import type { AiModelOption, AiProviderId } from "@/lib/ai/types";
 import { aiConfigFromSettings, setActiveAiConfig } from "@/lib/ai-client";
 import { authedPost, errorMessage } from "@/lib/client";
@@ -60,7 +60,9 @@ export function AiEngineCard({
   onChange: (patch: Partial<Settings>) => void;
   onSaved: (settings: Settings) => void;
 }) {
-  const [providerChoice, setProviderChoice] = useState<string>(settings.ai_provider || "gemini");
+  const [providerChoice, setProviderChoice] = useState<string>(
+    guessProviderId(settings.ai_api_key) ? "auto" : settings.ai_provider || "gemini",
+  );
   const [keyInput, setKeyInput] = useState<string>(settings.ai_api_key || "");
   const [baseUrl, setBaseUrl] = useState<string>(settings.ai_base_url || "");
   const [showKey, setShowKey] = useState(false);
@@ -290,6 +292,7 @@ export function AiEngineCard({
                 value={keyInput}
                 onChange={(e) => {
                   setKeyInput(e.target.value);
+                  setProviderChoice("auto");
                   setModels([]);
                 }}
                 onPaste={() => {
