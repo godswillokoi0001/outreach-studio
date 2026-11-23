@@ -1,9 +1,15 @@
-export const DEFAULT_GEMINI_MODEL = "gemini-4-hydrogen";
-export const FALLBACK_GEMINI_MODEL = "gemini-3.1-flash-lite";
+export const DEFAULT_GEMINI_MODEL = "gemini-3.5-flash";
+export const FALLBACK_GEMINI_MODEL = "gemini-3.6-flash";
 
+/**
+ * Only ids verified against the live `v1` API belong in this list. Probed on
+ * 2026-11-23: 3.5 and 3.6 answer, 3.8 is rate-limited (503), and
+ * `gemini-flash-latest` / 2.5 / 2.5-pro are not served on v1.
+ */
 export const SUPPORTED_GEMINI_MODELS = [
-  { id: "gemini-4-hydrogen", label: "Gemini 4 Hydrogen (Default — balanced intelligence)" },
-  { id: "gemini-3.1-flash-lite", label: "Gemini 3.1 Flash Lite (Fast — higher free-tier quota)" },
+  { id: "gemini-3.5-flash", label: "Gemini 3.5 Flash (recommended — best balance)" },
+  { id: "gemini-3.6-flash", label: "Gemini 3.6 Flash (newer, used as fallback)" },
+  { id: "gemini-3.8-flash", label: "Gemini 3.8 Flash (newest — may be busy)" },
 ] as const;
 
 const DEPRECATED_MODELS = new Set([
@@ -13,14 +19,26 @@ const DEPRECATED_MODELS = new Set([
   "gemini-2.0-flash",
   "gemini-2.0-pro",
   "gemini-2.0-flash-thinking",
-  "gemini-3.5-flash",
 ]);
+
+/**
+ * Model ids that were written into saved settings by an earlier build but do
+ * not exist on the public API. They are mapped instead of being sent to the
+ * server, so an old workspace heals itself on the next call.
+ */
+const LEGACY_ALIASES: Record<string, string> = {
+  "gemini-4-hydrogen": DEFAULT_GEMINI_MODEL,
+  "gemini-3.1-flash-lite": FALLBACK_GEMINI_MODEL,
+  "gemini-flash-latest": DEFAULT_GEMINI_MODEL,
+  "gemini-3.5-flash-preview": DEFAULT_GEMINI_MODEL,
+};
 
 export function resolveModel(requested?: string, envModel?: string): string {
   const raw = (requested || envModel || DEFAULT_GEMINI_MODEL).trim().replace(/^models\//i, "");
-  if (!raw || DEPRECATED_MODELS.has(raw.toLowerCase())) {
-    return DEFAULT_GEMINI_MODEL;
-  }
+  if (!raw) return DEFAULT_GEMINI_MODEL;
+  const lower = raw.toLowerCase();
+  if (LEGACY_ALIASES[lower]) return LEGACY_ALIASES[lower];
+  if (DEPRECATED_MODELS.has(lower)) return DEFAULT_GEMINI_MODEL;
   return raw;
 }
 

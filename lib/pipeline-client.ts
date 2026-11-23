@@ -2,7 +2,7 @@
 
 import { normalizeEmail } from "./columns";
 import { authedPost, errorMessage, isQuotaError, sleep } from "./client";
-import { getWorkspaceAccessToken } from "./firebase";
+import { ensureWorkspaceToken } from "./workspace";
 import {
   addSuppression,
   createMessage,
@@ -389,8 +389,8 @@ export async function runSendBatch(
   campaignId?: string,
   limit = 2,
 ): Promise<BatchResult> {
-  if (!getWorkspaceAccessToken()) {
-    throw new Error("Connect Google Workspace (click 'Reconnect Gmail & Sheets' in the top bar) before sending emails.");
+  if (!(await ensureWorkspaceToken())) {
+    throw new Error("Connect Google (click 'Connect Google' in the top bar) before sending emails.");
   }
 
   const [leads, campaigns, messages, suppressions, settings] = await Promise.all([
@@ -575,8 +575,8 @@ function extractEmailAddress(header: string | undefined): string | null {
 }
 
 export async function runSyncBatch(uid: string, limit = 15): Promise<BatchResult> {
-  if (!getWorkspaceAccessToken()) {
-    throw new Error("Connect Google Workspace (click 'Reconnect Gmail & Sheets' in the top bar) to sync Gmail replies.");
+  if (!(await ensureWorkspaceToken())) {
+    throw new Error("Connect Google (click 'Connect Google' in the top bar) to sync Gmail replies.");
   }
 
   const [leads, messages, replies, settings, knowledge] = await Promise.all([

@@ -254,7 +254,7 @@ export const DEFAULT_SETTINGS: Settings = {
   min_score: 55,
   unsubscribe_email: "",
   physical_address: "",
-  model: "gemini-4-hydrogen",
+  model: "gemini-3.5-flash",
 };
 
 export const LEAD_STATUS_LABELS: Record<string, string> = {

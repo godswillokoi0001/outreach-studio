@@ -1,10 +1,12 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { ArrowRight, MoreHorizontal, Sparkles } from "lucide-react";
 import { useAuth } from "@/components/AuthProvider";
 import { BatchRunner } from "@/components/Runner";
-import { Badge, Banner, Card, Empty, Field, Progress } from "@/components/ui";
+import { LoadingPanel, Skeleton } from "@/components/Loading";
+import { Badge, Banner, Card, Empty, Field } from "@/components/ui";
 import { authedPost, errorMessage } from "@/lib/client";
 import {
   assignLeadsToCampaign,
@@ -31,6 +33,31 @@ interface Plan {
 
 const POSITIVE_CLASSES = new Set(["interested", "more_info", "pricing"]);
 
+type NextStep =
+  | { kind: "approve"; title: string; hint: string; cta: string }
+  | { kind: "resume"; title: string; hint: string; cta: string }
+  | { kind: "link"; href: string; title: string; hint: string; cta: string }
+  | { kind: "research"; title: string; hint: string; cta: string; count: number }
+  | { kind: "qualify"; title: string; hint: string; cta: string; count: number }
+  | { kind: "compose"; title: string; hint: string; cta: string; count: number }
+  | { kind: "send"; title: string; hint: string; cta: string; count: number; confirmText: string };
+
+type Enriched = Campaign & {
+  leads: number;
+  researched: number;
+  qualified: number;
+  queued: number;
+  toQualify: number;
+  toCompose: number;
+  drafted: number;
+  sent: number;
+  pending: number;
+  approvedReady: number;
+  replies: number;
+  positive: number;
+  next: NextStep;
+};
+
 export default function CampaignsPage() {
   const { user, workspaceToken, reconnectWorkspace } = useAuth();
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
@@ -45,6 +72,8 @@ export default function CampaignsPage() {
   const [busy, setBusy] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
+  const [plannerOpen, setPlannerOpen] = useState(false);
+  const [selectedId, setSelectedId] = useState("");
 
   const reload = useCallback(async () => {
     setLoading(true);
@@ -94,13 +123,13 @@ export default function CampaignsPage() {
     };
   }, [user.uid]);
 
-  const enriched = useMemo(() => {
+  const enriched = useMemo<Enriched[]>(() => {
     return campaigns.map((c) => {
       const campLeads = leads.filter((l) => l.campaign_id === c.id);
       const campLeadIds = new Set(campLeads.map((l) => l.id));
       const campMsgs = messages.filter((m) => m.campaign_id === c.id);
       const campReplies = replies.filter((r) => r.lead_id && campLeadIds.has(r.lead_id));
-      return {
+      const base = {
         ...c,
         leads: campLeads.length,
         researched: campLeads.filter((l) => Boolean(l.research_at)).length,
@@ -109,13 +138,21 @@ export default function CampaignsPage() {
             l.status,
           ),
         ).length,
+        queued: campLeads.filter((l) => l.status === "queued_research").length,
+        toQualify: campLeads.filter((l) => l.status === "researched").length,
+        toCompose: campLeads.filter((l) => l.status === "qualified").length,
+        drafted: campMsgs.filter((m) => m.kind === "initial" && m.status !== "cancelled").length,
         sent: campMsgs.filter((m) => m.status === "sent").length,
         pending: campMsgs.filter((m) => m.status === "pending_approval").length,
+        approvedReady: campMsgs.filter((m) => m.status === "approved").length,
         replies: campReplies.length,
         positive: campReplies.filter((r) => POSITIVE_CLASSES.has(r.classification)).length,
       };
+      return { ...base, next: nextStepFor(base) };
     });
   }, [campaigns, leads, messages, replies]);
+
+  const selected = enriched.find((c) => c.id === selectedId) ?? enriched[0] ?? null;
 
   const makePlan = async () => {
     if (instruction.trim().length < 8) return;
@@ -206,8 +243,10 @@ export default function CampaignsPage() {
       }
 
       setNotice(
-        `Campaign created${importedCount ? ` with ${importedCount} prospects assigned` : ""}. Review the plan, then approve it to enable sending.`,
+        `Campaign created${importedCount ? ` with ${importedCount} prospects assigned` : ""}. Open it on the left, then take the next step it shows.`,
       );
+      setSelectedId(campaign.id);
+      setPlannerOpen(false);
       setPlan(null);
       setInstruction("");
       await reload();
@@ -224,9 +263,9 @@ export default function CampaignsPage() {
   ) => {
     const confirmations: Record<string, string> = {
       approve:
-        "Approve this campaign? Emails will only send once you approve them individually (unless auto-approval is enabled).",
-      pause: "Pause this campaign? Research and sending stop until you resume.",
-      archive: "Archive this campaign?",
+        "Approve this campaign? Research, writing and sending become available. Each email still needs your approval before it leaves.",
+      pause: "Pause this campaign? Nothing is researched or sent until you resume.",
+      archive: "Archive this campaign? It stops appearing in your active list.",
     };
     if (confirmations[action] && !window.confirm(confirmations[action])) return;
     setBusy(`${campaign.id}:${action}`);
@@ -237,8 +276,8 @@ export default function CampaignsPage() {
         const assigned = await assignLeadsToCampaign(user.uid, campaign.id, campaign.config);
         setNotice(
           assigned
-            ? `Assigned ${assigned} unprocessed prospects to ${campaign.name}.`
-            : "No matching unprocessed leads found.",
+            ? `Added ${assigned} unprocessed prospect${assigned === 1 ? "" : "s"} to ${campaign.name}.`
+            : "No matching unprocessed prospects were found.",
         );
       } else {
         await updateCampaignAction(user.uid, campaign.id, action);
@@ -257,174 +296,512 @@ export default function CampaignsPage() {
         <div>
           <h1 className="page-title">Campaigns</h1>
           <p className="page-sub">
-            Describe the outcome in plain English. Gemini turns it into a campaign plan, shows you exactly what it
-            intends to do, and waits for your approval before anything is sent.
+            One campaign at a time. Pick one on the left and the panel tells you the single next thing to do; every
+            other control lives in the ⋯ menu.
           </p>
+        </div>
+        <div className="row-end">
+          <button
+            className="btn btn-sm btn-primary"
+            onClick={() => setPlannerOpen((open) => !open)}
+            type="button"
+          >
+            <Sparkles size={13} />
+            {plannerOpen ? "Hide planner" : "Plan a campaign"}
+          </button>
         </div>
       </div>
 
       <div className="stack">
         {failure && <Banner tone="bad">{failure}</Banner>}
         {notice && <Banner tone="ok">{notice}</Banner>}
-
-        <Card
-          title="Plan a campaign"
-          sub="For example: “Use my sheet, research the first 30 clinics, and prepare emails about website redesign for the strongest opportunities.”"
-        >
-          <textarea
-            className="textarea"
-            value={instruction}
-            onChange={(e) => setInstruction(e.target.value)}
-            placeholder="Tell the system what you want to achieve…"
-            rows={3}
-          />
-          <div className="row" style={{ marginTop: 10 }}>
-            <button
-              className="btn btn-primary"
-              onClick={() => void makePlan()}
-              disabled={busy !== null || instruction.trim().length < 8}
-              type="button"
-            >
-              {busy === "plan" ? "Planning…" : "Plan campaign"}
-            </button>
-            {plan && (
-              <button className="btn" onClick={() => void create()} disabled={busy !== null} type="button">
-                {busy === "create" ? "Creating…" : "Create campaign"}
-              </button>
-            )}
-            <span className="tiny">No email is ever sent without approval.</span>
-          </div>
-
-          {plan && (
-            <div className="stack" style={{ marginTop: 16 }}>
-              <Banner tone="info">
-                <strong style={{ display: "block", marginBottom: 4 }}>{plan.name}</strong>
-                {plan.summary}
-              </Banner>
-              {plan.warnings?.length > 0 && (
-                <Banner tone="warn">
-                  <ul style={{ margin: 0, paddingLeft: 16 }}>
-                    {plan.warnings.map((warning, index) => (
-                      <li key={index}>{warning}</li>
-                    ))}
-                  </ul>
-                </Banner>
-              )}
-              <ConfigEditor config={plan.config} onChange={(config) => setPlan({ ...plan, config })} />
-              {plan.sheet_url && <p className="tiny">Prospects will be imported from: {plan.sheet_url}</p>}
-            </div>
-          )}
-        </Card>
-
-        {loading && campaigns.length === 0 && <Progress label="Loading campaigns…" />}
         {error && <Banner tone="bad">{error}</Banner>}
 
-        {!loading && enriched.length === 0 && (
-          <Empty title="No campaigns yet">
-            Plan one above, or import a sheet first and assign those prospects to a campaign.
-          </Empty>
+        {plannerOpen && (
+          <Card
+            title="Describe the outcome"
+            sub="Plain English is enough. Gemini turns it into a plan you can edit before anything runs."
+          >
+            <textarea
+              className="textarea"
+              value={instruction}
+              onChange={(e) => setInstruction(e.target.value)}
+              placeholder="e.g. Use my sheet, research the first 25 churches, and prepare emails about website redesign for the strongest opportunities."
+              rows={3}
+            />
+            <div className="row" style={{ marginTop: 10 }}>
+              <button
+                className="btn btn-primary"
+                onClick={() => void makePlan()}
+                disabled={busy !== null || instruction.trim().length < 8}
+                type="button"
+              >
+                {busy === "plan" ? "Planning…" : "Build my plan"}
+              </button>
+              <span className="tiny">Nothing is sent until you approve an email individually.</span>
+            </div>
+
+            {busy === "plan" && (
+              <div style={{ marginTop: 14 }}>
+                <LoadingPanel
+                  label="Drafting your campaign plan"
+                  hint="Reading your knowledge base and available prospects…"
+                  estimateMs={22_000}
+                  steps={[
+                    { label: "Reading your knowledge base", ms: 5_000 },
+                    { label: "Checking available prospects", ms: 9_000 },
+                    { label: "Writing the plan and warnings", ms: 8_000 },
+                  ]}
+                />
+              </div>
+            )}
+
+            {plan && (
+              <div className="stack" style={{ marginTop: 16 }}>
+                <Banner tone="info">
+                  <strong style={{ display: "block", marginBottom: 4 }}>{plan.name}</strong>
+                  {plan.summary}
+                </Banner>
+                {plan.warnings?.length > 0 && (
+                  <Banner tone="warn">
+                    <ul style={{ margin: 0, paddingLeft: 16 }}>
+                      {plan.warnings.map((warning, index) => (
+                        <li key={index}>{warning}</li>
+                      ))}
+                    </ul>
+                  </Banner>
+                )}
+                <ConfigEditor config={plan.config} onChange={(config) => setPlan({ ...plan, config })} />
+                {plan.sheet_url && <p className="tiny">Prospects will be imported from: {plan.sheet_url}</p>}
+                <div className="row">
+                  <button className="btn btn-primary" onClick={() => void create()} disabled={busy !== null} type="button">
+                    {busy === "create" ? "Creating…" : "Create campaign"}
+                  </button>
+                  <span className="tiny">You can approve it afterwards from the campaign panel.</span>
+                </div>
+              </div>
+            )}
+          </Card>
         )}
 
-        {enriched.map((campaign) => (
-          <Card key={campaign.id} tight>
-            <div style={{ padding: "16px 18px" }}>
-              <div className="row" style={{ marginBottom: 8 }}>
-                <div>
-                  <div className="card-title">{campaign.name}</div>
-                  <div className="card-sub">
-                    Created {fmtDate(campaign.created_at)}
-                    {campaign.approved_at ? ` · approved ${fmtDate(campaign.approved_at)}` : " · not yet approved"}
-                    {campaign.sheet_source ? " · linked to a worksheet" : ""}
-                  </div>
-                </div>
-                <div className="row-end row">
-                  <Badge tone={statusTone(campaign.status)}>{label(campaign.status)}</Badge>
-                </div>
+        {loading && enriched.length === 0 && (
+          <div className="camp-layout">
+            <div className="stack" style={{ gap: 6 }}>
+              {[0, 1, 2].map((index) => (
+                <Skeleton key={index} height={78} radius={12} />
+              ))}
+            </div>
+            <Skeleton height={320} radius={14} />
+          </div>
+        )}
+
+        {!loading && enriched.length === 0 && (
+          <Card>
+            <Empty title="No campaigns yet">
+              Press <strong>Plan a campaign</strong> above and describe what you want to achieve, or{" "}
+              <Link href="/sheets">import prospects</Link> first. A campaign is simply a group of prospects with one
+              goal.
+            </Empty>
+          </Card>
+        )}
+
+        {enriched.length > 0 && (
+          <div className="camp-layout">
+            <aside className="camp-list" aria-label="Your campaigns">
+              <div className="camp-list-head">
+                {enriched.length} campaign{enriched.length === 1 ? "" : "s"}
               </div>
+              {enriched.map((campaign) => (
+                <button
+                  key={campaign.id}
+                  className="camp-row"
+                  data-active={selected?.id === campaign.id}
+                  onClick={() => setSelectedId(campaign.id)}
+                  type="button"
+                >
+                  <span className="camp-row-top">
+                    <span className="camp-row-name">{campaign.name}</span>
+                    <span className="camp-row-status">{label(campaign.status)}</span>
+                  </span>
+                  <span className="camp-row-next">{campaign.next.title}</span>
+                  <span className="camp-row-meta">
+                    {campaign.leads} prospects · {campaign.sent} sent · {campaign.replies} replies
+                  </span>
+                  <span className="camp-row-bar">
+                    <span
+                      style={{
+                        width: `${campaign.leads ? Math.min(100, Math.round((campaign.researched / campaign.leads) * 100)) : 0}%`,
+                      }}
+                    />
+                  </span>
+                </button>
+              ))}
+            </aside>
 
-              {campaign.instruction && (
-                <p className="quote" style={{ marginBottom: 10 }}>
-                  {campaign.instruction}
-                </p>
-              )}
-
-              <div className="row" style={{ marginBottom: 12 }}>
-                <Badge>Leads {campaign.leads}</Badge>
-                <Badge>Researched {campaign.researched}</Badge>
-                <Badge>Qualified {campaign.qualified}</Badge>
-                <Badge tone="info">Awaiting approval {campaign.pending}</Badge>
-                <Badge tone="ok">Sent {campaign.sent}</Badge>
-                <Badge tone={campaign.positive ? "gold" : undefined}>Positive {campaign.positive}</Badge>
-                <Badge>Service: {campaign.config.services?.join(", ") || "—"}</Badge>
-                <Badge>Min score {campaign.config.min_score}</Badge>
-              </div>
-
-              <div className="row">
-                {campaign.status !== "approved" && campaign.status !== "completed" && (
-                  <button
-                    className="btn btn-sm btn-primary"
-                    onClick={() => void act(campaign, "approve")}
-                    disabled={busy !== null}
-                    type="button"
-                  >
-                    Approve campaign
-                  </button>
-                )}
-                <BatchRunner type="research" campaignId={campaign.id} label="Research" limit={2} onDone={reload} />
-                <BatchRunner type="qualify" campaignId={campaign.id} label="Qualify" limit={3} onDone={reload} />
-                <BatchRunner type="compose" campaignId={campaign.id} label="Write emails" limit={2} onDone={reload} />
-                <BatchRunner
-                  type="send"
-                  campaignId={campaign.id}
-                  label="Send approved"
-                  confirmText="Send approved emails now from your connected Gmail account? They go to real prospects."
+            {selected && (
+              <section aria-label={`${selected.name} workspace`}>
+                <CampaignDetail
+                  campaign={selected}
+                  busy={busy}
+                  prospects={leads.filter((lead) => lead.campaign_id === selected.id)}
+                  onAct={act}
                   onDone={reload}
                 />
-                <Link className="btn btn-sm" href="/review">
-                  Review emails
-                </Link>
-                <button
-                  className="btn btn-sm"
-                  onClick={() => void act(campaign, "assign")}
-                  disabled={busy !== null}
-                  type="button"
-                >
-                  Assign prospects
-                </button>
-                {campaign.status === "paused" ? (
-                  <button
-                    className="btn btn-sm"
-                    onClick={() => void act(campaign, "resume")}
-                    disabled={busy !== null}
-                    type="button"
-                  >
-                    Resume
-                  </button>
-                ) : (
-                  <button
-                    className="btn btn-sm"
-                    onClick={() => void act(campaign, "pause")}
-                    disabled={busy !== null}
-                    type="button"
-                  >
-                    Pause
-                  </button>
-                )}
-                <button
-                  className="btn btn-sm btn-ghost"
-                  onClick={() => void act(campaign, "archive")}
-                  disabled={busy !== null}
-                  type="button"
-                >
-                  Archive
-                </button>
-              </div>
-            </div>
-          </Card>
-        ))}
+              </section>
+            )}
+          </div>
+        )}
       </div>
     </main>
   );
+}
+
+function CampaignDetail({
+  campaign,
+  prospects,
+  busy,
+  onAct,
+  onDone,
+}: {
+  campaign: Enriched;
+  prospects: Lead[];
+  busy: string | null;
+  onAct: (campaign: Campaign, action: "approve" | "pause" | "resume" | "archive" | "assign") => Promise<void>;
+  onDone: () => void | Promise<void>;
+}) {
+  const c = campaign;
+  const next = c.next;
+
+  const stages = [
+    {
+      label: "Prospects",
+      value: c.leads,
+      note: c.leads ? "in campaign" : "none yet",
+      state: c.leads ? "done" : "idle",
+    },
+    {
+      label: "Researched",
+      value: c.researched,
+      note: c.queued ? `${c.queued} waiting` : c.researched ? "evidence stored" : "not started",
+      state: c.queued ? "active" : c.researched ? "done" : "idle",
+    },
+    {
+      label: "Qualified",
+      value: c.qualified,
+      note: c.toQualify ? `${c.toQualify} to score` : c.qualified ? "scored" : "none scored",
+      state: c.toQualify ? "active" : c.qualified ? "done" : "idle",
+    },
+    {
+      label: "Drafted",
+      value: c.drafted,
+      note: c.toCompose ? `${c.toCompose} to write` : c.pending ? `${c.pending} to review` : c.drafted ? "ready" : "no drafts",
+      state: c.toCompose ? "active" : c.drafted ? "done" : "idle",
+    },
+    {
+      label: "Sent",
+      value: c.sent,
+      note: c.approvedReady ? `${c.approvedReady} approved` : `${c.replies} repl${c.replies === 1 ? "y" : "ies"}`,
+      state: c.approvedReady ? "active" : c.sent ? "done" : "idle",
+    },
+  ];
+
+  const eta = estimateFor(next);
+
+  return (
+    <div className="card detail-card">
+      <header className="detail-head">
+        <div style={{ minWidth: 0, flex: 1 }}>
+          <div className="detail-title">{c.name}</div>
+          <div className="detail-meta">
+            Created {fmtDate(c.created_at)}
+            {c.sheet_source ? " · linked to a worksheet" : ""}
+            {c.config.services?.length ? ` · ${c.config.services.join(", ")}` : ""}
+            {` · minimum score ${c.config.min_score}`}
+            {c.config.require_approval ? " · approval required" : " · auto-send when approved"}
+          </div>
+        </div>
+        <div className="row" style={{ gap: 8 }}>
+          <Badge tone={statusTone(c.status)}>{label(c.status)}</Badge>
+          <details className="kebab">
+            <summary aria-label="All campaign actions" title="All campaign actions">
+              <MoreHorizontal size={16} />
+            </summary>
+            <div className="kebab-menu">
+              <Link href="/review">Email review</Link>
+              <Link href="/conversations">Conversations</Link>
+              <Link href="/leads">All prospects</Link>
+              <div className="kebab-sep" />
+              {c.status !== "approved" && c.status !== "completed" && (
+                <button onClick={() => void onAct(c, "approve")} disabled={busy !== null} type="button">
+                  Approve campaign
+                </button>
+              )}
+              <button onClick={() => void onAct(c, "assign")} disabled={busy !== null} type="button">
+                Add unassigned prospects
+              </button>
+              {c.status === "paused" ? (
+                <button onClick={() => void onAct(c, "resume")} disabled={busy !== null} type="button">
+                  Resume campaign
+                </button>
+              ) : (
+                <button onClick={() => void onAct(c, "pause")} disabled={busy !== null} type="button">
+                  Pause campaign
+                </button>
+              )}
+              <div className="kebab-sep" />
+              <button
+                className="danger"
+                onClick={() => void onAct(c, "archive")}
+                disabled={busy !== null}
+                type="button"
+              >
+                Archive campaign
+              </button>
+            </div>
+          </details>
+        </div>
+      </header>
+
+      {c.instruction && <p className="quote detail-instruction">{c.instruction}</p>}
+
+      <div className="pipeline">
+        {stages.map((stage) => (
+          <div key={stage.label} className="pipe-step" data-state={stage.state}>
+            <span className="pipe-bar" aria-hidden="true" />
+            <span className="pipe-label">{stage.label}</span>
+            <span className="pipe-value">{stage.value}</span>
+            <span className="pipe-note">{stage.note}</span>
+          </div>
+        ))}
+      </div>
+
+      <div className="next-card">
+        <div className="next-main">
+          <div className="next-eyebrow">Do this next</div>
+          <div className="next-title">{next.title}</div>
+          <div className="next-hint">{next.hint}</div>
+        </div>
+        <div className="next-side">
+          <NextAction next={next} campaignId={c.id} busy={busy} onAct={onAct} campaign={c} onDone={onDone} />
+          {eta && <span className="next-eta">{eta} · you can stop any time</span>}
+        </div>
+      </div>
+
+      <div className="detail-links">
+        <Link href="/review">
+          Email review{c.pending ? ` · ${c.pending} waiting` : ""}
+        </Link>
+        <Link href="/conversations">
+          Conversations{c.replies ? ` · ${c.replies}` : ""}
+        </Link>
+        <Link href="/followups">Follow-ups</Link>
+        <Link href="/leads">All prospects</Link>
+        <Link href="/sheets">Sheet sync</Link>
+        {prospects.length > 0 && (
+          <div className="detail-prospects">
+            <div className="detail-sub">
+              Prospects in this campaign
+              <Link href="/leads" className="detail-sub-link">
+                View all {campaign.leads}
+              </Link>
+            </div>
+            <ul className="mini-rows">
+              {prospects.slice(0, 6).map((lead) => (
+                <li key={lead.id}>
+                  <span className="mini-name">{lead.business || lead.email || lead.website || "Unnamed prospect"}</span>
+                  <span className="mini-meta">{lead.industry || "—"}</span>
+                  <span className="mini-badge" data-tone={statusTone(lead.status)}>
+                    {label(lead.status)}
+                  </span>
+                  <span className="mini-score">{typeof lead.score === "number" ? lead.score : "—"}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        <details className="detail-more">
+          <summary>Campaign settings</summary>
+          <div className="detail-settings">
+            <span>Target: {c.config.target_industry || "any industry"}</span>
+            <span>Objective: {c.config.objective}</span>
+            <span>Tone: {c.config.tone}</span>
+            <span>Send limit: {c.config.send_limit}</span>
+            <span>Gap between emails: {c.config.interval_seconds}s</span>
+            <span>Follow-up days: {c.config.followup_days.join(", ") || "none"}</span>
+            <span>Writes as: {c.config.identity === "personal" ? "you personally" : "the business"}</span>
+          </div>
+          <div className="row" style={{ marginTop: 10 }}>
+            <BatchRunner type="research" campaignId={c.id} label="Research a batch" limit={2} onDone={onDone} />
+            <BatchRunner type="qualify" campaignId={c.id} label="Qualify a batch" limit={3} onDone={onDone} />
+            <BatchRunner type="compose" campaignId={c.id} label="Write a batch" limit={2} onDone={onDone} />
+            <BatchRunner
+              type="send"
+              campaignId={c.id}
+              label="Send approved"
+              confirmText="Send approved emails now from your connected Gmail account? They go to real prospects."
+              onDone={onDone}
+            />
+          </div>
+        </details>
+      </div>
+    </div>
+  );
+}
+
+function NextAction({
+  next,
+  campaignId,
+  campaign,
+  busy,
+  onAct,
+  onDone,
+}: {
+  next: NextStep;
+  campaignId: string;
+  campaign: Campaign;
+  busy: string | null;
+  onAct: (campaign: Campaign, action: "approve" | "pause" | "resume" | "archive" | "assign") => Promise<void>;
+  onDone: () => void | Promise<void>;
+}) {
+  if (next.kind === "approve" || next.kind === "resume") {
+    return (
+      <button
+        className="btn btn-primary"
+        onClick={() => void onAct(campaign, next.kind === "resume" ? "resume" : "approve")}
+        disabled={busy !== null}
+        type="button"
+      >
+        {next.cta}
+        <ArrowRight size={14} />
+      </button>
+    );
+  }
+  if (next.kind === "link") {
+    return (
+      <Link className="btn btn-primary" href={next.href}>
+        {next.cta}
+        <ArrowRight size={14} />
+      </Link>
+    );
+  }
+  return (
+    <BatchRunner
+      type={next.kind}
+      campaignId={campaignId}
+      label={next.cta}
+      variant="primary"
+      limit={next.kind === "qualify" ? 3 : 2}
+      confirmText={next.kind === "send" ? next.confirmText : undefined}
+      onDone={onDone}
+    />
+  );
+}
+
+function nextStepFor(campaign: {
+  status: Campaign["status"];
+  queued: number;
+  toQualify: number;
+  toCompose: number;
+  pending: number;
+  approvedReady: number;
+  replies: number;
+}): NextStep {
+  if (campaign.status === "paused") {
+    return {
+      kind: "resume",
+      title: "This campaign is paused",
+      hint: "Nothing is researched or sent while it is paused. Resume to continue exactly where you stopped.",
+      cta: "Resume campaign",
+    };
+  }
+  if (campaign.status !== "approved" && campaign.status !== "completed") {
+    return {
+      kind: "approve",
+      title: "Approve this campaign to switch it on",
+      hint: "Approving unlocks research, writing and sending. Nothing leaves your inbox until you approve each email.",
+      cta: "Approve campaign",
+    };
+  }
+  if (campaign.queued > 0) {
+    return {
+      kind: "research",
+      title: `Research ${campaign.queued} prospect${campaign.queued === 1 ? "" : "s"}`,
+      hint: "Each website is opened and what it can verify is stored, so no email is ever written from guesswork.",
+      cta: "Start research",
+      count: campaign.queued,
+    };
+  }
+  if (campaign.toQualify > 0) {
+    return {
+      kind: "qualify",
+      title: `Score ${campaign.toQualify} researched prospect${campaign.toQualify === 1 ? "" : "s"}`,
+      hint: "Each one is compared with what you sell. Only strong fits move on to an email.",
+      cta: "Score them",
+      count: campaign.toQualify,
+    };
+  }
+  if (campaign.toCompose > 0) {
+    return {
+      kind: "compose",
+      title: `Write ${campaign.toCompose} email${campaign.toCompose === 1 ? "" : "s"} in your voice`,
+      hint: "Drafts come from your knowledge base and land in Email review, where nothing is sent without you.",
+      cta: "Write emails",
+      count: campaign.toCompose,
+    };
+  }
+  if (campaign.pending > 0) {
+    return {
+      kind: "link",
+      href: "/review",
+      title: `Review ${campaign.pending} draft${campaign.pending === 1 ? "" : "s"}`,
+      hint: "Read it, edit it, approve it. Only approved emails can ever be sent.",
+      cta: "Open review",
+    };
+  }
+  if (campaign.approvedReady > 0) {
+    return {
+      kind: "send",
+      title: `Send ${campaign.approvedReady} approved email${campaign.approvedReady === 1 ? "" : "s"}`,
+      hint: "Sent from your connected Gmail, spaced out to protect your domain reputation.",
+      cta: "Send now",
+      count: campaign.approvedReady,
+      confirmText: "Send the approved emails now from your connected Gmail account? They go to real prospects.",
+    };
+  }
+  if (campaign.replies > 0) {
+    return {
+      kind: "link",
+      href: "/conversations",
+      title: `${campaign.replies} repl${campaign.replies === 1 ? "y" : "ies"} waiting for you`,
+      hint: "Each reply is classified with a suggested answer, so you only write the parts that matter.",
+      cta: "Open conversations",
+    };
+  }
+  return {
+    kind: "link",
+    href: "/leads",
+    title: "Nothing is waiting on this campaign",
+    hint: "Every prospect here has been handled. Add more prospects, or plan the next campaign above.",
+    cta: "Add prospects",
+  };
+}
+
+function estimateFor(next: NextStep): string | null {
+  const perItem: Partial<Record<NextStep["kind"], number>> = {
+    research: 12,
+    qualify: 8,
+    compose: 12,
+    send: 6,
+  };
+  const kind = next.kind;
+  const rate = perItem[kind];
+  if (!rate || !("count" in next)) return null;
+  const capped = next.count > 160;
+  const seconds = Math.max(5, Math.min(next.count, 160) * rate);
+  if (seconds < 60) return `≈ ${Math.round(seconds / 5) * 5}s`;
+  const minutes = Math.round(seconds / 60);
+  return `≈ ${minutes} min${capped ? " · 160 per run" : ""}`;
 }
 
 function ConfigEditor({

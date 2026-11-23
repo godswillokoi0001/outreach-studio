@@ -10,6 +10,11 @@ import {
 } from "firebase/auth";
 import { doc, getDocFromServer, getFirestore } from "firebase/firestore";
 import firebaseConfig from "../firebase-applet-config.json";
+import {
+  clearWorkspaceToken,
+  readWorkspaceToken,
+  writeWorkspaceToken,
+} from "./workspace-token";
 
 export const WORKSPACE_SCOPES = [
   "https://www.googleapis.com/auth/spreadsheets",
@@ -30,7 +35,6 @@ provider.setCustomParameters({
 });
 
 // Strictly in-memory Workspace OAuth token (never localStorage or sessionStorage).
-let cachedAccessToken: string | null = null;
 let isSigningIn = false;
 let connectionTested = false;
 
@@ -103,15 +107,11 @@ export function subscribeAuthState(
 ) {
   return onAuthStateChanged(auth, (user) => {
     if (!user) {
-      cachedAccessToken = null;
+      clearWorkspaceToken();
       onChange(null, null);
       return;
     }
-    if (!isSigningIn && !cachedAccessToken) {
-      onChange(user, null);
-      return;
-    }
-    onChange(user, cachedAccessToken);
+    onChange(user, isSigningIn ? readWorkspaceToken() : null);
   });
 }
 
@@ -125,15 +125,15 @@ export async function signInWithGoogle(): Promise<{ user: User; accessToken: str
         "Google sign-in completed, but no Workspace access token was returned. Please grant Gmail and Google Sheets permissions.",
       );
     }
-    cachedAccessToken = credential.accessToken;
-    return { user: result.user, accessToken: cachedAccessToken };
+    writeWorkspaceToken(credential.accessToken);
+    return { user: result.user, accessToken: credential.accessToken };
   } finally {
     isSigningIn = false;
   }
 }
 
 export function getWorkspaceAccessToken(): string | null {
-  return cachedAccessToken;
+  return readWorkspaceToken();
 }
 
 export async function getFirebaseIdToken(): Promise<string | null> {
@@ -142,6 +142,6 @@ export async function getFirebaseIdToken(): Promise<string | null> {
 }
 
 export async function logout(): Promise<void> {
-  cachedAccessToken = null;
+  clearWorkspaceToken();
   await auth.signOut();
 }

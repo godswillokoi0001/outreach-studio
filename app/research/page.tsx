@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useAuth } from "@/components/AuthProvider";
 import { BatchRunner } from "@/components/Runner";
+import { LoadingPanel } from "@/components/Loading";
 import { Badge, Banner, Card, Empty, Field } from "@/components/ui";
 import { authedPost, errorMessage } from "@/lib/client";
 import { createLead, getSettings, listCampaigns, listLeads } from "@/lib/firestore-store";
@@ -197,11 +198,14 @@ export default function ResearchPage() {
                 <Badge>Qualified: {activeCounts.qualified}</Badge>
                 <Badge>Min score: {active?.config.min_score ?? "—"}</Badge>
               </div>
+              <p className="hint" style={{ marginBottom: 10 }}>
+                Do these in order. Each run saves as it goes, so you can stop at any point and continue later.
+              </p>
               <div className="row">
                 <BatchRunner
                   type="research"
                   campaignId={campaignId}
-                  label="Run research"
+                  label="1 · Research"
                   limit={2}
                   variant="primary"
                   onDone={reload}
@@ -209,19 +213,19 @@ export default function ResearchPage() {
                 <BatchRunner
                   type="qualify"
                   campaignId={campaignId}
-                  label="Run qualification"
+                  label="2 · Qualify"
                   limit={3}
                   onDone={reload}
                 />
                 <BatchRunner
                   type="compose"
                   campaignId={campaignId}
-                  label="Generate emails"
+                  label="3 · Write emails"
                   limit={2}
                   onDone={reload}
                 />
                 <Link className="btn btn-sm" href="/review">
-                  Open email review
+                  4 · Review and send
                 </Link>
               </div>
               <p className="hint" style={{ marginTop: 10 }}>
@@ -282,6 +286,21 @@ export default function ResearchPage() {
               </button>
             )}
           </div>
+          {busy === "discover" && (
+            <div style={{ marginTop: 12 }}>
+              <LoadingPanel
+                label="Searching for real businesses"
+                hint="Gemini searches the web, then checks each candidate before showing it."
+                estimateMs={32_000}
+                steps={[
+                  { label: "Building the search queries", ms: 4_000 },
+                  { label: "Reading search results", ms: 14_000 },
+                  { label: "Checking candidate websites", ms: 9_000 },
+                  { label: "Ranking by fit", ms: 5_000 },
+                ]}
+              />
+            </div>
+          )}
           {notes && (
             <p className="tiny" style={{ marginTop: 10 }}>
               {notes}

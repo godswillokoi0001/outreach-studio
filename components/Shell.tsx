@@ -6,6 +6,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import {
   BarChart3,
   BookOpen,
+  CheckCircle2,
   CheckSquare,
   Clock,
   FileSpreadsheet,
@@ -14,6 +15,8 @@ import {
   LogOut,
   Menu,
   MessageSquare,
+  PanelLeftClose,
+  PanelLeftOpen,
   Plug,
   RefreshCw,
   Search,
@@ -23,11 +26,16 @@ import {
   Users,
   type LucideIcon,
 } from "lucide-react";
+import { AnimatePresence, motion } from "framer-motion";
 import { errorMessage } from "@/lib/client";
 import { subscribeBadgeCounts } from "@/lib/firestore-store";
 import { runSyncBatch } from "@/lib/pipeline-client";
 import { useAuth } from "./AuthProvider";
 import { DashboardChat } from "./DashboardChat";
+import { TaskDockProvider, useTaskDock } from "./Loading";
+import { PageMotion } from "./motion/PageMotion";
+
+const NAV_STATE_KEY = "os:nav:collapsed";
 
 const NAV: { group: string; items: { href: string; label: string; icon: LucideIcon }[] }[] = [
   { group: "Overview", items: [{ href: "/", label: "Dashboard", icon: LayoutGrid }] },
@@ -66,14 +74,39 @@ const NAV: { group: string; items: { href: string; label: string; icon: LucideIc
 ];
 
 export function Shell({ children }: { children: ReactNode }) {
+  return (
+    <TaskDockProvider>
+      <ShellInner>{children}</ShellInner>
+    </TaskDockProvider>
+  );
+}
+
+function ShellInner({ children }: { children: ReactNode }) {
   const pathname = usePathname();
-  const { user, workspaceToken, reconnectWorkspace, signOut } = useAuth();
+  const dock = useTaskDock();
+  const { user, workspaceToken, workspaceEmail, workspacePersistent, reconnectWorkspace, signOut } = useAuth();
   const [open, setOpen] = useState(false);
   const [chatOpen, setChatOpen] = useState(false);
+  const [collapsed, setCollapsed] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
   const [counts, setCounts] = useState({ review: 0, replies: 0, followups: 0 });
   const [syncing, setSyncing] = useState(false);
   const [syncNote, setSyncNote] = useState<string | null>(null);
+
+  useEffect(() => {
+    const frame = requestAnimationFrame(() => {
+      setCollapsed(window.localStorage.getItem(NAV_STATE_KEY) === "collapsed");
+    });
+    return () => cancelAnimationFrame(frame);
+  }, []);
+
+  const toggleNav = () => {
+    setCollapsed((current) => {
+      const next = !current;
+      window.localStorage.setItem(NAV_STATE_KEY, next ? "collapsed" : "expanded");
+      return next;
+    });
+  };
 
   useEffect(() => {
     if (!user?.uid) return;
@@ -88,13 +121,21 @@ export function Shell({ children }: { children: ReactNode }) {
     }
     setSyncing(true);
     setSyncNote(null);
+    const task = dock.start({
+      title: "Syncing replies",
+      detail: "Reading your inbox and classifying new replies…",
+      estimatedMs: 14_000,
+    });
     try {
       const result = await runSyncBatch(user.uid, 15);
-      setSyncNote(result.info || `Synced (${result.processed} new).`);
-      if (result.errors.length) setSyncNote(result.errors[0]);
+      const message = result.info || `Synced (${result.processed} new).`;
+      setSyncNote(result.errors.length ? result.errors[0] : message);
+      task.finish(result.errors.length && !result.processed ? "error" : "done", message);
       if (result.processed > 0) setRefreshKey((k) => k + 1);
     } catch (err) {
-      setSyncNote(errorMessage(err));
+      const message = errorMessage(err);
+      setSyncNote(message);
+      task.finish("error", message);
     } finally {
       setSyncing(false);
     }
@@ -110,14 +151,35 @@ export function Shell({ children }: { children: ReactNode }) {
   const displayName = user.displayName || user.email || "Signed in";
 
   return (
-    <div className={`app${chatOpen ? " chat-open" : ""}`}>
+    <div className="app" data-collapsed={collapsed ? "true" : "false"}>
       <aside className={`sidebar${open ? " open" : ""}`}>
         <div className="brand">
           <div className="brand-mark">OS</div>
-          <div>
+          <div className="brand-copy">
             <div className="brand-name">Outreach Studio</div>
             <div className="brand-sub">Sales intelligence</div>
           </div>
+          <button
+            className="sidebar-toggle"
+            onClick={toggleNav}
+            type="button"
+            aria-label={collapsed ? "Expand navigation" : "Collapse navigation"}
+            aria-expanded={!collapsed}
+            title={collapsed ? "Expand menu" : "Collapse menu"}
+          >
+            <AnimatePresence mode="wait" initial={false}>
+              <motion.span
+                key={collapsed ? "open" : "close"}
+                initial={{ rotate: -90, opacity: 0, scale: 0.75 }}
+                animate={{ rotate: 0, opacity: 1, scale: 1 }}
+                exit={{ rotate: 90, opacity: 0, scale: 0.75 }}
+                transition={{ duration: 0.18, ease: "easeOut" }}
+                style={{ display: "grid", placeItems: "center" }}
+              >
+                {collapsed ? <PanelLeftOpen size={14} /> : <PanelLeftClose size={14} />}
+              </motion.span>
+            </AnimatePresence>
+          </button>
         </div>
         <nav className="nav">
           {NAV.map((group) => (
@@ -133,9 +195,17 @@ export function Shell({ children }: { children: ReactNode }) {
                     href={item.href}
                     className={`nav-link${active ? " active" : ""}`}
                     onClick={() => setOpen(false)}
+                    title={collapsed ? item.label : undefined}
                   >
+                    {active && (
+                      <motion.span
+                        layoutId="nav-pill"
+                        className="nav-pill"
+                        transition={{ type: "spring", stiffness: 380, damping: 32 }}
+                      />
+                    }
                     <ItemIcon className="nav-icon" size={16} strokeWidth={1.7} aria-hidden="true" />
-                    <span>{item.label}</span>
+                    <span className="nav-text">{item.label}</span>
                     {count ? <span className="nav-count">{count}</span> : null}
                   </Link>
                 );
@@ -159,13 +229,30 @@ export function Shell({ children }: { children: ReactNode }) {
           <div className="topbar-title">Outreach Studio</div>
           <div className="topbar-spacer" />
           {syncNote && <span className="tiny" style={{ maxWidth: 280 }}>{syncNote}</span>}
-          {!workspaceToken && (
+          {workspaceToken ? (
+            <span
+              className="badge"
+              data-tone="ok"
+              title={
+                workspacePersistent
+                  ? `Connected${workspaceEmail ? ` as ${workspaceEmail}` : ""} - stays connected across reloads`
+                  : `Connected${workspaceEmail ? ` as ${workspaceEmail}` : ""} for this session`
+              }
+            >
+              <CheckCircle2 size={12} />
+              <span className="nowrap">
+                {workspaceEmail ? workspaceEmail.split("@")[0] : "Google"} connected
+              </span>
+            </span>
+          ) : (
             <button
               className="btn btn-sm btn-primary"
               onClick={() => void reconnectWorkspace()}
               type="button"
+              title="Grant Google Sheets and Gmail access"
             >
-              Reconnect Gmail &amp; Sheets
+              <Plug size={13} />
+              <span>Connect Google</span>
             </button>
           )}
           <button
@@ -190,28 +277,9 @@ export function Shell({ children }: { children: ReactNode }) {
             <span>Sign out</span>
           </button>
         </header>
-        <div key={refreshKey} className="page-slot">
-          {children}
-        </div>
+
+        <PageMotion>{children}</PageMotion>
       </div>
-
-      <DashboardChat
-        open={chatOpen}
-        onClose={() => setChatOpen(false)}
-        onDataMutated={() => setRefreshKey((k) => k + 1)}
-      />
-
-      {!chatOpen && (
-        <button
-          type="button"
-          className="chat-fab"
-          onClick={() => setChatOpen(true)}
-          aria-label="Open AI Operator"
-        >
-          <Sparkles size={16} />
-          <span>AI Operator</span>
-        </button>
-      )}
     </div>
   );
-}
+}

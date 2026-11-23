@@ -1,6 +1,9 @@
 "use client";
 
 import type { ReactNode } from "react";
+import { AnimatePresence, motion } from "framer-motion";
+import { CountUp } from "./motion/CountUp";
+import { LoadingPanel } from "./Loading";
 
 export function Card({
   title,
@@ -35,11 +38,16 @@ export function Card({
 
 export function Stat({ label, value, note, accent }: { label: string; value: ReactNode; note?: string; accent?: boolean }) {
   return (
-    <div className={`stat${accent ? " accent" : ""}`}>
+    <motion.div
+      className={`stat${accent ? " accent" : ""}`}
+      whileHover={{ y: -3 }}
+      whileTap={{ scale: 0.995 }}
+      transition={{ type: "spring", stiffness: 340, damping: 24 }}
+    >
       <div className="stat-label">{label}</div>
-      <div className="stat-value">{value}</div>
+      <div className="stat-value">{typeof value === "number" ? <CountUp value={value} /> : value}</div>
       {note && <div className="stat-note">{note}</div>}
-    </div>
+    </motion.div>
   );
 }
 
@@ -78,12 +86,21 @@ export function Banner({ tone, children }: { tone?: string; children: ReactNode 
   );
 }
 
-export function Progress({ label }: { label: string }) {
+export function Progress({
+  label,
+  hint,
+  estimateMs = 2000,
+}: {
+  label: string;
+  hint?: string;
+  estimateMs?: number;
+}) {
   return (
-    <div className="progress">
-      <span className="spinner" />
-      <span>{label}</span>
-    </div>
+    <LoadingPanel
+      label={label.replace(/[\u2026.]+$/, "")}
+      hint={hint}
+      estimateMs={estimateMs}
+    />
   );
 }
 
@@ -100,27 +117,42 @@ export function Modal({
   children: ReactNode;
   large?: boolean;
 }) {
-  if (!open) return null;
   return (
-    <div className="modal-backdrop" onClick={onClose} role="presentation">
-      <div
-        className={`modal${large ? " modal-lg" : ""}`}
-        onClick={(event) => event.stopPropagation()}
-        role="dialog"
-        aria-modal="true"
-        aria-label={title}
-      >
-        <div className="row" style={{ marginBottom: 14 }}>
-          <h2 style={{ fontSize: 17 }}>{title}</h2>
-          <div className="row-end">
-            <button className="btn btn-ghost btn-sm" onClick={onClose} type="button">
-              Close
-            </button>
-          </div>
-        </div>
-        {children}
-      </div>
-    </div>
+    <AnimatePresence>
+      {open && (
+        <motion.div
+          className="modal-backdrop"
+          onClick={onClose}
+          role="presentation"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          transition={{ duration: 0.18, ease: "easeOut" }}
+        >
+          <motion.div
+            className={`modal${large ? " modal-lg" : ""}`}
+            onClick={(event) => event.stopPropagation()}
+            role="dialog"
+            aria-modal="true"
+            aria-label={title}
+            initial={{ opacity: 0, y: 18, scale: 0.97 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: 12, scale: 0.98 }}
+            transition={{ type: "spring", stiffness: 340, damping: 30 }}
+          >
+            <div className="row" style={{ marginBottom: 14 }}>
+              <h2 style={{ fontSize: 17 }}>{title}</h2>
+              <div className="row-end">
+                <button className="btn btn-ghost btn-sm" onClick={onClose} type="button">
+                  Close
+                </button>
+              </div>
+            </div>
+            {children}
+          </motion.div>
+        </motion.div>
+      )}
+    </AnimatePresence>
   );
 }
 

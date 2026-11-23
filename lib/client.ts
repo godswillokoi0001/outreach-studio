@@ -1,6 +1,7 @@
 "use client";
 
-import { getFirebaseIdToken, getWorkspaceAccessToken } from "./firebase";
+import { getFirebaseIdToken } from "./firebase";
+import { ensureWorkspaceToken, readWorkspaceToken } from "./workspace";
 import { extractErrorMessageFromJson } from "./gemini-utils";
 
 export async function authedPost<T>(
@@ -20,10 +21,11 @@ export async function authedPost<T>(
   };
 
   if (options?.requireWorkspace) {
-    const workspaceToken = getWorkspaceAccessToken();
+    const ready = await ensureWorkspaceToken();
+    const workspaceToken = ready ? readWorkspaceToken() : null;
     if (!workspaceToken) {
       throw new Error(
-        "Google Workspace session needs a fresh sign-in. Click 'Reconnect Gmail & Sheets' in the top bar.",
+        "Google Workspace is not connected. Click 'Connect Google' in the top bar to grant Sheets and Gmail access.",
       );
     }
     headers.Authorization = `Bearer ${workspaceToken}`;

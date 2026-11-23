@@ -223,6 +223,19 @@ export default function ReviewPage() {
             can be sent, and only inside your sending window and limits.
           </p>
         </div>
+        <div className="row-end">
+          <button
+            className="btn btn-sm btn-primary"
+            onClick={() => {
+              const nextInQueue = filtered.find((item) => item.status === "pending_approval") ?? filtered[0];
+              if (nextInQueue) openMessageModal(nextInQueue);
+            }}
+            disabled={filtered.length === 0}
+            type="button"
+          >
+            Review next email
+          </button>
+        </div>
       </div>
 
       <div className="stack">
@@ -356,40 +369,43 @@ export default function ReviewPage() {
                 </p>
               </div>
             )}
-            <div className="row">
-              <button
-                className="btn btn-sm"
-                onClick={() => void act("edit", open.id)}
-                disabled={busy !== null}
-                type="button"
-              >
-                Save changes
-              </button>
+            <div className="row" style={{ marginBottom: 10 }}>
               <button
                 className="btn btn-sm btn-primary"
                 onClick={() => void act("approve", open.id)}
                 disabled={busy !== null}
                 type="button"
               >
-                Approve email
+                Approve and send later
               </button>
               <button
                 className="btn btn-sm"
+                onClick={() => void act("edit", open.id)}
+                disabled={busy !== null}
+                type="button"
+              >
+                Save my edits
+              </button>
+              <button
+                className="btn btn-sm btn-ghost"
                 onClick={() => void act("regenerate", open.id)}
                 disabled={busy !== null}
                 type="button"
               >
                 {busy === "regenerate" ? "Rewriting…" : "Regenerate with AI"}
               </button>
+              <span className="tiny row-end">To: {open.lead_email ?? "no address"}</span>
+            </div>
+            <div className="row">
               <button
                 className="btn btn-sm btn-danger"
                 onClick={() => void act("reject", open.id)}
                 disabled={busy !== null}
                 type="button"
               >
-                Reject
+                Reject this email
               </button>
-              <span className="tiny row-end">To: {open.lead_email ?? "no address"}</span>
+              <span className="tiny">Rejected emails are never sent.</span>
             </div>
           </>
         )}

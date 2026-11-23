@@ -12,8 +12,38 @@ import {
   type BatchResult,
 } from "@/lib/pipeline-client";
 import { useAuth } from "./AuthProvider";
+import { useTaskDock, type TaskHandle } from "./Loading";
 
 let activeRunner: string | null = null;
+
+type RunnerType = "research" | "qualify" | "compose" | "send" | "followup" | "sync";
+
+const PER_ITEM_MS: Record<RunnerType, number> = {
+  research: 12_000,
+  qualify: 8_000,
+  compose: 12_000,
+  send: 4_000,
+  followup: 12_000,
+  sync: 8_000,
+};
+
+const TITLES: Record<RunnerType, string> = {
+  research: "Researching prospects",
+  qualify: "Qualifying prospects",
+  compose: "Writing emails",
+  send: "Sending emails",
+  followup: "Preparing follow-ups",
+  sync: "Syncing replies",
+};
+
+const START_DETAIL: Record<RunnerType, string> = {
+  research: "Fetching websites and collecting evidence…",
+  qualify: "Scoring opportunities against your offer…",
+  compose: "Drafting first emails in your voice…",
+  send: "Checking Gmail and your send limits…",
+  followup: "Finding prospects whose follow-up is due…",
+  sync: "Reading your inbox for new replies…",
+};
 
 export function BatchRunner({
   type,
@@ -24,7 +54,7 @@ export function BatchRunner({
   confirmText,
   limit = 3,
 }: {
-  type: "research" | "qualify" | "compose" | "send" | "followup" | "sync";
+  type: RunnerType;
   campaignId?: string;
   label: string;
   variant?: "default" | "primary";
@@ -33,6 +63,7 @@ export function BatchRunner({
   limit?: number;
 }) {
   const { user, workspaceToken, reconnectWorkspace } = useAuth();
+  const dock = useTaskDock();
   const [running, setRunning] = useState(false);
   const [note, setNote] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -67,38 +98,83 @@ export function BatchRunner({
     stopRef.current = false;
     setRunning(true);
     setError(null);
-    setNote("Starting…");
+    setNote(null);
+
+    const startedAt = Date.now();
+    let handle: TaskHandle = { update: () => undefined, finish: () => undefined };
+    handle = dock.start({
+      title: TITLES[type],
+      detail: START_DETAIL[type],
+      estimatedMs: Math.max(1, limit) * PER_ITEM_MS[type] + 2500,
+      onStop: () => {
+        stopRef.current = true;
+        handle.update({ detail: "Stopping after the current item…" });
+      },
+    });
+
     let total = 0;
+    let ended = false;
     try {
       for (let i = 0; i < 80; i++) {
         if (stopRef.current) {
+          ended = true;
+          handle.finish("stopped", `Stopped after ${total} item${total === 1 ? "" : "s"}. Progress is saved.`);
           setNote(`Stopped. ${total} processed; progress is saved.`);
           break;
         }
+
         const result = await executeBatch();
         total += result.processed;
         if (result.errors.length) setError(result.errors.slice(0, 3).join(" · "));
-        if (result.info) setNote(result.info);
-        else setNote(`${total} processed${result.remaining ? `, ${result.remaining} remaining` : ""}…`);
+
+        const lastDetail =
+          result.details.length > 0
+            ? result.details[result.details.length - 1]
+            : result.info ?? `${total} processed so far…`;
+
+        const remainingMs =
+          Math.max(0, result.remaining) * PER_ITEM_MS[type] + Math.max(0, result.waitSeconds ?? 0) * 1000;
+
+        handle.update({
+          detail: lastDetail,
+          count: total,
+          estimatedMs: Date.now() - startedAt + Math.max(1200, remainingMs),
+        });
 
         if (result.remaining <= 0) {
-          setNote(total ? `Done: ${total} processed.` : result.info || "Nothing to process.");
+          ended = true;
+          const message = total ? `Finished: ${total} processed.` : result.info || "Nothing to process.";
+          handle.finish(result.errors.length && !total ? "error" : "done", message);
+          setNote(message);
           break;
         }
         if (result.processed === 0 && !result.waitSeconds) {
-          setNote(result.info || "Nothing further to process.");
+          ended = true;
+          const message = result.info || "Nothing further to process.";
+          handle.finish("done", message);
+          setNote(message);
           break;
         }
         if (result.waitSeconds) {
           const wait = Math.min(result.waitSeconds, 60);
-          setNote(`${result.info ? `${result.info} ` : ""}Waiting ${wait}s…`);
+          handle.update({
+            detail: `${result.info ? `${result.info}. ` : ""}Waiting ${wait}s to respect your send interval…`,
+            estimatedMs: Date.now() - startedAt + wait * 1000 + Math.max(1200, result.remaining * PER_ITEM_MS[type]),
+          });
           await new Promise((resolve) => setTimeout(resolve, wait * 1000));
         }
       }
+      if (!ended) {
+        const message = `Processed ${total}. Press the button again to keep going from where this stopped.`;
+        handle.finish("done", message);
+        setNote(message);
+      }
       await onDone?.();
     } catch (err) {
-      setError(errorMessage(err));
+      const message = errorMessage(err);
+      setError(message);
       setNote(null);
+      handle.finish("error", message);
     } finally {
       activeRunner = null;
       setRunning(false);
@@ -115,19 +191,18 @@ export function BatchRunner({
       >
         {running ? (
           <>
-            <span className="spinner" /> {label}…
+            <span className="spinner" /> Working…
           </>
         ) : (
           label
         )}
       </button>
-      {running && (
-        <button className="btn btn-sm btn-ghost" onClick={() => (stopRef.current = true)} type="button">
-          Stop
-        </button>
-      )}
       {note && !error && <span className="tiny">{note}</span>}
-      {error && <span className="tiny" style={{ color: "var(--bad)" }}>{error}</span>}
+      {error && (
+        <span className="tiny" style={{ color: "var(--bad)" }}>
+          {error}
+        </span>
+      )}
     </span>
   );
 }

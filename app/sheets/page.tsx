@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { useAuth } from "@/components/AuthProvider";
 import { Banner, Card, Empty, Field } from "@/components/ui";
+import { LoadingPanel } from "@/components/Loading";
 import { authedPost, errorMessage } from "@/lib/client";
 import { LEAD_FIELDS } from "@/lib/columns";
 import { importSheetRows, listCampaigns } from "@/lib/firestore-store";
@@ -172,9 +173,9 @@ export default function SheetsPage() {
       <div className="stack">
         {!workspaceToken && (
           <Banner tone="warn">
-            <strong>Google Sheets access needs reconnection for this tab session.</strong>{" "}
+            <strong>Connect Google to read and write sheets.</strong>{" "}
             <button className="btn btn-sm" style={{ marginLeft: 8 }} onClick={() => void reconnectWorkspace()} type="button">
-              Grant / Reconnect Google Sheets Access
+              Connect Google
             </button>
           </Banner>
         )}
@@ -202,6 +203,16 @@ export default function SheetsPage() {
               {busy === "tabs" ? "Loading…" : "Load worksheets"}
             </button>
           </div>
+          {busy === "tabs" && (
+            <div style={{ marginTop: 12 }}>
+              <LoadingPanel
+                label="Reading your spreadsheet"
+                hint="Asking Google Sheets for its worksheets…"
+                estimateMs={4_000}
+                compact
+              />
+            </div>
+          )}
         </Card>
 
         {sheet && (
@@ -231,6 +242,16 @@ export default function SheetsPage() {
                 {busy === "preview" ? "Reading…" : "Preview and map columns"}
               </button>
             </div>
+            {busy === "preview" && (
+              <div style={{ marginTop: 12 }}>
+                <LoadingPanel
+                  label="Previewing and mapping columns"
+                  hint="Matching your headers to prospect fields…"
+                  estimateMs={5_500}
+                  compact
+                />
+              </div>
+            )}
             {sheet.tabs.length === 0 && (
               <Empty title="No worksheets found">Check that the spreadsheet has a data tab.</Empty>
             )}
@@ -278,6 +299,16 @@ export default function SheetsPage() {
                     </tbody>
                   </table>
                 </div>
+                {busy === "import" && (
+                  <div style={{ marginBottom: 14 }}>
+                    <LoadingPanel
+                      label={`Importing ${limit} prospects`}
+                      hint="Saving to Firestore and skipping duplicate email addresses…"
+                      estimateMs={Math.min(60_000, 1_500 + limit * 120)}
+                      compact
+                    />
+                  </div>
+                )}
                 <div className="row">
                   <Field label="How many prospects to import">
                     <input
@@ -338,6 +369,16 @@ export default function SheetsPage() {
               {busy === "writeback" ? "Writing…" : "Write statuses"}
             </button>
           </div>
+          {busy === "writeback" && (
+            <div style={{ marginTop: 12 }}>
+              <LoadingPanel
+                label="Writing statuses back to your sheet"
+                hint="Only the Status column is touched."
+                estimateMs={6_000}
+                compact
+              />
+            </div>
+          )}
         </Card>
       </div>
     </main>

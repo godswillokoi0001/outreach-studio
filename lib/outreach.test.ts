@@ -215,10 +215,13 @@ test("computeDashboardStats, computeAnalyticsMetrics, and findFollowupCandidates
 });
 
 test("resolveModel normalizes models/ prefix and maps deprecated models safely", () => {
-  assert.equal(resolveModel("models/gemini-4-hydrogen"), "gemini-4-hydrogen");
+  assert.equal(resolveModel("models/gemini-3.5-flash"), "gemini-3.5-flash");
   assert.equal(resolveModel("gemini-1.5-flash"), DEFAULT_GEMINI_MODEL);
   assert.equal(resolveModel("gemini-2.0-flash"), DEFAULT_GEMINI_MODEL);
+  // ids saved by an earlier build that never existed on the API
+  assert.equal(resolveModel("gemini-4-hydrogen"), DEFAULT_GEMINI_MODEL);
   assert.equal(resolveModel("gemini-3.1-flash-lite"), FALLBACK_GEMINI_MODEL);
+  assert.equal(resolveModel("gemini-flash-latest"), DEFAULT_GEMINI_MODEL);
   assert.equal(resolveModel(""), DEFAULT_GEMINI_MODEL);
 });
 
