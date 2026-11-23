@@ -17,7 +17,8 @@ import { AI_PROVIDERS, getProvider } from "@/lib/ai/registry";
 import type { AiModelOption, AiProviderId } from "@/lib/ai/types";
 import { aiConfigFromSettings, setActiveAiConfig } from "@/lib/ai-client";
 import { authedPost, errorMessage } from "@/lib/client";
-import { saveSupabaseSettings, getSupabaseSettings } from "@/lib/supabase";
+import { saveSettings } from "@/lib/firestore-store";
+import { saveSupabaseSettings } from "@/lib/supabase";
 import type { Settings } from "@/lib/types";
 import { Badge, Banner, Card, Field } from "./ui";
 
@@ -78,31 +79,32 @@ export function AiEngineCard({
   const persist = useCallback(
     async (patch: Partial<Settings>): Promise<Settings | null> => {
       onChange(patch);
-      let fresh: Settings | null = null;
       try {
-        const saved = await saveSupabaseSettings(patch, uid);
-        if (saved) {
-          fresh = await getSupabaseSettings(uid);
-          onSaved(fresh ?? settings);
-          setActiveAiConfig(aiConfigFromSettings(fresh ?? settings));
-        } else {
-          onSaved(settings);
+        const saved = await saveSettings(uid, patch);
+        try {
+          await saveSupabaseSettings(patch, uid);
+        } catch {
+          // Supabase is secondary
         }
-        return saved ? fresh : settings;
+        onSaved(saved);
+        setActiveAiConfig(aiConfigFromSettings(saved));
+        return saved;
       } catch (err) {
         // The key is verified and usable for this session even if the settings
-        // write is blocked (for example until the latest Firestore rules ship).
+        // write is blocked.
+        const fallbackSettings = { ...settings, ...patch };
         setActiveAiConfig({
           provider: (patch.ai_provider ?? settings.ai_provider ?? "gemini") as AiProviderId,
           model: patch.model ?? settings.model,
           apiKey: (patch.ai_api_key ?? settings.ai_api_key ?? "").trim(),
           ...(patch.ai_base_url ? { baseUrl: patch.ai_base_url } : {}),
         });
+        onSaved(fallbackSettings);
         setNote({
           tone: "info",
           text: `The key works and is active for this session, but saving it failed: ${errorMessage(err)}`,
         });
-        return null;
+        return fallbackSettings;
       }
     },
     [onChange, onSaved, settings, uid],

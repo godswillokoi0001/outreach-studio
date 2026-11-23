@@ -262,7 +262,7 @@ export default function IntegrationsPage() {
               <KeyRound size={13} />
               <span>{busy === "test" ? "Testing AI…" : "Test connection"}</span>
             </button>
-            <Link className="btn btn-sm" href="/settings">
+            <Link className="btn btn-sm" href="/settings#ai-engine">
               Manage keys &amp; models
             </Link>
             <span className="tiny">

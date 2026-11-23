@@ -23,18 +23,23 @@ export const supabaseServer = createClient<Database>(supabaseUrl, supabaseServic
 
 /** Get settings for a user from Supabase (server side). */
 export async function getSupabaseSettingsServer(): Promise<Settings | null> {
-  const { data, error } = await supabaseServer
-    .from("settings")
-    .select("id, ai_provider, ai_api_key, ai_base_url, ai_verified_at, ai_key_hint")
-    .single();
+  try {
+    const { data, error } = await supabaseServer
+      .from("settings")
+      .select("id, ai_provider, ai_api_key, ai_base_url, ai_verified_at, ai_key_hint")
+      .limit(1)
+      .maybeSingle();
 
-  if (error) {
-    if ((error as { code?: string }).code === "PGRST_NOT_FOUND" || (error as { code?: string }).code === "PGRST116") return null;
-    console.error("[supabase-server] getSettings error:", error);
+    if (error) {
+      if ((error as { code?: string }).code === "PGRST_NOT_FOUND" || (error as { code?: string }).code === "PGRST116") return null;
+      console.warn("[supabase-server] getSettings notice:", error.message);
+      return null;
+    }
+
+    return (data as unknown as Settings) ?? null;
+  } catch {
     return null;
   }
-
-  return data ?? null;
 }
 
 /** Save settings to Supabase (server side). */

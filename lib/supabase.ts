@@ -33,37 +33,45 @@ export type SupabaseClient = typeof supabase;
 export async function getSupabaseSettings(uid: string): Promise<Settings | null> {
   if (!supabase) return null;
 
-  const { data, error } = await supabase
-    .from("settings")
-    .select("ai_provider, ai_api_key, ai_base_url, ai_verified_at, ai_key_hint")
-    .single();
+  try {
+    const { data, error } = await supabase
+      .from("settings")
+      .select("ai_provider, ai_api_key, ai_base_url, ai_verified_at, ai_key_hint")
+      .limit(1)
+      .maybeSingle();
 
-  if (error) {
-    if ((error as { code?: string }).code === "PGRST_NOT_FOUND") return null;
-    console.error("[supabase] getSettings error:", error);
+    if (error || !data) return null;
+    return data as unknown as Settings;
+  } catch {
     return null;
   }
-
-  return data ?? null;
 }
 
 export async function saveSupabaseSettings(partial: Partial<Settings>, uid: string): Promise<boolean> {
   if (!supabase) return false;
 
-  const { data, error } = await supabase
-    .from("settings")
-    .upsert({ ...partial, ownerId: uid } as any /* eslint-disable-line @typescript-eslint/no-explicit-any */, {
-      onConflict: "id",
-    })
-    .select("id")
-    .single();
+  try {
+    const payload = {
+      ai_provider: partial.ai_provider,
+      ai_api_key: partial.ai_api_key,
+      ai_base_url: partial.ai_base_url,
+      ai_verified_at: partial.ai_verified_at,
+      ai_key_hint: partial.ai_key_hint,
+      updated_at: new Date().toISOString(),
+    };
+    const { error } = await supabase
+      .from("settings")
+      .upsert(payload as any); /* eslint-disable-line @typescript-eslint/no-explicit-any */
 
-  if (error) {
-    console.error("[supabase] saveSettings error:", error);
+    if (error) {
+      console.warn("[supabase] saveSettings notice:", error.message);
+      return false;
+    }
+
+    return true;
+  } catch {
     return false;
   }
-
-  return true;
 }
 
 /** Push device registration is Firebase-only by design. Supabase cannot

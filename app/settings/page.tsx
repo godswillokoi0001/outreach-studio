@@ -6,17 +6,19 @@ import { Banner, Card, Empty, Field, Progress } from "@/components/ui";
 import { errorMessage } from "@/lib/client";
 import {
   addSuppression,
+  getSettings,
   listSuppressions,
   removeSuppression,
+  saveSettings,
 } from "@/lib/firestore-store";
 import { getSupabaseSettings, saveSupabaseSettings } from "@/lib/supabase";
 import { fmtDate } from "@/lib/format";
-import type { Settings, Suppression } from "@/lib/types";
+import { DEFAULT_SETTINGS, type Settings, type Suppression } from "@/lib/types";
 import { AiEngineCard } from "@/components/AiEngineCard";
 
 export default function SettingsPage() {
   const { user } = useAuth();
-  const [form, setForm] = useState<Settings | null>(null);
+  const [form, setForm] = useState<Settings>(DEFAULT_SETTINGS);
   const [suppressions, setSuppressions] = useState<Suppression[]>([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -27,10 +29,23 @@ export default function SettingsPage() {
 
   useEffect(() => {
     let active = true;
-    Promise.all([getSupabaseSettings(user.uid), listSuppressions(user.uid)]).then(
-      ([s, sup]) => {
+    Promise.all([
+      getSettings(user.uid),
+      getSupabaseSettings(user.uid).catch(() => null),
+      listSuppressions(user.uid),
+    ]).then(
+      ([fsSettings, sbSettings, sup]) => {
         if (!active) return;
-        setForm(s ?? null);
+        const initial: Settings = { ...(fsSettings || DEFAULT_SETTINGS) };
+        if (sbSettings) {
+          if (sbSettings.ai_api_key) initial.ai_api_key = sbSettings.ai_api_key;
+          if (sbSettings.ai_provider) initial.ai_provider = sbSettings.ai_provider;
+          if (sbSettings.ai_base_url) initial.ai_base_url = sbSettings.ai_base_url;
+          if (sbSettings.model) initial.model = sbSettings.model;
+          if (sbSettings.ai_key_hint) initial.ai_key_hint = sbSettings.ai_key_hint;
+          if (sbSettings.ai_verified_at) initial.ai_verified_at = sbSettings.ai_verified_at;
+        }
+        setForm(initial);
         setSuppressions(sup);
         setLoading(false);
       },
@@ -46,21 +61,20 @@ export default function SettingsPage() {
   }, [user.uid]);
 
   const set = <K extends keyof Settings>(key: K, value: Settings[K]) =>
-    setForm((prev) => (prev ? { ...prev, [key]: value } : prev));
+    setForm((prev) => ({ ...prev, [key]: value }));
 
   const save = async () => {
-    if (!form) return;
     setBusy(true);
     setFailure(null);
     setNotice(null);
     try {
-      const saved = await saveSupabaseSettings(form, user.uid);
-      if (saved) {
-        const fresh = await getSupabaseSettings(user.uid);
-        setForm(fresh ?? null);
-      } else {
-        setForm(form);
+      const saved = await saveSettings(user.uid, form);
+      try {
+        await saveSupabaseSettings(form, user.uid);
+      } catch {
+        // Supabase is secondary
       }
+      setForm(saved);
       setNotice("Settings saved.");
     } catch (err) {
       setFailure(errorMessage(err));
@@ -108,174 +122,170 @@ export default function SettingsPage() {
       <div className="stack">
         {failure && <Banner tone="bad">{failure}</Banner>}
         {notice && <Banner tone="ok">{notice}</Banner>}
-        {loading && !form && <Progress label="Loading settings…" />}
+        {loading && <Progress label="Loading settings…" />}
 
-        {form && (
-          <Card title="Sender identity" sub="Used in every email and in the signature.">
-            <div className="grid grid-3">
-              <Field label="Your name">
-                <input
-                  className="input"
-                  value={form.sender_name}
-                  onChange={(e) => set("sender_name", e.target.value)}
-                />
-              </Field>
-              <Field label="Role / positioning">
-                <input
-                  className="input"
-                  value={form.sender_role}
-                  onChange={(e) => set("sender_role", e.target.value)}
-                />
-              </Field>
-              <Field label="Company">
-                <input
-                  className="input"
-                  value={form.sender_company}
-                  onChange={(e) => set("sender_company", e.target.value)}
-                />
-              </Field>
-              <Field label="Reply-to address (optional)" hint="Defaults to the connected Gmail address.">
-                <input
-                  className="input"
-                  value={form.sender_email}
-                  onChange={(e) => set("sender_email", e.target.value)}
-                  placeholder="you@gmail.com"
-                />
-              </Field>
-              <Field label="Unsubscribe address (optional)" hint="Adds a List-Unsubscribe header for compliance.">
-                <input
-                  className="input"
-                  value={form.unsubscribe_email}
-                  onChange={(e) => set("unsubscribe_email", e.target.value)}
-                />
-              </Field>
-            </div>
-            <Field label="Physical address (optional)" hint="Some jurisdictions require a postal address in cold email.">
+        <Card title="Sender identity" sub="Used in every email and in the signature.">
+          <div className="grid grid-3">
+            <Field label="Your name">
               <input
                 className="input"
-                value={form.physical_address}
-                onChange={(e) => set("physical_address", e.target.value)}
+                value={form.sender_name}
+                onChange={(e) => set("sender_name", e.target.value)}
               />
             </Field>
-          </Card>
-        )}
+            <Field label="Role / positioning">
+              <input
+                className="input"
+                value={form.sender_role}
+                onChange={(e) => set("sender_role", e.target.value)}
+              />
+            </Field>
+            <Field label="Company">
+              <input
+                className="input"
+                value={form.sender_company}
+                onChange={(e) => set("sender_company", e.target.value)}
+              />
+            </Field>
+            <Field label="Reply-to address (optional)" hint="Defaults to the connected Gmail address.">
+              <input
+                className="input"
+                value={form.sender_email}
+                onChange={(e) => set("sender_email", e.target.value)}
+                placeholder="you@gmail.com"
+              />
+            </Field>
+            <Field label="Unsubscribe address (optional)" hint="Adds a List-Unsubscribe header for compliance.">
+              <input
+                className="input"
+                value={form.unsubscribe_email}
+                onChange={(e) => set("unsubscribe_email", e.target.value)}
+              />
+            </Field>
+          </div>
+          <Field label="Physical address (optional)" hint="Some jurisdictions require a postal address in cold email.">
+            <input
+              className="input"
+              value={form.physical_address}
+              onChange={(e) => set("physical_address", e.target.value)}
+            />
+          </Field>
+        </Card>
 
-        {form && (
+        <div id="ai-engine">
           <AiEngineCard
             uid={user.uid}
             settings={form}
-            onChange={(patch) => setForm((prev) => (prev ? { ...prev, ...patch } : prev))}
+            onChange={(patch) => setForm((prev) => ({ ...prev, ...patch }))}
             onSaved={(saved) => setForm(saved)}
           />
-        )}
+        </div>
 
-        {form && (
-          <Card
-            title="Sending controls"
-            sub="Conservatively enforced to stay inside Gmail limits and anti-spam expectations."
-          >
-            <div className="grid grid-3">
-              <Field label="Daily send limit" hint="25/day is a safe ceiling for a regular Gmail account.">
-                <input
-                  className="input"
-                  type="number"
-                  min={1}
-                  max={200}
-                  value={form.daily_limit}
-                  onChange={(e) => set("daily_limit", Number(e.target.value))}
-                />
-              </Field>
-              <Field label="Campaign send limit">
-                <input
-                  className="input"
-                  type="number"
-                  min={1}
-                  max={500}
-                  value={form.campaign_limit}
-                  onChange={(e) => set("campaign_limit", Number(e.target.value))}
-                />
-              </Field>
-              <Field label="Seconds between emails">
-                <input
-                  className="input"
-                  type="number"
-                  min={30}
-                  max={900}
-                  value={form.interval_seconds}
-                  onChange={(e) => set("interval_seconds", Number(e.target.value))}
-                />
-              </Field>
-              <Field label="Sending starts (hour)">
-                <input
-                  className="input"
-                  type="number"
-                  min={0}
-                  max={23}
-                  value={form.send_window_start}
-                  onChange={(e) => set("send_window_start", Number(e.target.value))}
-                />
-              </Field>
-              <Field label="Sending ends (hour)">
-                <input
-                  className="input"
-                  type="number"
-                  min={1}
-                  max={24}
-                  value={form.send_window_end}
-                  onChange={(e) => set("send_window_end", Number(e.target.value))}
-                />
-              </Field>
-              <Field label="Sending days" hint="1 = Monday … 7 = Sunday">
-                <input
-                  className="input"
-                  value={form.send_days}
-                  onChange={(e) => set("send_days", e.target.value)}
-                />
-              </Field>
-              <Field label="Timezone offset (minutes from UTC)" hint="60 = UTC+1 (WAT).">
-                <input
-                  className="input"
-                  type="number"
-                  min={-720}
-                  max={840}
-                  value={form.timezone_offset}
-                  onChange={(e) => set("timezone_offset", Number(e.target.value))}
-                />
-              </Field>
-              <Field label="Default follow-up gap (days)">
-                <input
-                  className="input"
-                  type="number"
-                  min={1}
-                  max={30}
-                  value={form.followup_days}
-                  onChange={(e) => set("followup_days", Number(e.target.value))}
-                />
-              </Field>
-              <Field label="Default minimum score">
-                <input
-                  className="input"
-                  type="number"
-                  min={0}
-                  max={100}
-                  value={form.min_score}
-                  onChange={(e) => set("min_score", Number(e.target.value))}
-                />
-              </Field>
-            </div>
-            <div className="row">
-              <button
-                className="btn btn-primary"
-                onClick={() => void save()}
-                disabled={busy}
-                type="button"
-              >
-                {busy ? "Saving…" : "Save settings"}
-              </button>
-              <span className="tiny">Sending outside configured hours is refused automatically.</span>
-            </div>
-          </Card>
-        )}
+        <Card
+          title="Sending controls"
+          sub="Conservatively enforced to stay inside Gmail limits and anti-spam expectations."
+        >
+          <div className="grid grid-3">
+            <Field label="Daily send limit" hint="25/day is a safe ceiling for a regular Gmail account.">
+              <input
+                className="input"
+                type="number"
+                min={1}
+                max={200}
+                value={form.daily_limit}
+                onChange={(e) => set("daily_limit", Number(e.target.value))}
+              />
+            </Field>
+            <Field label="Campaign send limit">
+              <input
+                className="input"
+                type="number"
+                min={1}
+                max={500}
+                value={form.campaign_limit}
+                onChange={(e) => set("campaign_limit", Number(e.target.value))}
+              />
+            </Field>
+            <Field label="Seconds between emails">
+              <input
+                className="input"
+                type="number"
+                min={30}
+                max={900}
+                value={form.interval_seconds}
+                onChange={(e) => set("interval_seconds", Number(e.target.value))}
+              />
+            </Field>
+            <Field label="Sending starts (hour)">
+              <input
+                className="input"
+                type="number"
+                min={0}
+                max={23}
+                value={form.send_window_start}
+                onChange={(e) => set("send_window_start", Number(e.target.value))}
+              />
+            </Field>
+            <Field label="Sending ends (hour)">
+              <input
+                className="input"
+                type="number"
+                min={1}
+                max={24}
+                value={form.send_window_end}
+                onChange={(e) => set("send_window_end", Number(e.target.value))}
+              />
+            </Field>
+            <Field label="Sending days" hint="1 = Monday … 7 = Sunday">
+              <input
+                className="input"
+                value={form.send_days}
+                onChange={(e) => set("send_days", e.target.value)}
+              />
+            </Field>
+            <Field label="Timezone offset (minutes from UTC)" hint="60 = UTC+1 (WAT).">
+              <input
+                className="input"
+                type="number"
+                min={-720}
+                max={840}
+                value={form.timezone_offset}
+                onChange={(e) => set("timezone_offset", Number(e.target.value))}
+              />
+            </Field>
+            <Field label="Default follow-up gap (days)">
+              <input
+                className="input"
+                type="number"
+                min={1}
+                max={30}
+                value={form.followup_days}
+                onChange={(e) => set("followup_days", Number(e.target.value))}
+              />
+            </Field>
+            <Field label="Default minimum score">
+              <input
+                className="input"
+                type="number"
+                min={0}
+                max={100}
+                value={form.min_score}
+                onChange={(e) => set("min_score", Number(e.target.value))}
+              />
+            </Field>
+          </div>
+          <div className="row">
+            <button
+              className="btn btn-primary"
+              onClick={() => void save()}
+              disabled={busy}
+              type="button"
+            >
+              {busy ? "Saving…" : "Save settings"}
+            </button>
+            <span className="tiny">Sending outside configured hours is refused automatically.</span>
+          </div>
+        </Card>
 
         <Card title="Suppression list" sub="Contacts who must never be emailed again, including automatic unsubscribes.">
           <div className="row" style={{ marginBottom: 12 }}>
