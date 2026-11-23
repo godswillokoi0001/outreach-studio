@@ -1,4 +1,11 @@
-import { GoogleGenAI, ThinkingLevel, type Schema } from "@google/genai";
+import {
+  GoogleGenAI,
+  ThinkingLevel,
+  type Content,
+  type FunctionCall,
+  type FunctionDeclaration,
+  type Schema,
+} from "@google/genai";
 import {
   DEFAULT_GEMINI_MODEL,
   FALLBACK_GEMINI_MODEL,
@@ -151,6 +158,62 @@ export async function geminiGroundedJSON<T>(options: {
     };
   });
   return result;
+}
+
+export async function geminiAgentTurn(options: {
+  system: string;
+  contents: Content[];
+  tools: FunctionDeclaration[];
+  model?: string;
+}): Promise<{
+  text: string;
+  functionCalls: FunctionCall[];
+  modelContent: Content;
+  modelUsed: string;
+}> {
+  const ai = createClient();
+  const { result, model: modelUsed } = await runWithRetryAndFallback(options.model, async (activeModel) => {
+    const response = await ai.models.generateContent({
+      model: activeModel,
+      contents: options.contents,
+      config: {
+        systemInstruction: options.system,
+        tools: [{ functionDeclarations: options.tools }],
+        thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+      },
+    });
+
+    const candidateContent = response.candidates?.[0]?.content ?? null;
+    const rawParts = Array.isArray(candidateContent?.parts) ? candidateContent.parts : [];
+    const functionCalls: FunctionCall[] =
+      response.functionCalls && response.functionCalls.length > 0
+        ? response.functionCalls
+        : rawParts
+            .map((p) => p.functionCall)
+            .filter((fc): fc is FunctionCall => Boolean(fc && fc.name));
+
+    const textFromParts = rawParts
+      .filter((p) => typeof p.text === "string" && !p.thought)
+      .map((p) => p.text ?? "")
+      .join("")
+      .trim();
+    const text = textFromParts || (functionCalls.length === 0 ? (response.text ?? "").trim() : "");
+
+    const modelContent: Content =
+      candidateContent && rawParts.length > 0
+        ? candidateContent
+        : {
+            role: "model",
+            parts: [
+              ...(text ? [{ text }] : []),
+              ...functionCalls.map((fc) => ({ functionCall: fc })),
+            ],
+          };
+
+    return { text, functionCalls, modelContent };
+  });
+
+  return { ...result, modelUsed };
 }
 
 export async function testGeminiConnection(model?: string): Promise<{ model: string; ms: number; reply: string }> {

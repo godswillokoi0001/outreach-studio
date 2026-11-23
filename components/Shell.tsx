@@ -19,6 +19,7 @@ import {
   Search,
   Send,
   Settings,
+  Sparkles,
   Users,
   type LucideIcon,
 } from "lucide-react";
@@ -26,6 +27,7 @@ import { errorMessage } from "@/lib/client";
 import { subscribeBadgeCounts } from "@/lib/firestore-store";
 import { runSyncBatch } from "@/lib/pipeline-client";
 import { useAuth } from "./AuthProvider";
+import { DashboardChat } from "./DashboardChat";
 
 const NAV: { group: string; items: { href: string; label: string; icon: LucideIcon }[] }[] = [
   { group: "Overview", items: [{ href: "/", label: "Dashboard", icon: LayoutGrid }] },
@@ -67,6 +69,8 @@ export function Shell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const { user, workspaceToken, reconnectWorkspace, signOut } = useAuth();
   const [open, setOpen] = useState(false);
+  const [chatOpen, setChatOpen] = useState(false);
+  const [refreshKey, setRefreshKey] = useState(0);
   const [counts, setCounts] = useState({ review: 0, replies: 0, followups: 0 });
   const [syncing, setSyncing] = useState(false);
   const [syncNote, setSyncNote] = useState<string | null>(null);
@@ -88,6 +92,7 @@ export function Shell({ children }: { children: ReactNode }) {
       const result = await runSyncBatch(user.uid, 15);
       setSyncNote(result.info || `Synced (${result.processed} new).`);
       if (result.errors.length) setSyncNote(result.errors[0]);
+      if (result.processed > 0) setRefreshKey((k) => k + 1);
     } catch (err) {
       setSyncNote(errorMessage(err));
     } finally {
@@ -105,7 +110,7 @@ export function Shell({ children }: { children: ReactNode }) {
   const displayName = user.displayName || user.email || "Signed in";
 
   return (
-    <div className="app">
+    <div className={`app${chatOpen ? " chat-open" : ""}`}>
       <aside className={`sidebar${open ? " open" : ""}`}>
         <div className="brand">
           <div className="brand-mark">OS</div>
@@ -163,6 +168,15 @@ export function Shell({ children }: { children: ReactNode }) {
               Reconnect Gmail &amp; Sheets
             </button>
           )}
+          <button
+            className={`btn btn-sm${chatOpen ? " btn-primary" : ""}`}
+            onClick={() => setChatOpen((v) => !v)}
+            type="button"
+            aria-pressed={chatOpen}
+          >
+            <Sparkles size={13} />
+            <span>AI Operator</span>
+          </button>
           <button className="btn btn-sm" onClick={() => void runSync()} disabled={syncing} type="button">
             <RefreshCw size={13} className={syncing ? "spin-icon" : undefined} />
             <span>{syncing ? "Syncing…" : "Sync replies"}</span>
@@ -176,8 +190,28 @@ export function Shell({ children }: { children: ReactNode }) {
             <span>Sign out</span>
           </button>
         </header>
-        {children}
+        <div key={refreshKey} className="page-slot">
+          {children}
+        </div>
       </div>
+
+      <DashboardChat
+        open={chatOpen}
+        onClose={() => setChatOpen(false)}
+        onDataMutated={() => setRefreshKey((k) => k + 1)}
+      />
+
+      {!chatOpen && (
+        <button
+          type="button"
+          className="chat-fab"
+          onClick={() => setChatOpen(true)}
+          aria-label="Open AI Operator"
+        >
+          <Sparkles size={16} />
+          <span>AI Operator</span>
+        </button>
+      )}
     </div>
   );
 }

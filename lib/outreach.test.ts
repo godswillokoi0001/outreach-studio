@@ -20,6 +20,17 @@ import {
   parseGeminiError,
   resolveModel,
 } from "./gemini-utils";
+import {
+  describeToolCall,
+  getConfirmationPrompt,
+  isConfirmationRequired,
+  MUTATING_TOOLS,
+  normalizeAgentTurnResponse,
+  sanitizeAgentContents,
+  sanitizeRoute,
+  VALID_ROUTES,
+} from "./agent-meta";
+import { AGENT_TOOLS } from "./agent-tools";
 import { DEFAULT_SETTINGS, type Campaign, type Lead, type Message, type Reply } from "./types";
 
 test("mapHeaders maps typical spreadsheet headers without collisions", () => {
@@ -226,4 +237,90 @@ test("parseGeminiError turns raw 429 RESOURCE_EXHAUSTED JSON into actionable mes
   assert.ok(!parsed.message.startsWith("{"));
   assert.ok(parsed.message.includes("Settings > Secrets"));
   assert.ok(parsed.message.includes("Gemini 3.1 Flash Lite"));
+});
+
+test("AGENT_TOOLS declares 34 unique valid Gemini tool schemas", () => {
+  assert.equal(AGENT_TOOLS.length, 34);
+  const names = new Set<string>();
+  for (const tool of AGENT_TOOLS) {
+    assert.ok(tool.name && tool.name.length > 0);
+    assert.ok(!names.has(tool.name), `Duplicate tool name: ${tool.name}`);
+    names.add(tool.name);
+    assert.ok(tool.description && tool.description.length > 10);
+    assert.ok(tool.parameters && tool.parameters.properties);
+    assert.ok(Object.keys(tool.parameters.properties).length > 0);
+  }
+  for (const mTool of MUTATING_TOOLS) {
+    assert.ok(names.has(mTool), `MUTATING_TOOLS contains unknown tool: ${mTool}`);
+  }
+});
+
+test("isConfirmationRequired gates destructive & external actions while allowing read/draft tools", () => {
+  assert.equal(isConfirmationRequired("send_approved_emails", { limit: 2 }), true);
+  assert.equal(isConfirmationRequired("writeback_sheet_statuses", { campaign_id: "camp_1" }), true);
+  assert.equal(isConfirmationRequired("delete_lead", { lead_id: "lead_1" }), true);
+  assert.equal(isConfirmationRequired("approve_message", { message_id: "msg_1" }), true);
+  assert.equal(isConfirmationRequired("approve_all_messages", { campaign_id: "camp_1" }), true);
+  assert.equal(isConfirmationRequired("suppress_email", { email: "a@b.com" }), true);
+  assert.equal(isConfirmationRequired("manage_campaign", { action: "approve" }), true);
+  assert.equal(isConfirmationRequired("manage_campaign", { action: "pause" }), true);
+  assert.equal(isConfirmationRequired("manage_campaign", { action: "archive" }), true);
+  assert.equal(isConfirmationRequired("manage_campaign", { action: "assign" }), false);
+  assert.equal(isConfirmationRequired("manage_campaign", { action: "resume" }), false);
+  assert.equal(isConfirmationRequired("navigate_to_page", { route: "/leads" }), false);
+  assert.equal(isConfirmationRequired("add_lead", { business: "Acme" }), false);
+  assert.equal(isConfirmationRequired("run_research_batch", { limit: 2 }), false);
+  assert.equal(isConfirmationRequired("run_compose_batch", { limit: 2 }), false);
+});
+
+test("sanitizeRoute, getConfirmationPrompt, and describeToolCall format safe outputs", () => {
+  assert.equal(sanitizeRoute("/leads"), "/leads");
+  assert.equal(sanitizeRoute("campaigns"), "/campaigns");
+  assert.equal(sanitizeRoute("https://evil.com/phish"), "/");
+  assert.equal(VALID_ROUTES.includes("/review"), true);
+
+  const prompt = getConfirmationPrompt("send_approved_emails", { limit: 3, campaign_id: "camp_9" });
+  assert.ok(prompt.title.includes("Gmail"));
+  assert.ok(prompt.detail.includes("3"));
+  assert.equal(prompt.tone, "warn");
+
+  assert.equal(describeToolCall("navigate_to_page", { route: "/analytics" }), "Open /analytics");
+  assert.equal(describeToolCall("discover_prospects", { industry: "dentists", count: 6 }), 'Discover 6 prospects in "dentists"');
+});
+
+test("normalizeAgentTurnResponse safely handles null/error payloads and synthesizes modelContent when missing", () => {
+  assert.throws(() => normalizeAgentTurnResponse(null), /empty response/i);
+  assert.throws(() => normalizeAgentTurnResponse({ error: "Quota exceeded" }), /Quota exceeded/);
+
+  const norm = normalizeAgentTurnResponse({
+    text: "All done.",
+    functionCalls: [],
+    modelContent: null,
+    modelUsed: "gemini-4-hydrogen",
+  });
+  assert.equal(norm.text, "All done.");
+  assert.equal(norm.modelContent.role, "model");
+  assert.deepEqual(norm.modelContent.parts, [{ text: "All done." }]);
+  assert.equal(norm.modelUsed, "gemini-4-hydrogen");
+});
+
+test("sanitizeAgentContents never slices mid-functionCall pair and wraps non-object functionResponse values", () => {
+  const history = [
+    { role: "user", parts: [{ text: "Turn 1" }] },
+    { role: "model", parts: [{ functionCall: { id: "c1", name: "list_leads", args: {} } }] },
+    { role: "user", parts: [{ functionResponse: { id: "c1", name: "list_leads", response: ["a", "b"] } }] },
+    { role: "model", parts: [{ text: "Found 2 leads." }] },
+    { role: "user", parts: [{ text: "Turn 2" }] },
+  ];
+
+  // maxTurns=3 would slice to [functionResponse, model, user]; sanitizer must drop leading functionResponse + model
+  const trimmed = sanitizeAgentContents(history, 3);
+  assert.equal(trimmed.length, 1);
+  assert.equal(trimmed[0].role, "user");
+  assert.equal(trimmed[0].parts[0].text, "Turn 2");
+
+  // Full history preserves functionResponse and wraps array response into an object
+  const full = sanitizeAgentContents(history, 10);
+  assert.equal(full.length, 5);
+  assert.deepEqual(full[2].parts[0].functionResponse?.response, { result: ["a", "b"] });
 });
