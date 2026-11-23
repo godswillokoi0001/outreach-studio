@@ -1,0 +1,215 @@
+/* Progress feedback: skeleton placeholders, loading panels and the task dock. */
+
+/* ---------- skeleton ---------- */
+.skel {
+  position: relative;
+  overflow: hidden;
+  width: 100%;
+  border-radius: 10px;
+  background: linear-gradient(90deg, #eeece5 0%, #f6f4ef 45%, #eeece5 100%);
+  background-size: 220% 100%;
+  animation: skel-sweep 1.35s ease-in-out infinite;
+}
+
+@keyframes skel-sweep {
+  from { background-position: 120% 0; }
+  to { background-position: -120% 0; }
+}
+
+/* ---------- loading panel ---------- */
+.load-panel {
+  display: grid;
+  gap: 12px;
+  padding: 18px 20px;
+  border-radius: 16px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.load-panel.compact { padding: 13px 15px; gap: 9px; }
+
+.load-head { display: flex; align-items: center; gap: 12px; }
+
+.load-copy { flex: 1; min-width: 0; }
+
+.load-title {
+  font-size: 13.6px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.load-hint {
+  font-size: 11.8px;
+  color: var(--muted);
+  line-height: 1.45;
+  margin-top: 2px;
+}
+
+.load-percent {
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.load-bar {
+  position: relative;
+  height: 6px;
+  border-radius: 99px;
+  background: var(--line-soft);
+  overflow: hidden;
+}
+
+.load-fill {
+  display: block;
+  height: 100%;
+  border-radius: 99px;
+  background: linear-gradient(90deg, var(--accent-2), var(--accent));
+  transition: width 0.35s ease;
+}
+
+.load-steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 7px;
+}
+
+.load-step {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 12.2px;
+  color: var(--muted);
+}
+
+.load-dot {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 7px;
+  border-radius: 50%;
+  background: var(--line);
+}
+
+.load-step[data-state="done"] { color: var(--ok); }
+.load-step[data-state="done"] .load-dot { background: var(--ok); }
+
+.load-step[data-state="active"] { color: var(--ink); font-weight: 550; }
+.load-step[data-state="active"] .load-dot {
+  background: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+  animation: load-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes load-pulse {
+  0%, 100% { box-shadow: 0 0 0 3px var(--accent-soft); }
+  50% { box-shadow: 0 0 0 6px rgba(32, 90, 74, 0.08); }
+}
+
+.load-step-label { min-width: 0; }
+
+/* ---------- sign-in loading ---------- */
+.login-loading { display: grid; gap: 10px; }
+
+/* ---------- task dock ---------- */
+.taskdock {
+  position: fixed;
+  right: 18px;
+  bottom: 88px;
+  z-index: 70;
+  display: grid;
+  gap: 9px;
+  width: min(340px, calc(100vw - 36px));
+  pointer-events: none;
+}
+
+.taskdock-item {
+  pointer-events: auto;
+  display: grid;
+  gap: 7px;
+  padding: 12px 14px;
+  border-radius: 13px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  box-shadow: 0 20px 48px -26px rgba(20, 22, 26, 0.55);
+}
+
+.taskdock-item[data-status="error"] { border-color: color-mix(in srgb, var(--bad) 40%, var(--line)); }
+.taskdock-item[data-status="done"] { border-color: color-mix(in srgb, var(--ok) 38%, var(--line)); }
+
+.taskdock-head { display: flex; align-items: center; gap: 8px; }
+
+.taskdock-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 12.8px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.taskdock-status {
+  font-size: 10.4px;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.taskdock-item[data-status="done"] .taskdock-status { color: var(--ok); }
+.taskdock-item[data-status="error"] .taskdock-status { color: var(--bad); }
+.taskdock-item[data-status="stopped"] .taskdock-status { color: var(--warn); }
+
+.taskdock-detail,
+.taskdock-message {
+  font-size: 11.6px;
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.taskdock-message { color: var(--ink-2); }
+
+.taskdock-bar {
+  height: 5px;
+  border-radius: 99px;
+  background: var(--line-soft);
+  overflow: hidden;
+}
+
+.taskdock-fill {
+  display: block;
+  height: 100%;
+  border-radius: 99px;
+  background: linear-gradient(90deg, var(--accent-2), var(--accent));
+  transition: width 0.4s ease;
+}
+
+.taskdock-item[data-status="done"] .taskdock-fill { background: var(--ok); }
+.taskdock-item[data-status="error"] .taskdock-fill { background: var(--bad); }
+.taskdock-item[data-status="stopped"] .taskdock-fill { background: var(--warn); }
+
+.taskdock-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 22px;
+}
+
+.taskdock-count {
+  font-size: 11px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 640px) {
+  .taskdock { right: 12px; left: 12px; bottom: 76px; width: auto; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skel,
+  .load-step[data-state="active"] .load-dot { animation: none; }
+}
