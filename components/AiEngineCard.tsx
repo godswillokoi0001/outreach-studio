@@ -17,7 +17,7 @@ import { AI_PROVIDERS, getProvider } from "@/lib/ai/registry";
 import type { AiModelOption, AiProviderId } from "@/lib/ai/types";
 import { aiConfigFromSettings, setActiveAiConfig } from "@/lib/ai-client";
 import { authedPost, errorMessage } from "@/lib/client";
-import { saveSettings } from "@/lib/firestore-store";
+import { saveSupabaseSettings, getSupabaseSettings } from "@/lib/supabase";
 import type { Settings } from "@/lib/types";
 import { Badge, Banner, Card, Field } from "./ui";
 
@@ -78,11 +78,17 @@ export function AiEngineCard({
   const persist = useCallback(
     async (patch: Partial<Settings>): Promise<Settings | null> => {
       onChange(patch);
+      let fresh: Settings | null = null;
       try {
-        const saved = await saveSettings(uid, patch);
-        onSaved(saved);
-        setActiveAiConfig(aiConfigFromSettings(saved));
-        return saved;
+        const saved = await saveSupabaseSettings(patch, uid);
+        if (saved) {
+          fresh = await getSupabaseSettings(uid);
+          onSaved(fresh ?? settings);
+          setActiveAiConfig(aiConfigFromSettings(fresh ?? settings));
+        } else {
+          onSaved(settings);
+        }
+        return saved ? fresh : settings;
       } catch (err) {
         // The key is verified and usable for this session even if the settings
         // write is blocked (for example until the latest Firestore rules ship).

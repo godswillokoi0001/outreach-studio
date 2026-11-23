@@ -6,11 +6,10 @@ import { Banner, Card, Empty, Field, Progress } from "@/components/ui";
 import { errorMessage } from "@/lib/client";
 import {
   addSuppression,
-  getSettings,
   listSuppressions,
   removeSuppression,
-  saveSettings,
 } from "@/lib/firestore-store";
+import { getSupabaseSettings, saveSupabaseSettings } from "@/lib/supabase";
 import { fmtDate } from "@/lib/format";
 import type { Settings, Suppression } from "@/lib/types";
 import { AiEngineCard } from "@/components/AiEngineCard";
@@ -28,10 +27,10 @@ export default function SettingsPage() {
 
   useEffect(() => {
     let active = true;
-    Promise.all([getSettings(user.uid), listSuppressions(user.uid)]).then(
+    Promise.all([getSupabaseSettings(user.uid), listSuppressions(user.uid)]).then(
       ([s, sup]) => {
         if (!active) return;
-        setForm(s);
+        setForm(s ?? null);
         setSuppressions(sup);
         setLoading(false);
       },
@@ -55,8 +54,13 @@ export default function SettingsPage() {
     setFailure(null);
     setNotice(null);
     try {
-      const saved = await saveSettings(user.uid, form);
-      setForm(saved);
+      const saved = await saveSupabaseSettings(form, user.uid);
+      if (saved) {
+        const fresh = await getSupabaseSettings(user.uid);
+        setForm(fresh ?? null);
+      } else {
+        setForm(form);
+      }
       setNotice("Settings saved.");
     } catch (err) {
       setFailure(errorMessage(err));
