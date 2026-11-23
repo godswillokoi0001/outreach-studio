@@ -1,5 +1,8 @@
-// Runtime guard: SUPABASE_URL|SUPABASE_ANON_KEY are required server-side;
-// NEXT_PUBLIC_* are the same values exposed to the browser.
+"use client";
+
+import { getFirebaseIdToken } from "./firebase";
+import type { Settings } from "./types";
+
 declare type PushDeviceRegistration = {
   uid: string;
   token: string;
@@ -7,83 +10,81 @@ declare type PushDeviceRegistration = {
   created_at: string;
 };
 
-import { createClient } from "@supabase/supabase-js";
-import type { Settings } from "./types";
-import type { Database } from "./database.types";
-
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL?.trim();
-const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY?.trim();
-
-if (!supabaseUrl || !supabaseAnonKey) {
-  console.warn(
-    "[supabase] Missing NEXT_PUBLIC_SUPABASE_URL or NEXT_PUBLIC_SUPABASE_ANON_KEY; Supabase queries will be no-ops.",
-  );
-}
-
-export const supabase = supabaseUrl && supabaseAnonKey
-  ? createClient<Database>(supabaseUrl, supabaseAnonKey)
-  : null;
-
-export type SupabaseClient = typeof supabase;
-
-/** Supabase settings read/write is the single data-access boundary the UI
- * touches for AI provider settings. Everything else (Leads, Campaigns,
- * Messages, ...Suppressions, tracking) stays on Firebase.
+/**
+ * Settings live in Supabase, but the table is locked down with RLS so the
+ * browser can never read or write it directly (the AI key is a secret).
+ * All access goes through /api/settings, which verifies the Firebase session
+ * and uses the service role on the server.
  */
-export async function getSupabaseSettings(uid: string): Promise<Settings | null> {
-  if (!supabase) return null;
+async function callSettingsApi(
+  method: "GET" | "PUT",
+  body?: unknown,
+): Promise<{ settings?: Settings | null } | null> {
+  const token = await getFirebaseIdToken();
+  if (!token) return null;
 
   try {
-    const { data, error } = await supabase
-      .from("settings")
-      .select("ai_provider, ai_api_key, ai_base_url, ai_verified_at, ai_key_hint")
-      .limit(1)
-      .maybeSingle();
+    const res = await fetch("/api/settings", {
+      method,
+      headers: {
+        Accept: "application/json",
+        "X-Firebase-Token": token,
+        ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
+      },
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+      cache: "no-store",
+      credentials: "same-origin",
+    });
 
-    if (error || !data) return null;
-    return data as unknown as Settings;
+    if (!res.ok) return null;
+    const text = await res.text();
+    if (!text.trim()) return null;
+    return JSON.parse(text) as { settings?: Settings | null };
   } catch {
     return null;
   }
 }
 
-export async function saveSupabaseSettings(partial: Partial<Settings>, uid: string): Promise<boolean> {
-  if (!supabase) return false;
-
-  try {
-    const payload = {
-      ai_provider: partial.ai_provider,
-      ai_api_key: partial.ai_api_key,
-      ai_base_url: partial.ai_base_url,
-      ai_verified_at: partial.ai_verified_at,
-      ai_key_hint: partial.ai_key_hint,
-      updated_at: new Date().toISOString(),
-    };
-    const { error } = await supabase
-      .from("settings")
-      .upsert(payload as any); /* eslint-disable-line @typescript-eslint/no-explicit-any */
-
-    if (error) {
-      console.warn("[supabase] saveSettings notice:", error.message);
-      return false;
-    }
-
-    return true;
-  } catch {
-    return false;
-  }
+/** Reads the AI settings row from Supabase (via the authenticated server route). */
+export async function getSupabaseSettings(uid: string): Promise<Settings | null> {
+  void uid;
+  const data = await callSettingsApi("GET");
+  if (!data || !data.settings) return null;
+  return data.settings;
 }
 
-/** Push device registration is Firebase-only by design. Supabase cannot
- * persist notification tokens, so this function is intentionally a stub
- * that keeps Firestore read/write intact (and is a no-op until Supabase
- * auth is explicitly enabled as the notification backend).
+/** Saves the AI settings row to Supabase (via the authenticated server route). */
+export async function saveSupabaseSettings(partial: Partial<Settings>, uid: string): Promise<boolean> {
+  void uid;
+  const payload: Record<string, unknown> = {};
+  const fields = [
+    "ai_provider",
+    "ai_api_key",
+    "ai_base_url",
+    "ai_verified_at",
+    "ai_key_hint",
+  ] as const;
+
+  for (const key of fields) {
+    const value = partial[key];
+    if (typeof value === "string") payload[key] = value;
+  }
+
+  // Nothing this table stores changed (for example a model-only edit).
+  if (Object.keys(payload).length === 0) return true;
+
+  const data = await callSettingsApi("PUT", payload);
+  return Boolean(data);
+}
+
+/** Push device registration is Firebase-only by design: the settings table
+ * stores AI credentials, not notification tokens.
  */
 export async function registerPushDevice(
   uid: string,
   payload: PushDeviceRegistration,
 ): Promise<boolean> {
-  // Firebase handlers register the token; Supabase only stores the
-  // canonical user document in the notifications table.
+  void uid;
+  void payload;
   return true;
 }

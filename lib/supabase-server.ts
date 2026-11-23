@@ -1,8 +1,7 @@
 // Server-side Supabase client using the service role key.
-// This runs purely on the server (Next.js routes, API handlers) and never
-// exposes the service role key to the browser. The anon key is used by the
-// browser Component in lib/supabase.ts; server-side calls use the service
-// role key directly via the supabase-js `createClient` function.
+// This runs purely on the server (Next.js routes) and never exposes the
+// service role key to the browser. The settings table has RLS enabled, so the
+// service role is the only way in.
 
 import { createClient } from "@supabase/supabase-js";
 import type { Database } from "./database.types";
@@ -17,16 +16,34 @@ if (!supabaseUrl || !supabaseServiceRoleKey) {
   );
 }
 
-// Server client with the service role key. No __enableTyping needed since
-// this runs only on the server.
-export const supabaseServer = createClient<Database>(supabaseUrl, supabaseServiceRoleKey);
+export const supabaseServer =
+  supabaseUrl && supabaseServiceRoleKey
+    ? createClient<Database>(supabaseUrl, supabaseServiceRoleKey)
+    : null;
 
-/** Get settings for a user from Supabase (server side). */
+/**
+ * The settings table holds one row. Pinning the primary key means every save
+ * updates that row instead of inserting another one.
+ */
+export const SETTINGS_ROW_ID = "00000000-0000-0000-0000-000000000001";
+
+const AI_COLUMNS = [
+  "ai_provider",
+  "ai_api_key",
+  "ai_base_url",
+  "ai_verified_at",
+  "ai_key_hint",
+] as const;
+
+/** Get settings from Supabase (server side). */
 export async function getSupabaseSettingsServer(): Promise<Settings | null> {
+  if (!supabaseServer) return null;
+
   try {
     const { data, error } = await supabaseServer
       .from("settings")
       .select("id, ai_provider, ai_api_key, ai_base_url, ai_verified_at, ai_key_hint")
+      .order("updated_at", { ascending: false })
       .limit(1)
       .maybeSingle();
 
@@ -46,18 +63,55 @@ export async function getSupabaseSettingsServer(): Promise<Settings | null> {
 export async function saveSupabaseSettingsServer(
   partial: Partial<Settings>,
 ): Promise<boolean> {
-  const { data, error } = await supabaseServer
+  if (!supabaseServer) return false;
+
+  const payload: Record<string, unknown> = {
+    id: SETTINGS_ROW_ID,
+    updated_at: new Date().toISOString(),
+  };
+
+  for (const key of AI_COLUMNS) {
+    const value = partial[key];
+    if (typeof value !== "string") continue;
+
+    // ai_verified_at is a timestamptz column: never write an empty string.
+    if (key === "ai_verified_at") {
+      if (value.trim() && !Number.isNaN(Date.parse(value))) payload[key] = value;
+      continue;
+    }
+
+    payload[key] = value;
+  }
+
+  // Nothing but the update timestamp changed.
+  if (Object.keys(payload).length === 2) return true;
+
+  // New rows need a key value because the column is NOT NULL.
+  if (!("ai_api_key" in payload) && !(await rowExists())) {
+    payload.ai_api_key = "";
+  }
+
+  const { error } = await supabaseServer
     .from("settings")
-    .upsert(partial as any /* eslint-disable-line @typescript-eslint/no-explicit-any */, {
-      onConflict: "id",
-    })
+    .upsert(payload as never, { onConflict: "id" })
     .select("id")
     .single();
 
   if (error) {
-    console.error("[supabase-server] saveSettings error:", error);
+    console.error("[supabase-server] saveSettings error:", error.message);
     return false;
   }
 
   return true;
+}
+
+async function rowExists(): Promise<boolean> {
+  if (!supabaseServer) return false;
+  const { data, error } = await supabaseServer
+    .from("settings")
+    .select("id")
+    .eq("id", SETTINGS_ROW_ID)
+    .maybeSingle();
+  if (error) return false;
+  return Boolean(data);
 }
