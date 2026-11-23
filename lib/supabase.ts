@@ -54,7 +54,7 @@ export async function saveSupabaseSettings(partial: Partial<Settings>, uid: stri
   const { data, error } = await supabase
     .from("settings")
     .upsert({ ...partial, ownerId: uid } as any /* eslint-disable-line @typescript-eslint/no-explicit-any */, {
-      onConflict: "ownerId",
+      onConflict: "id",
     })
     .select("id")
     .single();
