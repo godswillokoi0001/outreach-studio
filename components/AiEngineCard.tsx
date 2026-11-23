@@ -81,17 +81,27 @@ export function AiEngineCard({
   const persist = useCallback(
     async (patch: Partial<Settings>): Promise<Settings | null> => {
       onChange(patch);
+      // Supabase is the authoritative store for AI settings and is written
+      // through the authenticated server route, so Firestore rules cannot
+      // block it. Firestore is mirrored best-effort for the legacy pages.
+      const supabaseOk = await saveSupabaseSettings(patch, uid).catch(() => false);
+
       try {
         const saved = await saveSettings(uid, patch);
-        try {
-          await saveSupabaseSettings(patch, uid);
-        } catch {
-          // Supabase is secondary
-        }
         onSaved(saved);
-        setActiveAiConfig(aiConfigFromSettings(saved));
+        setActiveAiConfig(aiConfigFromSettings({ ...saved, ...patch }));
         return saved;
       } catch (err) {
+        if (supabaseOk) {
+          const merged = { ...settings, ...patch };
+          onSaved(merged);
+          setActiveAiConfig(aiConfigFromSettings(merged));
+          setNote({
+            tone: "info",
+            text: `Saved to Supabase. Firestore rejected its copy (${errorMessage(err)}), so publish the latest firestore.rules to keep both stores in sync.`,
+          });
+          return merged;
+        }
         // The key is verified and usable for this session even if the settings
         // write is blocked.
         const fallbackSettings = { ...settings, ...patch };

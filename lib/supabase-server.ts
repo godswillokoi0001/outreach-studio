@@ -33,6 +33,7 @@ const AI_COLUMNS = [
   "ai_base_url",
   "ai_verified_at",
   "ai_key_hint",
+  "model",
 ] as const;
 
 /** Get settings from Supabase (server side). */
@@ -42,7 +43,7 @@ export async function getSupabaseSettingsServer(): Promise<Settings | null> {
   try {
     const { data, error } = await supabaseServer
       .from("settings")
-      .select("id, ai_provider, ai_api_key, ai_base_url, ai_verified_at, ai_key_hint")
+      .select("id, ai_provider, ai_api_key, ai_base_url, ai_verified_at, ai_key_hint, model")
       .order("updated_at", { ascending: false })
       .limit(1)
       .maybeSingle();

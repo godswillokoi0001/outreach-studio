@@ -63,6 +63,7 @@ export async function saveSupabaseSettings(partial: Partial<Settings>, uid: stri
     "ai_base_url",
     "ai_verified_at",
     "ai_key_hint",
+    "model",
   ] as const;
 
   for (const key of fields) {

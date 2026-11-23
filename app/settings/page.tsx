@@ -68,14 +68,18 @@ export default function SettingsPage() {
     setFailure(null);
     setNotice(null);
     try {
-      const saved = await saveSettings(user.uid, form);
+      const supabaseOk = await saveSupabaseSettings(form, user.uid).catch(() => false);
       try {
-        await saveSupabaseSettings(form, user.uid);
-      } catch {
-        // Supabase is secondary
+        const saved = await saveSettings(user.uid, form);
+        setForm(saved);
+        setNotice("Settings saved.");
+      } catch (err) {
+        if (!supabaseOk) throw err;
+        setForm(form);
+        setNotice(
+          "AI settings saved to Supabase. Firestore rejected the copy; publish the latest firestore.rules to save sender and sending settings.",
+        );
       }
-      setForm(saved);
-      setNotice("Settings saved.");
     } catch (err) {
       setFailure(errorMessage(err));
     } finally {
