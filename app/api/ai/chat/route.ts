@@ -2,6 +2,7 @@ import type { Content } from "@google/genai";
 import { NextRequest, NextResponse } from "next/server";
 import { AGENT_TOOLS, sanitizeAgentContents } from "@/lib/agent-tools";
 import { handleApiError } from "@/lib/api-helpers";
+import { readAiConfigFromRequest, runWithAiConfig } from "@/lib/ai/context";
 import { verifyFirebaseRequest } from "@/lib/firebase-server-auth";
 import { geminiAgentTurn } from "@/lib/gemini";
 
@@ -40,6 +41,7 @@ OPERATING RULES
 export async function POST(req: NextRequest) {
   try {
     const authUser = await verifyFirebaseRequest(req);
+    const aiConfig = readAiConfigFromRequest(req);
     const body = (await req.json()) as {
       contents?: Content[];
       context?: ChatContext;
@@ -56,12 +58,14 @@ export async function POST(req: NextRequest) {
       userEmail: body.context?.userEmail ?? authUser.email,
     });
 
-    const result = await geminiAgentTurn({
-      system,
-      contents: trimmedContents,
-      tools: AGENT_TOOLS,
-      model: body.model,
-    });
+    const result = await runWithAiConfig(aiConfig, () =>
+      geminiAgentTurn({
+        system,
+        contents: trimmedContents,
+        tools: AGENT_TOOLS,
+        model: body.model,
+      }),
+    );
 
     return NextResponse.json(result, {
       headers: { "Cache-Control": "no-store" },

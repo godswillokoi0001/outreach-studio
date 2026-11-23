@@ -111,7 +111,7 @@ export function parseGeminiError(err: unknown): GeminiApiError {
 
   if (code === 429 || lower.includes("resource_exhausted") || lower.includes("exceeded your current quota")) {
     return new GeminiApiError(
-      "Gemini API quota or rate limit exceeded (429). Wait briefly, switch the model to Gemini 3.1 Flash Lite in Settings, or select a billing-enabled API key in Settings > Secrets.",
+      "Gemini API quota or rate limit exceeded (429). Wait briefly, pick a lighter model in Settings > AI engine, or connect a billing-enabled API key there.",
       429,
       jsonInfo?.retryAfterMs,
     );
@@ -119,14 +119,14 @@ export function parseGeminiError(err: unknown): GeminiApiError {
 
   if (code === 403 || lower.includes("permission_denied") || lower.includes("api_key_invalid") || lower.includes("api key not valid")) {
     return new GeminiApiError(
-      "Gemini API key is invalid or lacks permission. Please verify or select an active API key in Settings > Secrets.",
+      "The Gemini API key is invalid or lacks permission. Verify or replace it in Settings > AI engine.",
       403,
     );
   }
 
   if (code === 404 || lower.includes("not_found") || lower.includes("not found for api version")) {
     return new GeminiApiError(
-      "The selected Gemini model is unavailable. Switch to Gemini 4 Hydrogen or Gemini 3.1 Flash Lite in Settings.",
+      "The selected Gemini model is unavailable. Pick another model in Settings > AI engine.",
       404,
     );
   }

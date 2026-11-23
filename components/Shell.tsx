@@ -28,6 +28,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { AnimatePresence, motion } from "framer-motion";
+import { initAiConfig } from "@/lib/ai-client";
 import { errorMessage } from "@/lib/client";
 import { subscribeBadgeCounts, subscribeOpenEvents } from "@/lib/firestore-store";
 import { runSyncBatch } from "@/lib/pipeline-client";
@@ -96,6 +97,10 @@ function ShellInner({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const dock = useTaskDock();
   const { user, workspaceToken, workspaceEmail, workspacePersistent, reconnectWorkspace, signOut } = useAuth();
+
+  useEffect(() => {
+    void initAiConfig(user.uid);
+  }, [user.uid]);
   const [open, setOpen] = useState(false);
   const [chatOpen, setChatOpen] = useState(false);
   const [collapsed, setCollapsed] = useState(false);

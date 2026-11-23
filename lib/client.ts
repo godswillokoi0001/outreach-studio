@@ -3,6 +3,7 @@
 import { getFirebaseIdToken } from "./firebase";
 import { ensureWorkspaceToken, readWorkspaceToken } from "./workspace";
 import { extractErrorMessageFromJson } from "./gemini-utils";
+import { aiConfigHeader, ensureAiConfigLoaded } from "./ai-client";
 
 export async function authedPost<T>(
   path: string,
@@ -19,6 +20,14 @@ export async function authedPost<T>(
     Accept: "application/json",
     "X-Firebase-Token": firebaseToken,
   };
+
+  // AI routes run against whichever provider/model the user connected in
+  // Settings. The key never leaves this request.
+  if (path.startsWith("/api/ai/")) {
+    await ensureAiConfigLoaded();
+    const aiHeader = aiConfigHeader();
+    if (aiHeader) headers["X-AI-Config"] = aiHeader;
+  }
 
   if (options?.requireWorkspace) {
     const ready = await ensureWorkspaceToken();
@@ -128,7 +137,7 @@ export function errorMessage(err: unknown): string {
   if (err instanceof Error) {
     const nested = extractErrorMessageFromJson(err.message);
     if (nested?.code === 429 || nested?.status === "RESOURCE_EXHAUSTED") {
-      return "Gemini API quota or rate limit exceeded (429). Wait briefly, switch the model to Gemini 3.1 Flash Lite in Settings, or select a billing-enabled API key in Settings > Secrets.";
+      return "AI quota or rate limit exceeded (429) for the selected provider. Wait briefly, pick a lighter model, or connect a billing-enabled key in Settings > AI engine.";
     }
     if (nested?.message) return nested.message;
     try {

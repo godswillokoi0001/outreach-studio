@@ -238,8 +238,8 @@ test("parseGeminiError turns raw 429 RESOURCE_EXHAUSTED JSON into actionable mes
   assert.equal(parsed.status, 429);
   assert.equal(parsed.retryAfterMs, 8000);
   assert.ok(!parsed.message.startsWith("{"));
-  assert.ok(parsed.message.includes("Settings > Secrets"));
-  assert.ok(parsed.message.includes("Gemini 3.1 Flash Lite"));
+  assert.ok(parsed.message.includes("Settings > AI engine"));
+  assert.ok(parsed.message.includes("billing-enabled"));
 });
 
 test("AGENT_TOOLS declares 34 unique valid Gemini tool schemas", () => {

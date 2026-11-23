@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { handleApiError } from "@/lib/api-helpers";
+import { readAiConfigFromRequest, runWithAiConfig } from "@/lib/ai/context";
 import { verifyFirebaseRequest } from "@/lib/firebase-server-auth";
 import { composeFollowUpServer, composeInitialServer } from "@/lib/compose";
 import type { CampaignConfig, Lead, Message, ResearchResult, Settings } from "@/lib/types";
@@ -7,6 +8,7 @@ import type { CampaignConfig, Lead, Message, ResearchResult, Settings } from "@/
 export async function POST(req: NextRequest) {
   try {
     await verifyFirebaseRequest(req);
+    const aiConfig = readAiConfigFromRequest(req);
     const body = (await req.json()) as {
       kind?: "initial" | "followup";
       lead?: Lead;
@@ -25,15 +27,17 @@ export async function POST(req: NextRequest) {
       if (!body.original) {
         return NextResponse.json({ error: "Original sent message is required for follow-ups." }, { status: 400 });
       }
-      const composed = await composeFollowUpServer(
-        body.lead,
-        body.research ?? null,
-        body.campaign,
-        body.settings,
-        body.knowledge ?? "",
-        body.original,
-        Number(body.step ?? 2),
-        body.model ?? body.settings.model,
+      const composed = await runWithAiConfig(aiConfig, () =>
+        composeFollowUpServer(
+          body.lead!,
+          body.research ?? null,
+          body.campaign!,
+          body.settings!,
+          body.knowledge ?? "",
+          body.original!,
+          Number(body.step ?? 2),
+          body.model ?? body.settings!.model,
+        ),
       );
       return NextResponse.json({ composed });
     }
@@ -41,13 +45,15 @@ export async function POST(req: NextRequest) {
     if (!body.research) {
       return NextResponse.json({ error: "Research record is required before composing initial email." }, { status: 400 });
     }
-    const composed = await composeInitialServer(
-      body.lead,
-      body.research,
-      body.campaign,
-      body.settings,
-      body.knowledge ?? "",
-      body.model ?? body.settings.model,
+    const composed = await runWithAiConfig(aiConfig, () =>
+      composeInitialServer(
+        body.lead!,
+        body.research!,
+        body.campaign!,
+        body.settings!,
+        body.knowledge ?? "",
+        body.model ?? body.settings!.model,
+      ),
     );
     return NextResponse.json({ composed });
   } catch (err) {

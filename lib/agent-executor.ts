@@ -1027,9 +1027,12 @@ export async function executeAgentTool(
         ]);
         return {
           ok: true,
-          summary: `Settings loaded (model: ${settings.model}, daily limit: ${settings.daily_limit})`,
+          summary: `Settings loaded (AI: ${settings.ai_provider || "gemini"} / ${settings.model}, daily limit: ${settings.daily_limit})`,
           data: {
-            settings,
+            settings: {
+              ...settings,
+              ai_api_key: settings.ai_api_key ? "(stored privately — not shown)" : "",
+            },
             suppressions: suppressions.slice(0, 30).map((s) => ({ email: s.email, reason: s.reason })),
           },
         };
@@ -1095,11 +1098,14 @@ export async function executeAgentTool(
       case "test_gemini_connection": {
         const settings = await getSettings(uid);
         const model = asStr(args.model) || settings.model;
-        const res = await authedPost<{ model: string; ms: number; reply: string }>("/api/ai/test", { model });
+        const res = await authedPost<{ model: string; ms: number; reply: string; provider?: string }>("/api/ai/test", {
+          model,
+        });
+        const provider = res.provider || settings.ai_provider || "gemini";
         return {
           ok: true,
-          summary: `Gemini (${res.model}) responded "${res.reply}" in ${res.ms} ms`,
-          data: { ...res },
+          summary: `${provider} (${res.model}) responded "${res.reply}" in ${res.ms} ms`,
+          data: { ...res, provider },
         };
       }
 

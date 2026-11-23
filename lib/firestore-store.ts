@@ -119,7 +119,12 @@ function normalizeSettingsPayload(uid: string, input: Partial<Settings>, base: S
     min_score: clampInt(s.min_score, 0, 100, DEFAULT_SETTINGS.min_score),
     unsubscribe_email: clampReqStr(s.unsubscribe_email, 320, ""),
     physical_address: clampReqStr(s.physical_address, 400, ""),
-    model: clampReqStr(s.model, 80, DEFAULT_SETTINGS.model) || DEFAULT_SETTINGS.model,
+    model: clampReqStr(s.model, 200, DEFAULT_SETTINGS.model) || DEFAULT_SETTINGS.model,
+    ai_provider: clampReqStr(s.ai_provider, 40, DEFAULT_SETTINGS.ai_provider) || DEFAULT_SETTINGS.ai_provider,
+    ai_api_key: clampStr(s.ai_api_key, 512) ?? "",
+    ai_base_url: clampStr(s.ai_base_url, 400) ?? "",
+    ai_verified_at: clampStr(s.ai_verified_at, 64) ?? "",
+    ai_key_hint: clampStr(s.ai_key_hint, 40) ?? "",
   };
 }
 
@@ -222,6 +227,11 @@ export async function getSettings(uid: string): Promise<Settings> {
       unsubscribe_email: String(data.unsubscribe_email ?? ""),
       physical_address: String(data.physical_address ?? ""),
       model: String(data.model ?? DEFAULT_SETTINGS.model),
+      ai_provider: String(data.ai_provider ?? DEFAULT_SETTINGS.ai_provider),
+      ai_api_key: String(data.ai_api_key ?? ""),
+      ai_base_url: String(data.ai_base_url ?? ""),
+      ai_verified_at: String(data.ai_verified_at ?? ""),
+      ai_key_hint: String(data.ai_key_hint ?? ""),
     };
   } catch (err) {
     handleFirestoreError(err, OperationType.GET, path);

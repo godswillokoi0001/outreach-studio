@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { AuthError } from "./firebase-server-auth";
 import { GeminiApiError, parseGeminiError } from "./gemini-utils";
+import { AiProviderError } from "./ai/types";
 
 export function extractWorkspaceToken(req: NextRequest): string {
   const auth = req.headers.get("Authorization")?.trim() ?? "";
@@ -20,6 +21,9 @@ export function handleApiError(err: unknown): NextResponse {
     return NextResponse.json({ error: err.message }, { status: err.status });
   }
   if (err instanceof GeminiApiError) {
+    return NextResponse.json({ error: err.message }, { status: err.status });
+  }
+  if (err instanceof AiProviderError) {
     return NextResponse.json({ error: err.message }, { status: err.status });
   }
   const message = err instanceof Error ? err.message : "Server error.";
