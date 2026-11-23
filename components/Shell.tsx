@@ -37,7 +37,7 @@ import { PageMotion } from "./motion/PageMotion";
 
 const NAV_STATE_KEY = "os:nav:collapsed";
 
-const NAV: { group: string; items: { href: string; label: string; icon: LucideIcon }[] }[] = [
+const NAV = [
   { group: "Overview", items: [{ href: "/", label: "Dashboard", icon: LayoutGrid }] },
   {
     group: "Prospect engine",
@@ -186,7 +186,8 @@ function ShellInner({ children }: { children: ReactNode }) {
             <div key={group.group}>
               <div className="nav-group-label">{group.group}</div>
               {group.items.map((item) => {
-                const active = pathname === item.href || (item.href !== "/" && pathname.startsWith(item.href));
+                const active =
+                  pathname === item.href || (item.href !== "/" && pathname.startsWith(item.href));
                 const count = badgeFor(item.href);
                 const ItemIcon = item.icon;
                 return (
@@ -198,12 +199,8 @@ function ShellInner({ children }: { children: ReactNode }) {
                     title={collapsed ? item.label : undefined}
                   >
                     {active && (
-                      <motion.span
-                        layoutId="nav-pill"
-                        className="nav-pill"
-                        transition={{ type: "spring", stiffness: 380, damping: 32 }}
-                      />
-                    }
+                      <span className="nav-pill" />
+                    )}
                     <ItemIcon className="nav-icon" size={16} strokeWidth={1.7} aria-hidden="true" />
                     <span className="nav-text">{item.label}</span>
                     {count ? <span className="nav-count">{count}</span> : null}
