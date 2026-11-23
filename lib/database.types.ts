@@ -17,6 +17,7 @@ export type Database = {
           updated_at: string;
         };
         Insert: {
+          id: string;
           ai_provider: string;
           ai_api_key: string;
           ai_base_url: string;
