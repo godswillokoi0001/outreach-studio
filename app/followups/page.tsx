@@ -1,39 +1,52 @@
 "use client";
 
+import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import { useApi } from "@/lib/client";
-import { Badge, Banner, Card, Empty, Progress, Stat } from "@/components/ui";
+import { useAuth } from "@/components/AuthProvider";
 import { BatchRunner } from "@/components/Runner";
+import { Badge, Banner, Card, Empty, Progress, Stat } from "@/components/ui";
+import { errorMessage } from "@/lib/client";
+import { loadFollowupsBundle } from "@/lib/firestore-store";
 import { fmtDate, label, statusTone } from "@/lib/format";
 
-interface FollowupsResponse {
-  due: {
-    leadId: string;
-    business: string | null;
-    email: string | null;
-    industry: string | null;
-    score: number | null;
-    campaignId: string;
-    campaignName: string;
-    step: number;
-    daysSince: number;
-    lastContactedAt: string | null;
-  }[];
-  drafted: {
-    id: string;
-    subject: string | null;
-    body: string | null;
-    status: string;
-    step: number;
-    business: string | null;
-    lead_email: string | null;
-    created_at: string;
-  }[];
-  followupsSent: number;
-}
+type FollowupsData = Awaited<ReturnType<typeof loadFollowupsBundle>>;
 
 export default function FollowupsPage() {
-  const { data, loading, error, reload } = useApi<FollowupsResponse>("/api/followups");
+  const { user } = useAuth();
+  const [data, setData] = useState<FollowupsData | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const reload = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      setData(await loadFollowupsBundle(user.uid));
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setLoading(false);
+    }
+  }, [user.uid]);
+
+  useEffect(() => {
+    let active = true;
+    loadFollowupsBundle(user.uid).then(
+      (res) => {
+        if (!active) return;
+        setData(res);
+        setLoading(false);
+      },
+      (err) => {
+        if (!active) return;
+        setError(errorMessage(err));
+        setLoading(false);
+      },
+    );
+    return () => {
+      active = false;
+    };
+  }, [user.uid]);
 
   return (
     <main className="page">
@@ -59,7 +72,9 @@ export default function FollowupsPage() {
         <Card title="Generate follow-ups" sub="Writes the next scheduled message for each due prospect.">
           <div className="row">
             <BatchRunner type="followup" label="Prepare due follow-ups" limit={2} variant="primary" onDone={reload} />
-            <Link className="btn btn-sm" href="/review">Review drafted follow-ups</Link>
+            <Link className="btn btn-sm" href="/review">
+              Review drafted follow-ups
+            </Link>
           </div>
           <p className="hint" style={{ marginTop: 8 }}>
             Campaign approval is required. Adjust follow-up gaps in the campaign settings.
@@ -91,7 +106,9 @@ export default function FollowupsPage() {
                     <tr key={`${item.leadId}-${item.step}`}>
                       <td>
                         <div className="strong">{item.business ?? item.email ?? "—"}</div>
-                        <div className="tiny">{item.email} {item.industry ? `· ${item.industry}` : ""}</div>
+                        <div className="tiny">
+                          {item.email} {item.industry ? `· ${item.industry}` : ""}
+                        </div>
                       </td>
                       <td>{item.campaignName}</td>
                       <td className="num">{item.step}</td>
@@ -126,7 +143,9 @@ export default function FollowupsPage() {
                       <td className="strong">{message.business ?? message.lead_email}</td>
                       <td>{message.subject}</td>
                       <td className="num">{message.step}</td>
-                      <td><Badge tone={statusTone(message.status)}>{label(message.status)}</Badge></td>
+                      <td>
+                        <Badge tone={statusTone(message.status)}>{label(message.status)}</Badge>
+                      </td>
                       <td className="tiny nowrap">{fmtDate(message.created_at)}</td>
                     </tr>
                   ))}

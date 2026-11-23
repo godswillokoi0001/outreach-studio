@@ -1,13 +1,16 @@
 import type { Metadata, Viewport } from "next";
 import "./globals.css";
-import { currentUser, authMode } from "@/lib/auth";
-import { getEnv } from "@/lib/env";
-import { Shell } from "@/components/Shell";
-import { LoginGate } from "@/components/LoginGate";
+import { AuthProvider } from "@/components/AuthProvider";
 
 export const metadata: Metadata = {
   title: "Outreach Studio",
-  description: "AI-powered sales intelligence, prospect research and outreach platform.",
+  description:
+    "AI-powered B2B sales intelligence, prospect research, Google Sheets lead sync, and Gmail outreach workspace.",
+  openGraph: {
+    title: "Outreach Studio",
+    description:
+      "AI-powered B2B sales intelligence, prospect research, Google Sheets lead sync, and Gmail outreach workspace.",
+  },
 };
 
 export const viewport: Viewport = {
@@ -15,21 +18,11 @@ export const viewport: Viewport = {
   initialScale: 1,
 };
 
-export const dynamic = "force-dynamic";
-
-export default async function RootLayout({ children }: { children: React.ReactNode }) {
-  const env = await getEnv();
-  const mode = authMode(env);
-  const user = await currentUser();
-
+export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
       <body>
-        {user ? (
-          <Shell user={{ name: user.name ?? "", email: user.email ?? "", via: user.via }}>{children}</Shell>
-        ) : (
-          <LoginGate mode={mode} />
-        )}
+        <AuthProvider>{children}</AuthProvider>
       </body>
     </html>
   );

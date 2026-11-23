@@ -1,31 +1,72 @@
 "use client";
 
-import { useState } from "react";
-import { useApi } from "@/lib/client";
+import { useEffect, useMemo, useState } from "react";
+import { useAuth } from "@/components/AuthProvider";
 import { Badge, Banner, Card, Empty, Modal, Pager, Progress } from "@/components/ui";
+import { errorMessage } from "@/lib/client";
+import { listLeads, listMessages } from "@/lib/firestore-store";
 import { fmtDate, label, statusTone } from "@/lib/format";
+import type { Lead, Message } from "@/lib/types";
 
-interface SentRow {
-  id: string;
-  subject: string | null;
-  body: string | null;
-  status: string;
-  kind: string;
-  sent_at: string | null;
-  gmail_id: string | null;
-  thread_id: string | null;
-  error: string | null;
+interface SentRow extends Message {
   business: string | null;
   lead_email: string | null;
 }
 
+const PAGE_SIZE = 20;
+
 export default function SentPage() {
+  const { user } = useAuth();
   const [tab, setTab] = useState("sent");
   const [page, setPage] = useState(1);
   const [open, setOpen] = useState<SentRow | null>(null);
-  const { data, loading, error } = useApi<{ messages: SentRow[]; total: number; page: number; pageSize: number; counts: Record<string, number> }>(
-    `/api/messages?status=${tab}&page=${page}&pageSize=20`,
-    [tab, page],
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [leads, setLeads] = useState<Lead[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    Promise.all([listMessages(user.uid), listLeads(user.uid)]).then(
+      ([m, l]) => {
+        if (!active) return;
+        setMessages(m);
+        setLeads(l);
+        setLoading(false);
+      },
+      (err) => {
+        if (!active) return;
+        setError(errorMessage(err));
+        setLoading(false);
+      },
+    );
+    return () => {
+      active = false;
+    };
+  }, [user.uid]);
+
+  const rows: SentRow[] = useMemo(() => {
+    const leadMap = new Map(leads.map((l) => [l.id, l]));
+    return messages.map((m) => {
+      const lead = leadMap.get(m.lead_id);
+      return {
+        ...m,
+        business: lead?.business ?? null,
+        lead_email: lead?.email ?? null,
+      };
+    });
+  }, [messages, leads]);
+
+  const counts = useMemo(() => {
+    const map: Record<string, number> = {};
+    for (const r of rows) map[r.status] = (map[r.status] ?? 0) + 1;
+    return map;
+  }, [rows]);
+
+  const filtered = useMemo(() => rows.filter((r) => r.status === tab), [rows, tab]);
+  const paged = useMemo(
+    () => filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE),
+    [filtered, page],
   );
 
   return (
@@ -51,19 +92,30 @@ export default function SentPage() {
                 ["cancelled", "Cancelled"],
                 ["sending", "In flight"],
               ].map(([value, text]) => (
-                <button key={value} className={`tab${tab === value ? " active" : ""}`} onClick={() => { setTab(value); setPage(1); }} type="button">
-                  {text}{data?.counts[value] ? ` (${data.counts[value]})` : ""}
+                <button
+                  key={value}
+                  className={`tab${tab === value ? " active" : ""}`}
+                  onClick={() => {
+                    setTab(value);
+                    setPage(1);
+                  }}
+                  type="button"
+                >
+                  {text}
+                  {counts[value] ? ` (${counts[value]})` : ""}
                 </button>
               ))}
             </div>
           </div>
 
-          {loading && !data ? (
-            <div style={{ padding: 18 }}><Progress label="Loading sent emails…" /></div>
-          ) : data && data.messages.length === 0 ? (
+          {loading && messages.length === 0 ? (
+            <div style={{ padding: 18 }}>
+              <Progress label="Loading sent emails…" />
+            </div>
+          ) : paged.length === 0 ? (
             <div style={{ padding: 18 }}>
               <Empty title="Nothing here yet">
-                Approve emails in the review queue, then run “Send approved” from a campaign.
+                Approve emails in the review queue, then run &ldquo;Send approved&rdquo; from a campaign.
               </Empty>
             </div>
           ) : (
@@ -79,7 +131,7 @@ export default function SentPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {data?.messages.map((message) => (
+                  {paged.map((message) => (
                     <tr key={message.id} className="clickable" onClick={() => setOpen(message)}>
                       <td>
                         <div className="strong">{message.business ?? "—"}</div>
@@ -98,11 +150,9 @@ export default function SentPage() {
               </table>
             </div>
           )}
-          {data && (
-            <div style={{ padding: "0 16px 14px" }}>
-              <Pager page={data.page} pageSize={data.pageSize} total={data.total} onPage={setPage} />
-            </div>
-          )}
+          <div style={{ padding: "0 16px 14px" }}>
+            <Pager page={page} pageSize={PAGE_SIZE} total={filtered.length} onPage={setPage} />
+          </div>
         </Card>
       </div>
 
@@ -111,14 +161,23 @@ export default function SentPage() {
           <>
             <div className="row" style={{ marginBottom: 12 }}>
               <Badge tone={statusTone(open.status)}>{label(open.status)}</Badge>
-              <span className="tiny">To {open.lead_email ?? "—"} · {fmtDate(open.sent_at)}</span>
+              <span className="tiny">
+                To {open.lead_email ?? "—"} · {fmtDate(open.sent_at)}
+              </span>
             </div>
             <pre className="pre">{open.body}</pre>
             <div className="divider" />
             <dl className="kv">
-              <dt>Gmail message ID</dt><dd className="mono">{open.gmail_id ?? "—"}</dd>
-              <dt>Thread ID</dt><dd className="mono">{open.thread_id ?? "—"}</dd>
-              {open.error && (<><dt>Error</dt><dd>{open.error}</dd></>)}
+              <dt>Gmail message ID</dt>
+              <dd className="mono">{open.gmail_id ?? "—"}</dd>
+              <dt>Thread ID</dt>
+              <dd className="mono">{open.thread_id ?? "—"}</dd>
+              {open.error && (
+                <>
+                  <dt>Error</dt>
+                  <dd>{open.error}</dd>
+                </>
+              )}
             </dl>
           </>
         )}

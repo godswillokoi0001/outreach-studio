@@ -1,43 +1,38 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { api, errorMessage, useApi } from "@/lib/client";
+import { useCallback, useEffect, useState } from "react";
+import { useAuth } from "@/components/AuthProvider";
 import { Badge, Banner, Card, Empty, Field, Progress } from "@/components/ui";
+import { errorMessage } from "@/lib/client";
+import {
+  addKnowledgeSource,
+  deleteKnowledgeEntry,
+  deleteKnowledgeSource,
+  getKnowledgeBundle,
+  saveMasterKnowledge,
+  upsertKnowledgeEntry,
+} from "@/lib/firestore-store";
+import type { KnowledgeEntry, KnowledgeSource } from "@/lib/types";
 
-interface KnowledgeSource {
-  id: string;
-  label: string;
-  kind: string;
-  url: string | null;
-  content: string | null;
-  fetched_at: string | null;
-  created_at: string;
-}
-
-interface KnowledgeEntry {
-  id: string;
-  title: string;
-  content: string;
-  category: string | null;
-  sort: number;
-  updated_at: string;
-}
-
-interface Payload {
+interface KnowledgePayload {
   master: string;
   entries: KnowledgeEntry[];
   sources: KnowledgeSource[];
 }
 
 export default function KnowledgePage() {
-  const { data, loading, error, reload } = useApi<Payload>("/api/knowledge");
+  const { user } = useAuth();
+  const [data, setData] = useState<KnowledgePayload | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
   const [master, setMaster] = useState("");
   const [savedMaster, setSavedMaster] = useState("");
   const [savingMaster, setSavingMaster] = useState(false);
-  const [note, setNote] = useState<{ tone: string; text: string } | null>(null);
+  const [note, setNote] = useState<{ tone: "ok" | "bad"; text: string } | null>(null);
 
   const [label, setLabel] = useState("");
-  const [kind, setKind] = useState("url");
+  const [kind, setKind] = useState<KnowledgeSource["kind"]>("url");
   const [url, setUrl] = useState("");
   const [sourceText, setSourceText] = useState("");
   const [addingSource, setAddingSource] = useState(false);
@@ -47,19 +42,49 @@ export default function KnowledgePage() {
   const [entryId, setEntryId] = useState<string | null>(null);
   const [savingEntry, setSavingEntry] = useState(false);
 
+  const reload = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const bundle = await getKnowledgeBundle(user.uid);
+      setData(bundle);
+      setMaster(bundle.master ?? "");
+      setSavedMaster(bundle.master ?? "");
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setLoading(false);
+    }
+  }, [user.uid]);
+
   useEffect(() => {
-    if (!data) return;
-    setMaster(data.master ?? "");
-    setSavedMaster(data.master ?? "");
-  }, [data]);
+    let active = true;
+    getKnowledgeBundle(user.uid).then(
+      (bundle) => {
+        if (!active) return;
+        setData(bundle);
+        setMaster(bundle.master ?? "");
+        setSavedMaster(bundle.master ?? "");
+        setLoading(false);
+      },
+      (err) => {
+        if (!active) return;
+        setError(errorMessage(err));
+        setLoading(false);
+      },
+    );
+    return () => {
+      active = false;
+    };
+  }, [user.uid]);
 
   const saveMaster = async () => {
     setSavingMaster(true);
     setNote(null);
     try {
-      await api.put("/api/knowledge", { master });
+      await saveMasterKnowledge(user.uid, master);
       setSavedMaster(master);
-      setNote({ tone: "good", text: "Master knowledge saved. Every new email will use it." });
+      setNote({ tone: "ok", text: "Master knowledge saved. Every new email will use it." });
     } catch (err) {
       setNote({ tone: "bad", text: errorMessage(err) });
     } finally {
@@ -71,12 +96,17 @@ export default function KnowledgePage() {
     setAddingSource(true);
     setNote(null);
     try {
-      await api.post("/api/knowledge", { label, kind, url, content: sourceText });
+      await addKnowledgeSource(user.uid, {
+        label,
+        kind,
+        url: kind === "url" ? url : null,
+        content: kind !== "url" ? sourceText : null,
+      });
       setLabel("");
       setUrl("");
       setSourceText("");
       await reload();
-      setNote({ tone: "good", text: "Source added. It is read when the AI writes for you." });
+      setNote({ tone: "ok", text: "Source added. It is read when Gemini writes for you." });
     } catch (err) {
       setNote({ tone: "bad", text: errorMessage(err) });
     } finally {
@@ -86,7 +116,7 @@ export default function KnowledgePage() {
 
   const removeSource = async (id: string) => {
     try {
-      await api.del(`/api/knowledge?sourceId=${encodeURIComponent(id)}`);
+      await deleteKnowledgeSource(user.uid, id);
       await reload();
     } catch (err) {
       setNote({ tone: "bad", text: errorMessage(err) });
@@ -97,12 +127,16 @@ export default function KnowledgePage() {
     setSavingEntry(true);
     setNote(null);
     try {
-      await api.put("/api/knowledge", { id: entryId ?? undefined, title: entryTitle, content: entryBody });
+      await upsertKnowledgeEntry(user.uid, {
+        id: entryId ?? undefined,
+        title: entryTitle,
+        content: entryBody,
+      });
       setEntryTitle("");
       setEntryBody("");
       setEntryId(null);
       await reload();
-      setNote({ tone: "good", text: "Saved." });
+      setNote({ tone: "ok", text: "Saved." });
     } catch (err) {
       setNote({ tone: "bad", text: errorMessage(err) });
     } finally {
@@ -112,7 +146,7 @@ export default function KnowledgePage() {
 
   const removeEntry = async (id: string) => {
     try {
-      await api.del(`/api/knowledge?id=${encodeURIComponent(id)}`);
+      await deleteKnowledgeEntry(user.uid, id);
       await reload();
     } catch (err) {
       setNote({ tone: "bad", text: errorMessage(err) });
@@ -151,7 +185,12 @@ export default function KnowledgePage() {
             title="Master knowledge"
             sub="The main input. Used on every research, qualification and email run."
             actions={
-              <button className="btn btn-primary btn-sm" onClick={saveMaster} disabled={savingMaster || !dirty} type="button">
+              <button
+                className="btn btn-primary btn-sm"
+                onClick={() => void saveMaster()}
+                disabled={savingMaster || !dirty}
+                type="button"
+              >
                 {savingMaster ? "Saving…" : dirty ? "Save knowledge" : "Saved"}
               </button>
             }
@@ -184,10 +223,19 @@ Rules: Never discount below $2,000. Always mention the 3-week timeline.`}
           >
             <div className="grid grid-2" style={{ alignItems: "start", marginBottom: 12 }}>
               <Field label="Label">
-                <input className="input" value={label} onChange={(e) => setLabel(e.target.value)} placeholder="Pricing page" />
+                <input
+                  className="input"
+                  value={label}
+                  onChange={(e) => setLabel(e.target.value)}
+                  placeholder="Pricing page"
+                />
               </Field>
               <Field label="Type">
-                <select className="input" value={kind} onChange={(e) => setKind(e.target.value)}>
+                <select
+                  className="input"
+                  value={kind}
+                  onChange={(e) => setKind(e.target.value as KnowledgeSource["kind"])}
+                >
                   <option value="url">Web page (read automatically)</option>
                   <option value="text">Pasted text</option>
                 </select>
@@ -217,7 +265,7 @@ Rules: Never discount below $2,000. Always mention the 3-week timeline.`}
               <div className="row-end">
                 <button
                   className="btn btn-primary btn-sm"
-                  onClick={addSource}
+                  onClick={() => void addSource()}
                   disabled={addingSource || !label.trim() || (kind === "url" ? !url.trim() : !sourceText.trim())}
                   type="button"
                 >
@@ -233,16 +281,24 @@ Rules: Never discount below $2,000. Always mention the 3-week timeline.`}
                 <div className="stack" style={{ gap: 8 }}>
                   {data.sources.map((source) => (
                     <div key={source.id} className="row" style={{ gap: 10, alignItems: "center" }}>
-                      <Badge tone={source.kind === "url" ? "info" : "neutral"}>{source.kind === "url" ? "URL" : "Text"}</Badge>
+                      <Badge tone={source.kind === "url" ? "info" : "neutral"}>
+                        {source.kind === "url" ? "URL" : "Text"}
+                      </Badge>
                       <div style={{ flex: 1, minWidth: 0 }}>
                         <div className="strong" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                           {source.label}
                         </div>
                         <div className="tiny" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                          {source.kind === "url" ? source.url : `${(source.content ?? "").length.toLocaleString()} characters`}
+                          {source.kind === "url"
+                            ? source.url
+                            : `${(source.content ?? "").length.toLocaleString()} characters`}
                         </div>
                       </div>
-                      <button className="btn btn-sm btn-ghost" onClick={() => removeSource(source.id)} type="button">
+                      <button
+                        className="btn btn-sm btn-ghost"
+                        onClick={() => void removeSource(source.id)}
+                        type="button"
+                      >
                         Remove
                       </button>
                     </div>
@@ -258,7 +314,12 @@ Rules: Never discount below $2,000. Always mention the 3-week timeline.`}
           >
             <div className="stack">
               <Field label={entryId ? "Editing note" : "Title"}>
-                <input className="input" value={entryTitle} onChange={(e) => setEntryTitle(e.target.value)} placeholder="Common objection: too expensive" />
+                <input
+                  className="input"
+                  value={entryTitle}
+                  onChange={(e) => setEntryTitle(e.target.value)}
+                  placeholder="Common objection: too expensive"
+                />
               </Field>
               <Field label="Content">
                 <textarea
@@ -286,7 +347,7 @@ Rules: Never discount below $2,000. Always mention the 3-week timeline.`}
                   )}
                   <button
                     className="btn btn-primary btn-sm"
-                    onClick={saveEntry}
+                    onClick={() => void saveEntry()}
                     disabled={savingEntry || !entryTitle.trim() || !entryBody.trim()}
                     type="button"
                   >
@@ -319,7 +380,11 @@ Rules: Never discount below $2,000. Always mention the 3-week timeline.`}
                       >
                         Edit
                       </button>
-                      <button className="btn btn-sm btn-ghost" onClick={() => removeEntry(entry.id)} type="button">
+                      <button
+                        className="btn btn-sm btn-ghost"
+                        onClick={() => void removeEntry(entry.id)}
+                        type="button"
+                      >
                         Delete
                       </button>
                     </div>

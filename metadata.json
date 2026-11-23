@@ -1,0 +1,8 @@
+{
+  "name": "Outreach Studio",
+  "description": "AI-powered B2B sales intelligence, prospect research, Google Sheets lead sync, and Gmail outreach workspace.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

@@ -1,9 +1,6 @@
-import { geminiJSON, geminiLooseJSON, type GeminiSchema } from "./gemini";
+import { Type, type Schema } from "@google/genai";
+import { geminiGroundedJSON, geminiJSON } from "./gemini";
 import type { CampaignConfig, Lead, Settings } from "./types";
-
-// ---------------------------------------------------------------------------
-// Reply classification
-// ---------------------------------------------------------------------------
 
 export interface ReplyAnalysis {
   classification:
@@ -22,11 +19,11 @@ export interface ReplyAnalysis {
   suppress: boolean;
 }
 
-const REPLY_SCHEMA: GeminiSchema = {
-  type: "OBJECT",
+const REPLY_SCHEMA: Schema = {
+  type: Type.OBJECT,
   properties: {
     classification: {
-      type: "STRING",
+      type: Type.STRING,
       enum: [
         "interested",
         "more_info",
@@ -39,16 +36,15 @@ const REPLY_SCHEMA: GeminiSchema = {
         "other",
       ],
     },
-    summary: { type: "STRING" },
-    recommended_action: { type: "STRING" },
-    draft_reply: { type: "STRING", description: "A short suggested reply in the sender's voice, or empty string" },
-    suppress: { type: "BOOLEAN", description: "True only for an opt-out or hostile request to stop contact" },
+    summary: { type: Type.STRING },
+    recommended_action: { type: Type.STRING },
+    draft_reply: { type: Type.STRING, description: "A short suggested reply in the sender's voice, or empty string" },
+    suppress: { type: Type.BOOLEAN, description: "True only for an opt-out or hostile request to stop contact" },
   },
   required: ["classification", "summary", "recommended_action", "draft_reply", "suppress"],
 };
 
-export async function analyseReply(
-  ownerSub: string,
+export async function analyseReplyServer(
   replyText: string,
   lead: Lead,
   settings: Settings,
@@ -61,7 +57,7 @@ BUSINESS KNOWLEDGE BASE
 ${knowledge}
 
 Rules for the suggested reply:
-- Write as ${settings.sender_name} in a calm, professional, relationship-first voice. 40-90 words.
+- Write as ${settings.sender_name || "the sender"} in a calm, professional, relationship-first voice. 40-90 words.
 - Never state or estimate prices. The knowledge base contains no confirmed pricing. If they ask about cost, explain you will scope it properly after understanding their needs, and suggest a short call.
 - If they are not interested, be gracious, leave the door open, and keep it to two sentences.
 - If they refer you to someone else, thank them and ask whether you may contact that person.
@@ -74,19 +70,12 @@ REPLY RECEIVED
 ${replyText.slice(0, 6000)}`;
 
   return geminiJSON<ReplyAnalysis>({
-    ownerSub,
     system,
     user,
     schema: REPLY_SCHEMA,
-    temperature: 0.4,
-    maxTokens: 1200,
     model,
   });
 }
-
-// ---------------------------------------------------------------------------
-// Natural language campaign planning
-// ---------------------------------------------------------------------------
 
 export interface CampaignPlan {
   name: string;
@@ -96,29 +85,29 @@ export interface CampaignPlan {
   warnings: string[];
 }
 
-const PLAN_SCHEMA: GeminiSchema = {
-  type: "OBJECT",
+const PLAN_SCHEMA: Schema = {
+  type: Type.OBJECT,
   properties: {
-    name: { type: "STRING" },
-    summary: { type: "STRING", description: "2-4 sentences describing exactly what the system will do" },
-    sheet_url: { type: "STRING", description: "Google Sheets URL mentioned by the operator, or empty" },
+    name: { type: Type.STRING },
+    summary: { type: Type.STRING, description: "2-4 sentences describing exactly what the system will do" },
+    sheet_url: { type: Type.STRING, description: "Google Sheets URL mentioned by the operator, or empty" },
     config: {
-      type: "OBJECT",
+      type: Type.OBJECT,
       properties: {
-        services: { type: "ARRAY", items: { type: "STRING" } },
-        target_industry: { type: "STRING" },
-        objective: { type: "STRING" },
-        tone: { type: "STRING" },
-        min_score: { type: "INTEGER" },
-        lead_count: { type: "INTEGER" },
-        send_limit: { type: "INTEGER" },
-        interval_seconds: { type: "INTEGER" },
-        followup_days: { type: "ARRAY", items: { type: "INTEGER" } },
-        auto_approve_initial: { type: "BOOLEAN" },
-        auto_approve_followups: { type: "BOOLEAN" },
-        require_approval: { type: "BOOLEAN" },
-        identity: { type: "STRING", enum: ["personal", "company"] },
-        extra_instructions: { type: "STRING" },
+        services: { type: Type.ARRAY, items: { type: Type.STRING } },
+        target_industry: { type: Type.STRING },
+        objective: { type: Type.STRING },
+        tone: { type: Type.STRING },
+        min_score: { type: Type.INTEGER },
+        lead_count: { type: Type.INTEGER },
+        send_limit: { type: Type.INTEGER },
+        interval_seconds: { type: Type.INTEGER },
+        followup_days: { type: Type.ARRAY, items: { type: Type.INTEGER } },
+        auto_approve_initial: { type: Type.BOOLEAN },
+        auto_approve_followups: { type: Type.BOOLEAN },
+        require_approval: { type: Type.BOOLEAN },
+        identity: { type: Type.STRING, enum: ["personal", "company"] },
+        extra_instructions: { type: Type.STRING },
       },
       required: [
         "services",
@@ -137,13 +126,12 @@ const PLAN_SCHEMA: GeminiSchema = {
         "extra_instructions",
       ],
     },
-    warnings: { type: "ARRAY", items: { type: "STRING" } },
+    warnings: { type: Type.ARRAY, items: { type: Type.STRING } },
   },
   required: ["name", "summary", "sheet_url", "config", "warnings"],
 };
 
-export async function planCampaign(
-  ownerSub: string,
+export async function planCampaignServer(
   instruction: string,
   context: {
     settings: Settings;
@@ -185,19 +173,12 @@ BUSINESS KNOWLEDGE BASE
 ${context.knowledge}`;
 
   return geminiJSON<CampaignPlan>({
-    ownerSub,
     system,
     user,
     schema: PLAN_SCHEMA,
-    temperature: 0.3,
-    maxTokens: 1600,
     model,
   });
 }
-
-// ---------------------------------------------------------------------------
-// Campaign performance analysis
-// ---------------------------------------------------------------------------
 
 export interface PerformanceInsight {
   headline: string;
@@ -206,29 +187,29 @@ export interface PerformanceInsight {
   data_limits: string;
 }
 
-const INSIGHT_SCHEMA: GeminiSchema = {
-  type: "OBJECT",
+const INSIGHT_SCHEMA: Schema = {
+  type: Type.OBJECT,
   properties: {
-    headline: { type: "STRING" },
-    observations: { type: "ARRAY", items: { type: "STRING" } },
+    headline: { type: Type.STRING },
+    observations: { type: Type.ARRAY, items: { type: Type.STRING } },
     recommendations: {
-      type: "ARRAY",
+      type: Type.ARRAY,
       items: {
-        type: "OBJECT",
+        type: Type.OBJECT,
         properties: {
-          title: { type: "STRING" },
-          detail: { type: "STRING" },
-          priority: { type: "STRING", enum: ["high", "medium", "low"] },
+          title: { type: Type.STRING },
+          detail: { type: Type.STRING },
+          priority: { type: Type.STRING, enum: ["high", "medium", "low"] },
         },
         required: ["title", "detail", "priority"],
       },
     },
-    data_limits: { type: "STRING" },
+    data_limits: { type: Type.STRING },
   },
   required: ["headline", "observations", "recommendations", "data_limits"],
 };
 
-export async function analysePerformance(ownerSub: string, metrics: unknown, model?: string): Promise<PerformanceInsight> {
+export async function analysePerformanceServer(metrics: unknown, model?: string): Promise<PerformanceInsight> {
   const system = `You are a sales analyst reviewing real campaign metrics for a small web design business.
 
 Rules:
@@ -236,20 +217,14 @@ Rules:
 - If the sample is small (fewer than 20 sends), say so explicitly and keep recommendations modest.
 - Comments about industries, subject lines or angles are only allowed when the data actually separates them.
 - Be concrete and practical: what to change in the next campaign.`;
+
   return geminiJSON<PerformanceInsight>({
-    ownerSub,
     system,
     user: `METRICS\n${JSON.stringify(metrics, null, 2).slice(0, 12000)}`,
     schema: INSIGHT_SCHEMA,
-    temperature: 0.4,
-    maxTokens: 1600,
     model,
   });
 }
-
-// ---------------------------------------------------------------------------
-// Prospect discovery with Google Search grounding
-// ---------------------------------------------------------------------------
 
 export interface DiscoveryCandidate {
   business: string;
@@ -260,36 +235,13 @@ export interface DiscoveryCandidate {
   source_url: string;
 }
 
-const DISCOVERY_SCHEMA: GeminiSchema = {
-  type: "OBJECT",
-  properties: {
-    candidates: {
-      type: "ARRAY",
-      items: {
-        type: "OBJECT",
-        properties: {
-          business: { type: "STRING" },
-          website: { type: "STRING" },
-          location: { type: "STRING" },
-          industry: { type: "STRING" },
-          why: { type: "STRING" },
-          source_url: { type: "STRING" },
-        },
-        required: ["business", "website", "location", "industry", "why", "source_url"],
-      },
-    },
-    notes: { type: "STRING" },
-  },
-  required: ["candidates", "notes"],
-};
-
-export async function discoverProspects(ownerSub: string, input: {
+export async function discoverProspectsServer(input: {
   industry: string;
   location: string;
   count: number;
   focus: string;
   model?: string;
-}): Promise<{ candidates: DiscoveryCandidate[]; notes: string }> {
+}): Promise<{ candidates: DiscoveryCandidate[]; notes: string; groundingUrls: { uri: string; title: string }[] }> {
   const system = `You find real businesses that could plausibly need web design, redesign, branding or video services, using Google Search.
 
 Rules:
@@ -297,22 +249,28 @@ Rules:
 - Every candidate needs a source_url from the search results. If you cannot verify a website, leave website empty rather than guessing.
 - Do not invent contact emails, revenue, staff counts or website problems.
 - "why" is one sentence on the plausible digital gap, phrased as something to verify.
-- Return at most ${input.count} candidates.`;
+- Return at most ${input.count} candidates.
+- Output strictly valid JSON matching: {"candidates":[{"business":string,"website":string,"location":string,"industry":string,"why":string,"source_url":string}],"notes":string}`;
+
   const user = `Find ${input.count} realistic prospects.
 Industry/segment: ${input.industry || "any business with a weak or missing website"}
 Location: ${input.location || "Nigeria"}
 Additional focus: ${input.focus || "(none)"}
 
-Return JSON with a "candidates" array and short "notes" about how reliable the results are.`;
+Return ONLY valid JSON with a "candidates" array and short "notes" about how reliable the results are.`;
 
-  return geminiLooseJSON<{ candidates: DiscoveryCandidate[]; notes: string }>({
-    ownerSub,
+  const { data, groundingUrls } = await geminiGroundedJSON<{
+    candidates: DiscoveryCandidate[];
+    notes: string;
+  }>({
     system,
     user,
-    schema: DISCOVERY_SCHEMA,
-    search: true,
-    temperature: 0.3,
-    maxTokens: 2400,
     model: input.model,
   });
+
+  return {
+    candidates: Array.isArray(data.candidates) ? data.candidates : [],
+    notes: typeof data.notes === "string" ? data.notes : "",
+    groundingUrls,
+  };
 }

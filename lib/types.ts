@@ -17,36 +17,6 @@ export type LeadStatus =
 
 export type Priority = "high" | "medium" | "low" | "not_qualified" | "needs_research";
 
-export interface Lead {
-  id: string;
-  campaign_id: string | null;
-  business: string | null;
-  contact_name: string | null;
-  role: string | null;
-  email: string | null;
-  email_norm: string | null;
-  website: string | null;
-  phone: string | null;
-  location: string | null;
-  industry: string | null;
-  notes: string | null;
-  extra: string | null;
-  source: string | null;
-  source_ref: string | null;
-  sheet_row: number | null;
-  status: LeadStatus;
-  score: number | null;
-  priority: Priority | null;
-  score_reason: string | null;
-  research: string | null;
-  research_at: string | null;
-  research_ok: number;
-  manual_research: string | null;
-  last_contacted_at: string | null;
-  created_at: string;
-  updated_at: string;
-}
-
 export interface Finding {
   area: string;
   observation: string;
@@ -82,6 +52,37 @@ export interface QualificationResult {
   disqualify_reason?: string;
 }
 
+export interface Lead {
+  id: string;
+  ownerId?: string;
+  campaign_id: string | null;
+  business: string | null;
+  contact_name: string | null;
+  role: string | null;
+  email: string | null;
+  email_norm: string | null;
+  website: string | null;
+  phone: string | null;
+  location: string | null;
+  industry: string | null;
+  notes: string | null;
+  extra: string | null;
+  source: string | null;
+  source_ref: string | null;
+  sheet_row: number | null;
+  status: LeadStatus;
+  score: number | null;
+  priority: Priority | null;
+  score_reason: QualificationResult | null;
+  research: ResearchResult | null;
+  research_at: string | null;
+  research_ok: boolean;
+  manual_research: string | null;
+  last_contacted_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface CampaignConfig {
   services: string[];
   target_industry: string;
@@ -97,7 +98,6 @@ export interface CampaignConfig {
   require_approval: boolean;
   identity: "personal" | "company";
   extra_instructions: string;
-  /** Human readable plan shown before approval. */
   summary?: string;
   warnings?: string[];
 }
@@ -114,6 +114,7 @@ export type MessageStatus =
 
 export interface Message {
   id: string;
+  ownerId?: string;
   lead_id: string;
   campaign_id: string | null;
   step: number;
@@ -136,9 +137,10 @@ export interface Message {
 
 export interface Campaign {
   id: string;
+  ownerId?: string;
   name: string;
   instruction: string | null;
-  config: string;
+  config: CampaignConfig;
   status: "draft" | "approved" | "running" | "paused" | "completed" | "archived";
   sheet_source: string | null;
   created_at: string;
@@ -148,37 +150,70 @@ export interface Campaign {
 
 export interface Reply {
   id: string;
+  ownerId?: string;
   lead_id: string | null;
   thread_id: string | null;
-  gmail_id: string | null;
+  gmail_id: string;
   from_email: string | null;
   subject: string | null;
   snippet: string | null;
   body: string | null;
   received_at: string | null;
-  classification: string | null;
+  classification: string;
   summary: string | null;
   recommended_action: string | null;
-  handled: number;
+  draft_reply: string | null;
+  handled: boolean;
   created_at: string;
+  updated_at: string;
 }
 
 export interface KnowledgeEntry {
   id: string;
+  ownerId?: string;
   category: string;
   title: string;
   content: string;
   sort: number;
-  is_master: number;
+  is_master: boolean;
+  created_at: string;
   updated_at: string;
 }
 
 export interface KnowledgeSource {
   id: string;
+  ownerId?: string;
   label: string;
-  kind: "url" | "document" | "note";
+  kind: "url" | "text" | "document" | "note";
   url: string | null;
   content: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface Suppression {
+  id: string;
+  email: string;
+  reason: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SendLog {
+  id: string;
+  lead_id: string;
+  message_id: string;
+  status: "sent" | "failed";
+  at: string;
+  created_at: string;
+}
+
+export interface AuditLog {
+  id: string;
+  action: string;
+  entity: string;
+  entity_id: string;
+  detail: Record<string, unknown> | null;
   created_at: string;
 }
 
@@ -219,7 +254,7 @@ export const DEFAULT_SETTINGS: Settings = {
   min_score: 55,
   unsubscribe_email: "",
   physical_address: "",
-  model: "gemini-3.5-flash",
+  model: "gemini-4-hydrogen",
 };
 
 export const LEAD_STATUS_LABELS: Record<string, string> = {

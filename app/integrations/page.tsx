@@ -1,97 +1,29 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { useSearchParams } from "next/navigation";
-import { api, errorMessage, useApi } from "@/lib/client";
-import { Badge, Banner, Card, Field, Progress } from "@/components/ui";
-
-interface ConfigStatus {
-  gemini: {
-    configured: boolean;
-    source: "account" | "platform" | "env" | null;
-    model: string;
-    account_key_hint: string | null;
-    account_model: string | null;
-    account_override: boolean;
-  };
-  google: {
-    credentials_ready: boolean;
-    credential_source: string | null;
-    client_hint: string | null;
-    is_platform_owner: boolean;
-  };
-  encryption: { dedicated_key: boolean };
-}
-
-interface IntegrationStatus {
-  google: {
-    configured: boolean;
-    missing: string[];
-    connected: boolean;
-    email: string | null;
-    connected_at: string | null;
-    redirect_uri: string;
-    credential_source: string | null;
-  };
-  gemini: { configured: boolean; model: string; source: string | null };
-  is_platform_owner: boolean;
-}
+import { useState } from "react";
+import { CheckCircle2, Database, FileSpreadsheet, Mail, ShieldCheck, Sparkles } from "lucide-react";
+import { useAuth } from "@/components/AuthProvider";
+import { Badge, Banner, Card } from "@/components/ui";
+import { authedPost, errorMessage } from "@/lib/client";
+import { getSettings } from "@/lib/firestore-store";
 
 export default function IntegrationsPage() {
-  const params = useSearchParams();
-  const config = useApi<ConfigStatus>("/api/config");
-  const integrations = useApi<IntegrationStatus>("/api/integrations", [params.get("connected")]);
-
-  const [key, setKey] = useState("");
-  const [model, setModel] = useState("");
-  const [clientBlob, setClientBlob] = useState("");
-  const [redirect, setRedirect] = useState("");
+  const { user, workspaceToken, reconnectWorkspace } = useAuth();
   const [busy, setBusy] = useState<string | null>(null);
-  const [note, setNote] = useState<{ tone: string; text: string } | null>(null);
-
-  const status = config.data;
-  const google = integrations.data?.google;
-
-  useEffect(() => {
-    if (status) setModel(status.gemini.account_model ?? status.gemini.model);
-  }, [status]);
-
-  useEffect(() => {
-    if (google?.redirect_uri) setRedirect(google.redirect_uri);
-  }, [google?.redirect_uri]);
-
-  useEffect(() => {
-    const error = params.get("error");
-    if (error) setNote({ tone: "bad", text: error });
-    else if (params.get("connected")) setNote({ tone: "good", text: "Google connected. Sheets and Gmail are now available." });
-  }, [params]);
-
-  const refresh = async () => {
-    await Promise.all([config.reload(), integrations.reload()]);
-  };
-
-  const saveKey = async (clear = false) => {
-    setBusy("gemini");
-    setNote(null);
-    try {
-      if (clear) await api.del("/api/config?key=gemini_api_key");
-      else await api.put("/api/config", { gemini_api_key: key, gemini_model: model });
-      setKey("");
-      await refresh();
-      setNote({ tone: "good", text: clear ? "API key removed." : "Saved. Your key is stored encrypted on the server." });
-    } catch (err) {
-      setNote({ tone: "bad", text: errorMessage(err) });
-    } finally {
-      setBusy(null);
-    }
-  };
+  const [note, setNote] = useState<{ tone: "ok" | "bad" | "info"; text: string } | null>(null);
 
   const testGemini = async () => {
     setBusy("test");
     setNote(null);
     try {
-      const result = await api.post<{ model: string; ms: number }>("/api/config");
-      setNote({ tone: "good", text: `Working: ${result.model} replied in ${result.ms} ms.` });
+      const settings = await getSettings(user.uid);
+      const result = await authedPost<{ model: string; ms: number; reply: string }>("/api/ai/test", {
+        model: settings.model,
+      });
+      setNote({
+        tone: "ok",
+        text: `Gemini AI connected: ${result.model} replied "${result.reply}" in ${result.ms} ms.`,
+      });
     } catch (err) {
       setNote({ tone: "bad", text: errorMessage(err) });
     } finally {
@@ -99,214 +31,147 @@ export default function IntegrationsPage() {
     }
   };
 
-  const saveGoogleClient = async (clear = false) => {
-    setBusy("google");
+  const refreshWorkspace = async () => {
+    setBusy("workspace");
     setNote(null);
     try {
-      if (clear) await api.put("/api/config", { google_client: "" });
-      else await api.put("/api/config", { google_client: clientBlob, google_redirect_uri: redirect });
-      setClientBlob("");
-      await refresh();
-      setNote({ tone: "good", text: clear ? "Shared Google client removed." : "Saved. Everyone can now connect Google in one click." });
+      const ok = await reconnectWorkspace();
+      if (ok) {
+        setNote({
+          tone: "ok",
+          text: "Google Workspace permissions verified. Gmail and Google Sheets are ready.",
+        });
+      }
     } catch (err) {
       setNote({ tone: "bad", text: errorMessage(err) });
     } finally {
       setBusy(null);
     }
   };
-
-  const disconnect = async () => {
-    setBusy("disconnect");
-    try {
-      await api.del("/api/integrations");
-      await refresh();
-      setNote({ tone: "good", text: "Google disconnected. Stored tokens were deleted." });
-    } catch (err) {
-      setNote({ tone: "bad", text: errorMessage(err) });
-    } finally {
-      setBusy(null);
-    }
-  };
-
-  const loading = (config.loading && !status) || (integrations.loading && !integrations.data);
 
   return (
     <main className="page">
       <div className="page-head">
         <div>
           <h1 className="page-title">Integrations</h1>
-          <p className="page-sub">Two connections power everything: Google (Sheets + Gmail) and Gemini (the AI).</p>
+          <p className="page-sub">
+            Your Google account powers Firebase cloud sync, Google Sheets, and Gmail — while Google AI runs securely
+            on the server.
+          </p>
         </div>
       </div>
 
-      {note && <Banner tone={note.tone}>{note.text}</Banner>}
-      {config.error && <Banner tone="bad">{config.error}</Banner>}
-      {integrations.error && <Banner tone="bad">{integrations.error}</Banner>}
-      {loading && <Progress label="Checking connections…" />}
+      <div className="stack">
+        {note && <Banner tone={note.tone}>{note.text}</Banner>}
 
-      {google && (
-        <div className="stack">
-          <Card
-            title="Google — Sheets and Gmail"
-            sub="One click connects both. Sheets for prospect import and status write-back, Gmail for sending and reading replies."
-            actions={
-              google.connected ? (
-                <Badge tone="good">Connected</Badge>
-              ) : google.configured ? (
-                <Badge tone="warn">Not connected</Badge>
-              ) : (
-                <Badge tone="bad">Setup needed</Badge>
-              )
-            }
-          >
-            {google.connected ? (
-              <div className="stack">
-                <div className="row" style={{ gap: 10 }}>
-                  <span className="strong">{google.email}</span>
-                  <div className="row-end">
-                    <button className="btn btn-sm btn-ghost" onClick={disconnect} disabled={busy === "disconnect"} type="button">
-                      Disconnect
-                    </button>
-                  </div>
-                </div>
-                <p className="tiny">
-                  Connected {google.connected_at ? new Date(google.connected_at).toLocaleString() : ""}. Sheets you can
-                  read are available in the Sheets page; approved emails send from this address.
-                </p>
-                <div className="row">
-                  <a className="btn btn-sm" href="/api/auth/google">
-                    Reconnect / use another account
-                  </a>
-                </div>
-              </div>
-            ) : google.configured ? (
-              <div className="stack">
-                <p className="small">
-                  Press connect, choose the Google account that owns your sheet and mailbox, and approve the two
-                  permissions. Nothing else to configure.
-                </p>
-                <div className="row">
-                  <a className="btn btn-primary" href="/api/auth/google">
-                    Connect Google
-                  </a>
-                </div>
-                <p className="tiny">
-                  Redirect URI this app uses: <code>{google.redirect_uri}</code>
-                </p>
-              </div>
-            ) : (
-              <div className="stack">
-                <p className="small">
-                  The shared Google OAuth client has not been added yet, so nobody can connect. Add it once here and
-                  every account gets the one-click button.
-                </p>
-                {status?.google.is_platform_owner ? (
-                  <div className="stack">
-                    <Field
-                      label="Google OAuth client"
-                      hint="Google Cloud → APIs & Services → Credentials → Create OAuth client ID → Web application → download JSON, then paste it here."
-                    >
-                      <textarea
-                        className="input"
-                        style={{ minHeight: 110, fontFamily: "ui-monospace, monospace", fontSize: 12.5 }}
-                        value={clientBlob}
-                        onChange={(e) => setClientBlob(e.target.value)}
-                        placeholder={'{"web":{"client_id":"….apps.googleusercontent.com","client_secret":"…"}}'}
-                      />
-                    </Field>
-                    <Field label="Redirect URI" hint="Add this exact URI to the OAuth client in Google Cloud.">
-                      <input className="input" value={redirect} onChange={(e) => setRedirect(e.target.value)} />
-                    </Field>
-                    <div className="row">
-                      <div className="row-end">
-                        <button
-                          className="btn btn-primary btn-sm"
-                          onClick={() => saveGoogleClient(false)}
-                          disabled={busy === "google" || !clientBlob.trim()}
-                          type="button"
-                        >
-                          {busy === "google" ? "Saving…" : "Save Google client"}
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                ) : (
-                  <Banner tone="warn">
-                    Ask the workspace owner to add the shared Google OAuth client in Integrations. After that this page
-                    shows a single Connect Google button.
-                  </Banner>
-                )}
-              </div>
-            )}
-            {google.credential_source === "env" && (
-              <p className="tiny" style={{ marginTop: 10 }}>
-                Credentials are coming from server environment variables.
-              </p>
-            )}
-          </Card>
-
-          <Card
-            title="Gemini — the AI"
-            sub="Used for research, qualification, email writing, reply classification and analytics."
-            actions={status?.gemini.configured ? <Badge tone="good">Ready</Badge> : <Badge tone="bad">Key needed</Badge>}
-          >
-            <div className="stack">
-              {status?.gemini.configured && (
-                <p className="small">
-                  Active model: <strong>{status.gemini.model}</strong>
-                  {status.gemini.source === "account" && status.gemini.account_key_hint
-                    ? ` · your key ${status.gemini.account_key_hint}`
-                    : status.gemini.source === "env"
-                      ? " · key from server environment"
-                      : " · using the workspace key"}
-                </p>
-              )}
-              <Field label="Google AI Studio API key" hint="Create one at aistudio.google.com → Get API key. Stored encrypted; never sent to the browser again.">
-                <input
-                  className="input"
-                  type="password"
-                  value={key}
-                  onChange={(e) => setKey(e.target.value)}
-                  placeholder={status?.gemini.account_override ? "•••• saved — paste a new key to replace" : "AIza…"}
-                  autoComplete="off"
-                />
-              </Field>
-              <Field label="Model" hint="Leave as gemini-3.5-flash unless you need a different one.">
-                <input className="input" value={model} onChange={(e) => setModel(e.target.value)} placeholder="gemini-3.5-flash" />
-              </Field>
-              <div className="row">
-                <div className="row-end">
-                  {status?.gemini.account_override && (
-                    <button className="btn btn-sm btn-ghost" onClick={() => saveKey(true)} disabled={busy === "gemini"} type="button">
-                      Remove my key
-                    </button>
-                  )}
-                  <button className="btn btn-sm" onClick={testGemini} disabled={busy === "test" || !status?.gemini.configured} type="button">
-                    {busy === "test" ? "Testing…" : "Test connection"}
-                  </button>
-                  <button
-                    className="btn btn-primary btn-sm"
-                    onClick={() => saveKey(false)}
-                    disabled={busy === "gemini" || (!key.trim() && !model.trim())}
-                    type="button"
-                  >
-                    {busy === "gemini" ? "Saving…" : "Save"}
-                  </button>
-                </div>
-              </div>
+        <Card
+          title="Firebase Auth & Cloud Firestore"
+          sub="Private, user-isolated workspace persistence across sessions and devices."
+          actions={<Badge tone="ok">Connected</Badge>}
+        >
+          <div className="row" style={{ gap: 12, marginBottom: 10 }}>
+            <Database size={18} style={{ color: "var(--accent)" }} />
+            <div>
+              <div className="strong">{user.displayName || user.email}</div>
+              <div className="tiny">{user.email} · Verified Google account</div>
             </div>
-          </Card>
+          </div>
+          <p className="tiny" style={{ margin: 0 }}>
+            All campaigns, leads, research findings, drafts, replies, knowledge base entries, and suppression rules are
+            stored strictly under your user record in Cloud Firestore.
+          </p>
+        </Card>
 
-          <Card title="What this app never does" sub="Security notes">
-            <ul className="small" style={{ paddingLeft: 18, margin: 0, lineHeight: 1.7 }}>
-              <li>API keys and Google tokens are encrypted at rest and never returned to the browser.</li>
-              <li>Every account only sees its own leads, emails, replies and settings.</li>
-              <li>Nothing is sent from your Gmail until you approve the specific email.</li>
-              <li>Unsubscribes and bounces are recorded automatically and stop all future contact.</li>
-            </ul>
-          </Card>
-        </div>
-      )}
+        <Card
+          title="Google Workspace — Gmail & Google Sheets"
+          sub="Granted automatically when you sign in with Google."
+          actions={
+            workspaceToken ? (
+              <Badge tone="ok">Active in session</Badge>
+            ) : (
+              <Badge tone="warn">Reconnect needed</Badge>
+            )
+          }
+        >
+          <div className="stack" style={{ gap: 10, marginBottom: 14 }}>
+            <div className="row" style={{ gap: 10 }}>
+              <FileSpreadsheet size={16} style={{ color: "var(--accent)" }} />
+              <span style={{ fontSize: 13 }}>
+                <strong>Google Sheets</strong> — Read prospect spreadsheets and write status updates back.
+              </span>
+            </div>
+            <div className="row" style={{ gap: 10 }}>
+              <Mail size={16} style={{ color: "var(--accent)" }} />
+              <span style={{ fontSize: 13 }}>
+                <strong>Gmail Send &amp; Read</strong> — Send approved outreach emails and sync prospect replies.
+              </span>
+            </div>
+          </div>
+
+          <div className="row">
+            <button
+              className={workspaceToken ? "btn btn-sm" : "btn btn-primary btn-sm"}
+              onClick={() => void refreshWorkspace()}
+              disabled={busy !== null}
+              type="button"
+            >
+              {busy === "workspace"
+                ? "Connecting…"
+                : workspaceToken
+                  ? "Refresh / switch Google account"
+                  : "Grant / Reconnect Google Workspace"}
+            </button>
+            <span className="tiny">
+              OAuth access tokens remain strictly in browser memory and are never written to storage or databases.
+            </span>
+          </div>
+        </Card>
+
+        <Card
+          title="Google Gemini AI"
+          sub="Powers prospect research, qualification scoring, outreach copywriting, reply analysis, and discovery."
+          actions={<Badge tone="ok">Server-managed</Badge>}
+        >
+          <div className="row" style={{ gap: 10, marginBottom: 12 }}>
+            <Sparkles size={17} style={{ color: "var(--accent)" }} />
+            <span style={{ fontSize: 13 }}>
+              Server-side <code>@google/genai</code> integration with structured JSON schemas, Google Search grounding,
+              and automatic fallback to <code>gemini-3.1-flash-lite</code> if rate limits occur.
+            </span>
+          </div>
+          <div className="row" style={{ gap: 10 }}>
+            <button
+              className="btn btn-primary btn-sm"
+              onClick={() => void testGemini()}
+              disabled={busy !== null}
+              type="button"
+            >
+              {busy === "test" ? "Testing Gemini AI…" : "Test Gemini AI"}
+            </button>
+            <span className="tiny">
+              Hitting 429 quota errors on a free-tier key? Select a billing-enabled key in{" "}
+              <strong>Settings &gt; Secrets</strong> or switch to Flash Lite in Outreach Settings.
+            </span>
+          </div>
+        </Card>
+
+        <Card title="Security guarantees" sub="Built into the platform architecture">
+          <ul className="stack" style={{ listStyle: "none", padding: 0, margin: 0, gap: 8, fontSize: 13 }}>
+            <li className="row" style={{ gap: 8 }}>
+              <ShieldCheck size={15} style={{ color: "var(--accent)" }} />
+              <span>Every API route verifies your Firebase Auth session token before running AI or Workspace actions.</span>
+            </li>
+            <li className="row" style={{ gap: 8 }}>
+              <CheckCircle2 size={15} style={{ color: "var(--accent)" }} />
+              <span>Nothing is ever emailed from Gmail until you review and approve the message.</span>
+            </li>
+            <li className="row" style={{ gap: 8 }}>
+              <CheckCircle2 size={15} style={{ color: "var(--accent)" }} />
+              <span>Unsubscribes and bounces are added to your suppression list automatically to prevent future contact.</span>
+            </li>
+          </ul>
+        </Card>
+      </div>
     </main>
   );
 }

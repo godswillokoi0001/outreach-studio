@@ -1,38 +1,43 @@
 "use client";
 
 import Link from "next/link";
-import { useApi } from "@/lib/client";
+import { useEffect, useState } from "react";
+import { useAuth } from "@/components/AuthProvider";
 import { Badge, Banner, Card, Empty, Progress, Stat } from "@/components/ui";
+import { errorMessage } from "@/lib/client";
+import { loadDashboardBundle } from "@/lib/firestore-store";
 import { label, statusTone } from "@/lib/format";
 
-interface Dashboard {
-  leads: { total: number; byStatus: Record<string, number>; researched: number; qualified: number; disqualified: number };
-  emails: { generated: number; pending: number; sent: number; failed: number };
-  replies: { total: number; positive: number; byType: Record<string, number> };
-  followupsDue: number;
-  sends: { day: string; c: number }[];
-  campaigns: { id: string; name: string; status: string; leads: number; sent: number; pending: number; replies: number }[];
-  activity: { action: string; entity: string; created_at: string; detail: string | null }[];
-  setup: {
-    onboarding_needed: boolean;
-    knowledge_empty: boolean;
-    googleConfigured: boolean;
-    googleConnected: boolean;
-    geminiConfigured: boolean;
-    geminiModel: string;
-    senderName: string;
-    is_platform_owner: boolean;
-  };
-}
+type DashboardData = Awaited<ReturnType<typeof loadDashboardBundle>>;
 
 export default function DashboardPage() {
-  const { data, loading, error } = useApi<Dashboard>("/api/dashboard");
+  const { user, workspaceToken, reconnectWorkspace } = useAuth();
+  const [data, setData] = useState<DashboardData | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
-  const setup = data?.setup;
-  const needsGoogle = setup && (!setup.googleConfigured || !setup.googleConnected);
-  const needsGemini = setup && !setup.geminiConfigured;
-  const needsKnowledge = setup && setup.knowledge_empty;
+  useEffect(() => {
+    let active = true;
+    loadDashboardBundle(user.uid).then(
+      (bundle) => {
+        if (!active) return;
+        setData(bundle);
+        setLoading(false);
+      },
+      (err) => {
+        if (!active) return;
+        setError(errorMessage(err));
+        setLoading(false);
+      },
+    );
+    return () => {
+      active = false;
+    };
+  }, [user.uid]);
+
+  const needsKnowledge = data?.knowledgeEmpty;
   const freshAccount = data && data.leads.total === 0 && data.campaigns.length === 0;
+  const needsWorkspace = !workspaceToken;
 
   return (
     <main className="page">
@@ -49,38 +54,34 @@ export default function DashboardPage() {
       {error && <Banner tone="bad">{error}</Banner>}
       {loading && !data && <Progress label="Loading your pipeline…" />}
 
-      {(needsGoogle || needsGemini || needsKnowledge) && (
+      {(needsWorkspace || needsKnowledge || freshAccount) && (
         <div className="stack" style={{ marginBottom: 16 }}>
           {freshAccount && (
             <Banner tone="info">
-              <strong>Welcome. This workspace is empty.</strong> Three steps and it is ready: add your business knowledge,
-              connect Google, then create a campaign. Nothing was pre-filled for anyone else.{" "}
+              <strong>Welcome to your private workspace.</strong> Three quick steps: add your business knowledge,
+              import prospects from Google Sheets (or discover them with AI), then launch a campaign.{" "}
               <Link href="/knowledge">Start with knowledge</Link>
             </Banner>
           )}
           {needsKnowledge && (
             <Banner tone="warn">
-              <strong>No business knowledge yet.</strong> Add your master knowledge and sources so the AI writes as you,
-              not as a generic template.{" "}
+              <strong>No business knowledge yet.</strong> Add your master knowledge and sources so Gemini writes in your
+              authentic voice rather than a generic template.{" "}
               <Link href="/knowledge">Open knowledge base</Link>
             </Banner>
           )}
-          {needsGemini && (
+          {needsWorkspace && (
             <Banner tone="warn">
-              <strong>Gemini is not connected yet.</strong> Add a Google AI Studio API key in Integrations to switch
-              on research, qualification and email writing.{" "}
-              <Link href="/integrations">Open integrations</Link>
-            </Banner>
-          )}
-          {needsGoogle && (
-            <Banner tone="warn">
-              <strong>{setup?.googleConfigured ? "Google is not connected." : "Google sign-in is not set up yet."}</strong>{" "}
-              {setup?.googleConfigured
-                ? "One click connects Google Sheets and Gmail."
-                : setup?.is_platform_owner
-                  ? "Add the Google OAuth client once, then every account connects with one click."
-                  : "Ask the workspace owner to add the Google OAuth client, then connect with one click."}{" "}
-              <Link href="/integrations">{setup?.googleConfigured ? "Connect Google" : "Review setup"}</Link>
+              <strong>Reconnect Gmail &amp; Google Sheets for live mailbox/sheet actions.</strong> Your Firebase session
+              stays active across reloads, while Google Workspace OAuth tokens are kept strictly in memory.{" "}
+              <button
+                className="btn btn-sm"
+                style={{ marginLeft: 8 }}
+                onClick={() => void reconnectWorkspace()}
+                type="button"
+              >
+                Reconnect Gmail &amp; Sheets
+              </button>
             </Banner>
           )}
         </div>
@@ -93,7 +94,11 @@ export default function DashboardPage() {
             <Stat label="Researched" value={data.leads.researched} note="Evidence stored" />
             <Stat label="Qualified" value={data.leads.qualified} accent note={`${data.leads.disqualified} disqualified`} />
             <Stat label="Emails waiting" value={data.emails.pending} note={`${data.emails.generated} generated`} />
-            <Stat label="Sent" value={data.emails.sent} note={data.emails.failed ? `${data.emails.failed} failed` : "No failures"} />
+            <Stat
+              label="Sent"
+              value={data.emails.sent}
+              note={data.emails.failed ? `${data.emails.failed} failed` : "No failures"}
+            />
             <Stat label="Replies" value={data.replies.total} note={`${data.replies.positive} positive`} />
             <Stat label="Follow-ups due" value={data.followupsDue} note="No reply yet" />
           </div>
@@ -104,23 +109,43 @@ export default function DashboardPage() {
                 <Step
                   done={data.emails.pending > 0}
                   href="/review"
-                  title={data.emails.pending ? `Review ${data.emails.pending} email${data.emails.pending === 1 ? "" : "s"}` : "Review generated emails"}
-                  detail={data.emails.pending ? "Nothing sends without your approval." : "Emails appear here once a campaign composes them."}
+                  title={
+                    data.emails.pending
+                      ? `Review ${data.emails.pending} email${data.emails.pending === 1 ? "" : "s"}`
+                      : "Review generated emails"
+                  }
+                  detail={
+                    data.emails.pending
+                      ? "Nothing sends without your approval."
+                      : "Emails appear here once a campaign composes them."
+                  }
                 />
                 <Step
                   done={data.replies.total > 0}
                   href="/conversations"
-                  title={data.replies.total ? `Answer ${data.replies.total} repl${data.replies.total === 1 ? "y" : "ies"}` : "Conversations"}
-                  detail={data.replies.positive ? `${data.replies.positive} interested prospects are waiting.` : "Classified replies and suggested answers."}
+                  title={
+                    data.replies.total
+                      ? `Answer ${data.replies.total} repl${data.replies.total === 1 ? "y" : "ies"}`
+                      : "Conversations"
+                  }
+                  detail={
+                    data.replies.positive
+                      ? `${data.replies.positive} interested prospects are waiting.`
+                      : "Classified replies and suggested answers."
+                  }
                 />
                 <Step
                   done={data.followupsDue > 0}
                   href="/followups"
-                  title={data.followupsDue ? `${data.followupsDue} follow-up${data.followupsDue === 1 ? "" : "s"} due` : "Follow-ups"}
+                  title={
+                    data.followupsDue
+                      ? `${data.followupsDue} follow-up${data.followupsDue === 1 ? "" : "s"} due`
+                      : "Follow-ups"
+                  }
                   detail="Sequences stop automatically when someone replies."
                 />
                 <Step
-                  done={data.leads.byStatus.queued_research > 0}
+                  done={(data.leads.byStatus.queued_research ?? 0) > 0}
                   href="/research"
                   title="Research new prospects"
                   detail={`${data.leads.byStatus.queued_research ?? 0} waiting for research.`}
@@ -131,7 +156,11 @@ export default function DashboardPage() {
             <Card
               title="Campaigns"
               sub="Live status of your outreach"
-              actions={<Link className="btn btn-sm" href="/campaigns">Manage</Link>}
+              actions={
+                <Link className="btn btn-sm" href="/campaigns">
+                  Manage
+                </Link>
+              }
             >
               {data.campaigns.length === 0 ? (
                 <Empty title="No campaigns yet">
@@ -154,7 +183,9 @@ export default function DashboardPage() {
                       {data.campaigns.map((campaign) => (
                         <tr key={campaign.id}>
                           <td className="strong">{campaign.name}</td>
-                          <td><Badge tone={statusTone(campaign.status)}>{label(campaign.status)}</Badge></td>
+                          <td>
+                            <Badge tone={statusTone(campaign.status)}>{label(campaign.status)}</Badge>
+                          </td>
                           <td className="num">{campaign.leads}</td>
                           <td className="num">{campaign.sent}</td>
                           <td className="num">{campaign.pending}</td>
@@ -171,14 +202,18 @@ export default function DashboardPage() {
           <div className="grid grid-2">
             <Card title="Sending activity" sub="Confirmed Gmail sends, last 14 days">
               {data.sends.length === 0 ? (
-                <Empty title="Nothing sent yet">Approved emails appear here once Gmail confirms delivery of the request.</Empty>
+                <Empty title="Nothing sent yet">
+                  Approved emails appear here once Gmail confirms delivery of the request.
+                </Empty>
               ) : (
                 <div className="stack" style={{ gap: 6 }}>
                   {data.sends.map((day) => {
                     const max = Math.max(...data.sends.map((d) => d.c));
                     return (
                       <div key={day.day} className="row" style={{ gap: 10 }}>
-                        <span className="tiny nowrap" style={{ width: 76 }}>{day.day.slice(5)}</span>
+                        <span className="tiny nowrap" style={{ width: 76 }}>
+                          {day.day.slice(5)}
+                        </span>
                         <div style={{ flex: 1, background: "var(--surface-2)", borderRadius: 6, height: 16 }}>
                           <div
                             style={{
@@ -200,13 +235,20 @@ export default function DashboardPage() {
 
             <Card title="Recent activity" sub="Audit trail of what the system did">
               {data.activity.length === 0 ? (
-                <Empty title="No activity yet">Imports, research runs, approvals and sends are logged here.</Empty>
+                <Empty title="No activity yet">
+                  Imports, research runs, approvals and sends are logged here.
+                </Empty>
               ) : (
                 <ul style={{ listStyle: "none", padding: 0, margin: 0 }} className="stack">
                   {data.activity.map((item, index) => (
                     <li key={index} className="row" style={{ gap: 8, alignItems: "flex-start" }}>
                       <span className="tiny nowrap" style={{ width: 118 }}>
-                        {new Date(item.created_at).toLocaleString(undefined, { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })}
+                        {new Date(item.created_at).toLocaleString(undefined, {
+                          day: "2-digit",
+                          month: "short",
+                          hour: "2-digit",
+                          minute: "2-digit",
+                        })}
                       </span>
                       <span style={{ fontSize: 12.8 }}>{item.action.replace(/_/g, " ")}</span>
                     </li>
@@ -224,7 +266,11 @@ export default function DashboardPage() {
 function Step({ href, title, detail, done }: { href: string; title: string; detail: string; done?: boolean }) {
   return (
     <li>
-      <Link href={href} className="row" style={{ gap: 10, alignItems: "flex-start", textDecoration: "none", color: "inherit" }}>
+      <Link
+        href={href}
+        className="row"
+        style={{ gap: 10, alignItems: "flex-start", textDecoration: "none", color: "inherit" }}
+      >
         <span
           style={{
             width: 8,
@@ -236,7 +282,9 @@ function Step({ href, title, detail, done }: { href: string; title: string; deta
           }}
         />
         <span>
-          <span className="strong" style={{ display: "block" }}>{title}</span>
+          <span className="strong" style={{ display: "block" }}>
+            {title}
+          </span>
           <span className="tiny">{detail}</span>
         </span>
       </Link>

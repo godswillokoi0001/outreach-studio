@@ -1,27 +1,14 @@
 "use client";
 
-import { useState } from "react";
-import { api, errorMessage, useApi } from "@/lib/client";
+import { useEffect, useState } from "react";
+import { useAuth } from "@/components/AuthProvider";
 import { Badge, Banner, Card, Empty, Progress, Stat } from "@/components/ui";
+import { authedPost, errorMessage } from "@/lib/client";
+import { getSettings, loadAnalyticsBundle } from "@/lib/firestore-store";
 import { label } from "@/lib/format";
+import type { PerformanceInsight } from "@/lib/intelligence";
 
-interface Metrics {
-  funnel: Record<string, number>;
-  sendsByDay: { day: string; c: number }[];
-  replyTypes: Record<string, number>;
-  campaigns: { id: string; name: string; status: string; leads: number; sent: number; replies: number; positive: number }[];
-  industries: { industry: string; leads: number; contacted: number; replied: number }[];
-  angles: { angle: string; sent: number; replied: number }[];
-  delivery: { sent: number; failed: number; pending: number };
-  totals: { leads: number; campaigns: number; replies: number; replyRate: number; positive: number };
-}
-
-interface Insight {
-  headline: string;
-  observations: string[];
-  recommendations: { title: string; detail: string; priority: string }[];
-  data_limits: string;
-}
+type Metrics = Awaited<ReturnType<typeof loadAnalyticsBundle>>;
 
 const FUNNEL_STEPS: [string, string][] = [
   ["total", "Leads imported"],
@@ -33,16 +20,43 @@ const FUNNEL_STEPS: [string, string][] = [
 ];
 
 export default function AnalyticsPage() {
-  const { data, loading, error } = useApi<Metrics>("/api/analytics");
-  const [insight, setInsight] = useState<Insight | null>(null);
+  const { user } = useAuth();
+  const [data, setData] = useState<Metrics | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [insight, setInsight] = useState<PerformanceInsight | null>(null);
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
 
+  useEffect(() => {
+    let active = true;
+    loadAnalyticsBundle(user.uid).then(
+      (res) => {
+        if (!active) return;
+        setData(res);
+        setLoading(false);
+      },
+      (err) => {
+        if (!active) return;
+        setError(errorMessage(err));
+        setLoading(false);
+      },
+    );
+    return () => {
+      active = false;
+    };
+  }, [user.uid]);
+
   const analyse = async () => {
+    if (!data) return;
     setBusy(true);
     setFailure(null);
     try {
-      const result = await api.post<{ insight: Insight }>("/api/analytics", {});
+      const settings = await getSettings(user.uid);
+      const result = await authedPost<{ insight: PerformanceInsight }>("/api/ai/analytics", {
+        metrics: data,
+        model: settings.model,
+      });
       setInsight(result.insight);
     } catch (err) {
       setFailure(errorMessage(err));
@@ -67,12 +81,17 @@ export default function AnalyticsPage() {
         <div>
           <h1 className="page-title">Analytics</h1>
           <p className="page-sub">
-            Only measured numbers are shown. “Sent” means Gmail accepted the message; replies come from the mailbox
-            sync. Nothing here is estimated.
+            Only measured numbers are shown. &ldquo;Sent&rdquo; means Gmail accepted the message; replies come from the
+            mailbox sync. Nothing here is estimated.
           </p>
         </div>
         <div className="row-end">
-          <button className="btn btn-primary" onClick={analyse} disabled={busy} type="button">
+          <button
+            className="btn btn-primary"
+            onClick={() => void analyse()}
+            disabled={busy || !data}
+            type="button"
+          >
             {busy ? "Analysing…" : "Analyse performance"}
           </button>
         </div>
@@ -100,7 +119,9 @@ export default function AnalyticsPage() {
                     const value = funnelValue(key);
                     return (
                       <div key={key} className="row" style={{ gap: 10 }}>
-                        <span className="tiny" style={{ width: 120 }}>{text}</span>
+                        <span className="tiny" style={{ width: 120 }}>
+                          {text}
+                        </span>
                         <div style={{ flex: 1, background: "var(--surface-2)", height: 16, borderRadius: 6 }}>
                           <div
                             style={{
@@ -112,7 +133,9 @@ export default function AnalyticsPage() {
                             }}
                           />
                         </div>
-                        <span className="tiny num" style={{ width: 38, textAlign: "right" }}>{value}</span>
+                        <span className="tiny num" style={{ width: 38, textAlign: "right" }}>
+                          {value}
+                        </span>
                       </div>
                     );
                   })}
@@ -126,7 +149,9 @@ export default function AnalyticsPage() {
                   <ul style={{ listStyle: "none", padding: 0, margin: 0 }} className="stack">
                     {Object.entries(data.replyTypes).map(([type, count]) => (
                       <li key={type} className="row">
-                        <Badge tone={["interested", "more_info", "pricing"].includes(type) ? "ok" : undefined}>{label(type)}</Badge>
+                        <Badge tone={["interested", "more_info", "pricing"].includes(type) ? "ok" : undefined}>
+                          {label(type)}
+                        </Badge>
                         <span className="num row-end">{count}</span>
                       </li>
                     ))}
@@ -156,12 +181,16 @@ export default function AnalyticsPage() {
                       {data.campaigns.map((campaign) => (
                         <tr key={campaign.id}>
                           <td className="strong">{campaign.name}</td>
-                          <td><Badge>{label(campaign.status)}</Badge></td>
+                          <td>
+                            <Badge>{label(campaign.status)}</Badge>
+                          </td>
                           <td className="num">{campaign.leads}</td>
                           <td className="num">{campaign.sent}</td>
                           <td className="num">{campaign.replies}</td>
                           <td className="num">{campaign.positive}</td>
-                          <td className="num">{campaign.sent ? `${Math.round((campaign.replies / campaign.sent) * 100)}%` : "—"}</td>
+                          <td className="num">
+                            {campaign.sent ? `${Math.round((campaign.replies / campaign.sent) * 100)}%` : "—"}
+                          </td>
                         </tr>
                       ))}
                     </tbody>
@@ -178,7 +207,12 @@ export default function AnalyticsPage() {
                   <div className="table-wrap">
                     <table>
                       <thead>
-                        <tr><th>Industry</th><th className="num">Leads</th><th className="num">Contacted</th><th className="num">Replied</th></tr>
+                        <tr>
+                          <th>Industry</th>
+                          <th className="num">Leads</th>
+                          <th className="num">Contacted</th>
+                          <th className="num">Replied</th>
+                        </tr>
                       </thead>
                       <tbody>
                         {data.industries.map((row) => (
@@ -202,7 +236,11 @@ export default function AnalyticsPage() {
                   <div className="table-wrap">
                     <table>
                       <thead>
-                        <tr><th>Angle</th><th className="num">Sent</th><th className="num">Replied</th></tr>
+                        <tr>
+                          <th>Angle</th>
+                          <th className="num">Sent</th>
+                          <th className="num">Replied</th>
+                        </tr>
                       </thead>
                       <tbody>
                         {data.angles.map((row) => (
@@ -222,7 +260,11 @@ export default function AnalyticsPage() {
             {insight && (
               <Card title="AI performance review" sub={insight.headline}>
                 <ul style={{ fontSize: 13, paddingLeft: 16 }}>
-                  {insight.observations.map((observation, index) => <li key={index} style={{ marginBottom: 4 }}>{observation}</li>)}
+                  {insight.observations.map((observation, index) => (
+                    <li key={index} style={{ marginBottom: 4 }}>
+                      {observation}
+                    </li>
+                  ))}
                 </ul>
                 <div className="stack" style={{ marginTop: 12 }}>
                   {insight.recommendations.map((recommendation, index) => (
@@ -231,11 +273,25 @@ export default function AnalyticsPage() {
                         <strong style={{ display: "block" }}>{recommendation.title}</strong>
                         <span className="tiny">{recommendation.detail}</span>
                       </div>
-                      <div className="row-end"><Badge tone={recommendation.priority === "high" ? "bad" : recommendation.priority === "medium" ? "warn" : undefined}>{recommendation.priority}</Badge></div>
+                      <div className="row-end">
+                        <Badge
+                          tone={
+                            recommendation.priority === "high"
+                              ? "bad"
+                              : recommendation.priority === "medium"
+                                ? "warn"
+                                : undefined
+                          }
+                        >
+                          {recommendation.priority}
+                        </Badge>
+                      </div>
                     </div>
                   ))}
                 </div>
-                <p className="tiny" style={{ marginTop: 10 }}>{insight.data_limits}</p>
+                <p className="tiny" style={{ marginTop: 10 }}>
+                  {insight.data_limits}
+                </p>
               </Card>
             )}
           </>

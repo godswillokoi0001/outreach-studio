@@ -1,5 +1,7 @@
-import { geminiJSON, type GeminiSchema } from "./gemini";
+import { Type, type Schema } from "@google/genai";
 import { normalizeWebsite } from "./columns";
+import { geminiJSON } from "./gemini";
+import { isFetchableUrl } from "./outreach-utils";
 import type { Lead, ResearchResult } from "./types";
 
 export interface SiteSnapshot {
@@ -24,18 +26,6 @@ export interface SiteSnapshot {
     wordCount: number;
   };
   error?: string;
-}
-
-const BLOCKED_HOSTS = /^(localhost|127\.|0\.0\.0\.0|10\.|192\.168\.|169\.254\.|172\.(1[6-9]|2\d|3[01])\.|\[::1\])/i;
-
-export function isFetchableUrl(url: string): boolean {
-  try {
-    const parsed = new URL(url);
-    if (!/^https?:$/.test(parsed.protocol)) return false;
-    return !BLOCKED_HOSTS.test(parsed.hostname);
-  } catch {
-    return false;
-  }
 }
 
 function stripHtml(html: string): string {
@@ -140,7 +130,9 @@ export async function fetchSite(website: string | null): Promise<SiteSnapshot | 
     signals.hasEmailLink = /href=["']mailto:/i.test(html);
     signals.ctaPhrases = CTA_WORDS.filter((phrase) => linkText.includes(phrase)).slice(0, 6);
     signals.h1 = stripHtml(html.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i)?.[1] ?? "").slice(0, 160);
-    signals.socialLinks = (lower.match(/facebook\.com|instagram\.com|linkedin\.com|twitter\.com|x\.com|youtube\.com/g) ?? []).length;
+    signals.socialLinks = (
+      lower.match(/facebook\.com|instagram\.com|linkedin\.com|twitter\.com|x\.com|youtube\.com/g) ?? []
+    ).length;
     const copyright = html.match(/(?:©|&copy;|copyright)\s*(\d{4})/i);
     signals.copyrightYear = copyright ? Number(copyright[1]) : null;
     signals.wordCount = text.split(/\s+/).filter(Boolean).length;
@@ -179,52 +171,60 @@ export async function fetchSite(website: string | null): Promise<SiteSnapshot | 
   }
 }
 
-const RESEARCH_SCHEMA: GeminiSchema = {
-  type: "OBJECT",
+const RESEARCH_SCHEMA: Schema = {
+  type: Type.OBJECT,
   properties: {
-    business_name_confirmed: { type: "BOOLEAN" },
-    industry: { type: "STRING" },
-    summary: { type: "STRING", description: "2-4 sentences describing what the business does, for whom." },
-    website_status: { type: "STRING", enum: ["no_site_known", "unreachable", "reachable", "not_checked"] },
-    website_facts: { type: "ARRAY", items: { type: "STRING" }, description: "Concrete observations from the fetched website data only." },
+    business_name_confirmed: { type: Type.BOOLEAN },
+    industry: { type: Type.STRING },
+    summary: { type: Type.STRING, description: "2-4 sentences describing what the business does, for whom." },
+    website_status: { type: Type.STRING, enum: ["no_site_known", "unreachable", "reachable", "not_checked"] },
+    website_facts: {
+      type: Type.ARRAY,
+      items: { type: Type.STRING },
+      description: "Concrete observations from the fetched website data only.",
+    },
     verified_facts: {
-      type: "ARRAY",
+      type: Type.ARRAY,
       items: {
-        type: "OBJECT",
-        properties: { fact: { type: "STRING" }, source: { type: "STRING" } },
+        type: Type.OBJECT,
+        properties: { fact: { type: Type.STRING }, source: { type: Type.STRING } },
         required: ["fact", "source"],
       },
     },
     findings: {
-      type: "ARRAY",
+      type: Type.ARRAY,
       items: {
-        type: "OBJECT",
+        type: Type.OBJECT,
         properties: {
-          area: { type: "STRING" },
-          observation: { type: "STRING" },
-          severity: { type: "STRING", enum: ["low", "medium", "high"] },
-          evidence: { type: "STRING" },
+          area: { type: Type.STRING },
+          observation: { type: Type.STRING },
+          severity: { type: Type.STRING, enum: ["low", "medium", "high"] },
+          evidence: { type: Type.STRING },
         },
         required: ["area", "observation", "severity", "evidence"],
       },
     },
-    inferences: { type: "ARRAY", items: { type: "STRING" }, description: "Unverified reasoning, clearly labelled as inference." },
+    inferences: {
+      type: Type.ARRAY,
+      items: { type: Type.STRING },
+      description: "Unverified reasoning, clearly labelled as inference.",
+    },
     opportunities: {
-      type: "ARRAY",
+      type: Type.ARRAY,
       items: {
-        type: "OBJECT",
+        type: Type.OBJECT,
         properties: {
-          opportunity: { type: "STRING" },
-          service: { type: "STRING" },
-          rationale: { type: "STRING" },
+          opportunity: { type: Type.STRING },
+          service: { type: Type.STRING },
+          rationale: { type: Type.STRING },
         },
         required: ["opportunity", "service", "rationale"],
       },
     },
-    recommended_angle: { type: "STRING" },
-    confidence: { type: "INTEGER" },
-    insufficient_data: { type: "BOOLEAN" },
-    notes: { type: "STRING" },
+    recommended_angle: { type: Type.STRING },
+    confidence: { type: Type.INTEGER },
+    insufficient_data: { type: Type.BOOLEAN },
+    notes: { type: Type.STRING },
   },
   required: [
     "business_name_confirmed",
@@ -259,7 +259,11 @@ Hard rules:
 - recommended_angle is one sentence: the specific, evidence-backed reason to contact this business.
 - services must be named using the sender's own service names from the knowledge base where possible.`;
 
-export async function researchLead(ownerSub: string, lead: Lead, options?: { model?: string }): Promise<ResearchResult> {
+export async function researchLeadServer(
+  lead: Lead,
+  knowledge: string,
+  options?: { model?: string },
+): Promise<ResearchResult> {
   const snapshot = await fetchSite(lead.website);
   const manual = (lead.manual_research ?? "").trim();
 
@@ -286,7 +290,7 @@ PAGE TEXT (truncated to 8000 characters):
 ${snapshot.text.slice(0, 8000)}`
     : `WEBSITE CHECK: none available. ${lead.website ? "The stored URL could not be fetched." : "No website URL is stored for this prospect."}`;
 
-  const user = `PROSPECT RECORD
+  const user = `${knowledge ? `BUSINESS KNOWLEDGE BASE\n${knowledge}\n\n` : ""}PROSPECT RECORD
 Business: ${lead.business ?? "(unknown)"}
 Contact: ${lead.contact_name ?? "(unknown)"} ${lead.role ? `(${lead.role})` : ""}
 Email: ${lead.email ?? "(none)"}
@@ -302,18 +306,17 @@ ${manual ? `OWNER-SUPPLIED RESEARCH (treat as reliable observations from the bus
 Research this business for a web design / digital services outreach decision.`;
 
   const result = await geminiJSON<ResearchResult>({
-    ownerSub,
     system: RESEARCH_SYSTEM,
     user,
     schema: RESEARCH_SCHEMA,
-    temperature: 0.2,
-    maxTokens: 2600,
     model: options?.model,
   });
 
   return {
     ...result,
     checked_at: new Date().toISOString(),
-    technical_signals: snapshot ? { ...snapshot.signals, status: snapshot.status, reachable: snapshot.reachable } : undefined,
+    technical_signals: snapshot
+      ? { ...snapshot.signals, status: snapshot.status, reachable: snapshot.reachable }
+      : undefined,
   };
 }

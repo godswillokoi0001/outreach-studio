@@ -1,0 +1,28 @@
+import { NextRequest, NextResponse } from "next/server";
+import { handleApiError } from "@/lib/api-helpers";
+import { verifyFirebaseRequest } from "@/lib/firebase-server-auth";
+import { discoverProspectsServer } from "@/lib/intelligence";
+
+export async function POST(req: NextRequest) {
+  try {
+    await verifyFirebaseRequest(req);
+    const body = (await req.json()) as {
+      industry?: string;
+      location?: string;
+      count?: number;
+      focus?: string;
+      model?: string;
+    };
+    const count = Math.max(3, Math.min(20, Number(body.count) || 8));
+    const result = await discoverProspectsServer({
+      industry: String(body.industry ?? ""),
+      location: String(body.location ?? ""),
+      count,
+      focus: String(body.focus ?? ""),
+      model: body.model,
+    });
+    return NextResponse.json(result);
+  } catch (err) {
+    return handleApiError(err);
+  }
+}

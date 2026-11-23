@@ -1,4 +1,6 @@
-import { geminiJSON, type GeminiSchema } from "./gemini";
+import { Type, type Schema } from "@google/genai";
+import { geminiJSON } from "./gemini";
+import { cleanEmailText } from "./outreach-utils";
 import type { CampaignConfig, Lead, Message, ResearchResult, Settings } from "./types";
 
 export interface ComposedEmail {
@@ -10,15 +12,15 @@ export interface ComposedEmail {
   evidence: string[];
 }
 
-const SCHEMA: GeminiSchema = {
-  type: "OBJECT",
+const SCHEMA: Schema = {
+  type: Type.OBJECT,
   properties: {
-    subject: { type: "STRING", description: "3-7 words, specific to this business" },
-    body: { type: "STRING", description: "Plain text email body, 80-150 words, greeting and sign-off included" },
-    angle: { type: "STRING", description: "The outreach angle in one short phrase" },
-    rationale: { type: "STRING", description: "Why this approach was chosen, 2-3 sentences for the operator" },
-    service: { type: "STRING" },
-    evidence: { type: "ARRAY", items: { type: "STRING" }, description: "Research facts this email relies on" },
+    subject: { type: Type.STRING, description: "3-7 words, specific to this business" },
+    body: { type: Type.STRING, description: "Plain text email body, 80-150 words, greeting and sign-off included" },
+    angle: { type: Type.STRING, description: "The outreach angle in one short phrase" },
+    rationale: { type: Type.STRING, description: "Why this approach was chosen, 2-3 sentences for the operator" },
+    service: { type: Type.STRING },
+    evidence: { type: Type.ARRAY, items: { type: Type.STRING }, description: "Research facts this email relies on" },
   },
   required: ["subject", "body", "angle", "rationale", "service", "evidence"],
 };
@@ -74,19 +76,7 @@ Previous recommended angle: ${research.recommended_angle}
 Research confidence: ${research.confidence}/100${research.insufficient_data ? " - INSUFFICIENT DATA, stay cautious and avoid specific claims" : ""}`;
 }
 
-export function cleanEmailText(text: string): string {
-  return text
-    .replace(/\r\n/g, "\n")
-    .replace(/\*\*/g, "")
-    .replace(/^#{1,6}\s*/gm, "")
-    .replace(/^\s*[-*]\s+/gm, "")
-    .replace(/\[(your|insert|company|name)[^\]]*\]/gi, "")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
-}
-
-export async function composeInitial(
-  ownerSub: string,
+export async function composeInitialServer(
   lead: Lead,
   research: ResearchResult,
   campaign: CampaignConfig,
@@ -121,19 +111,19 @@ Extra instructions from the owner: ${campaign.extra_instructions || "(none)"}
 Write the first cold email for this prospect. It must be built on the specific research above.`;
 
   const result = await geminiJSON<ComposedEmail>({
-    ownerSub,
     system: STRATEGIST_SYSTEM,
     user,
     schema: SCHEMA,
-    temperature: 0.75,
-    maxTokens: 1400,
     model,
   });
-  return { ...result, body: cleanEmailText(result.body), subject: cleanEmailText(result.subject).split("\n")[0] };
+  return {
+    ...result,
+    body: cleanEmailText(result.body),
+    subject: cleanEmailText(result.subject).split("\n")[0],
+  };
 }
 
-export async function composeFollowUp(
-  ownerSub: string,
+export async function composeFollowUpServer(
   lead: Lead,
   research: ResearchResult | null,
   campaign: CampaignConfig,
@@ -173,23 +163,14 @@ ${original.body}
 This is follow-up number ${step}. The prospect has not replied. Write a shorter follow-up that adds a new reason to respond.`;
 
   const result = await geminiJSON<ComposedEmail>({
-    ownerSub,
     system: FOLLOWUP_SYSTEM,
     user,
     schema: SCHEMA,
-    temperature: 0.7,
-    maxTokens: 1200,
     model,
   });
-  return { ...result, body: cleanEmailText(result.body), subject: cleanEmailText(result.subject).split("\n")[0] };
-}
-
-export function validateEmail(subject: string, body: string): string | null {
-  if (!subject || subject.length < 3) return "Subject line is missing or too short.";
-  if (subject.length > 120) return "Subject line is too long.";
-  if (!body || body.split(/\s+/).length < 25) return "Email body is too short.";
-  if (body.split(/\s+/).length > 400) return "Email body is too long for cold outreach.";
-  if (/\[[^\]]{2,40}\]/.test(body)) return "Email still contains an unfilled placeholder.";
-  if (/\[unsubscribe\]/i.test(body)) return "Email contains an unfilled unsubscribe placeholder.";
-  return null;
+  return {
+    ...result,
+    body: cleanEmailText(result.body),
+    subject: cleanEmailText(result.subject).split("\n")[0],
+  };
 }

@@ -1,13 +1,41 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { getFirebaseIdToken, getWorkspaceAccessToken } from "./firebase";
+import { extractErrorMessageFromJson } from "./gemini-utils";
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+export async function authedPost<T>(
+  path: string,
+  body?: unknown,
+  options?: { requireWorkspace?: boolean },
+): Promise<T> {
+  const firebaseToken = await getFirebaseIdToken();
+  if (!firebaseToken) {
+    throw new Error("Sign in with Google to continue.");
+  }
+
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    "X-Firebase-Token": firebaseToken,
+  };
+
+  if (options?.requireWorkspace) {
+    const workspaceToken = getWorkspaceAccessToken();
+    if (!workspaceToken) {
+      throw new Error(
+        "Google Workspace session needs a fresh sign-in. Click 'Reconnect Gmail & Sheets' in the top bar.",
+      );
+    }
+    headers.Authorization = `Bearer ${workspaceToken}`;
+  } else {
+    headers.Authorization = `Bearer ${firebaseToken}`;
+  }
+
   const res = await fetch(path, {
-    ...init,
-    headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
-    credentials: "same-origin",
+    method: "POST",
+    headers,
+    body: body === undefined ? undefined : JSON.stringify(body),
   });
+
   const text = await res.text();
   let data: unknown = null;
   try {
@@ -25,45 +53,27 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return data as T;
 }
 
-export const api = {
-  get: <T,>(path: string) => request<T>(path),
-  post: <T,>(path: string, body?: unknown) =>
-    request<T>(path, { method: "POST", body: body === undefined ? undefined : JSON.stringify(body) }),
-  put: <T,>(path: string, body?: unknown) =>
-    request<T>(path, { method: "PUT", body: body === undefined ? undefined : JSON.stringify(body) }),
-  patch: <T,>(path: string, body?: unknown) =>
-    request<T>(path, { method: "PATCH", body: body === undefined ? undefined : JSON.stringify(body) }),
-  del: <T,>(path: string) => request<T>(path, { method: "DELETE" }),
-};
-
-export function useApi<T>(path: string | null, deps: unknown[] = []) {
-  const [data, setData] = useState<T | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(Boolean(path));
-
-  const reload = useCallback(async () => {
-    if (!path) return;
-    setLoading(true);
-    setError(null);
-    try {
-      setData(await request<T>(path));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Something went wrong.");
-    } finally {
-      setLoading(false);
+export function errorMessage(err: unknown): string {
+  if (err instanceof Error) {
+    const nested = extractErrorMessageFromJson(err.message);
+    if (nested?.code === 429 || nested?.status === "RESOURCE_EXHAUSTED") {
+      return "Gemini API quota or rate limit exceeded (429). Wait briefly, switch the model to Gemini 3.1 Flash Lite in Settings, or select a billing-enabled API key in Settings > Secrets.";
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [path, ...deps]);
-
-  useEffect(() => {
-    void reload();
-  }, [reload]);
-
-  return { data, error, loading, reload, setData };
+    if (nested?.message) return nested.message;
+    try {
+      const parsed = JSON.parse(err.message) as { error?: unknown };
+      if (parsed && typeof parsed.error === "string") return parsed.error;
+    } catch {
+      // ignore non-JSON error message
+    }
+    return err.message;
+  }
+  return "Something went wrong.";
 }
 
-export function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : "Something went wrong.";
+export function isQuotaError(err: unknown): boolean {
+  const msg = errorMessage(err).toLowerCase();
+  return msg.includes("429") || msg.includes("quota") || msg.includes("rate limit") || msg.includes("resource_exhausted");
 }
 
 export const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
