@@ -22,8 +22,12 @@ export function readWorkspaceToken(): string | null {
   return cache.token;
 }
 
-export function writeWorkspaceToken(token: string, expiresIn = 3600): void {
-  cache = { token, expiresAt: Date.now() + Math.max(60, expiresIn - 60) * 1000 };
+export function writeWorkspaceToken(token: string | null | undefined, expiresIn = 3600): void {
+  if (!token || typeof token !== "string" || !token.trim()) {
+    cache = null;
+    return;
+  }
+  cache = { token: token.trim(), expiresAt: Date.now() + Math.max(60, expiresIn - 60) * 1000 };
 }
 
 export function clearWorkspaceToken(): void {

@@ -13,14 +13,25 @@ import {
   parseGeminiError,
   resolveModel,
 } from "./gemini-utils";
+import { getActiveAiConfig } from "./ai/context";
+import { probeProvider, providerAgentTurn, providerJSON } from "./ai/chat";
+import type { AiConfig } from "./ai/types";
 
 export { DEFAULT_GEMINI_MODEL, FALLBACK_GEMINI_MODEL, GeminiApiError, parseGeminiError, resolveModel };
 
+/** True when the request selected a non-Gemini provider (OpenAI, Claude, Groq, …). */
+function externalProvider(): AiConfig | null {
+  const cfg = getActiveAiConfig();
+  if (!cfg || cfg.provider === "gemini") return null;
+  return cfg;
+}
+
 function createClient(): GoogleGenAI {
-  const apiKey = process.env.GEMINI_API_KEY;
+  const cfg = getActiveAiConfig();
+  const apiKey = cfg?.provider === "gemini" && cfg.apiKey ? cfg.apiKey : process.env.GEMINI_API_KEY;
   if (!apiKey) {
     throw new GeminiApiError(
-      "GEMINI_API_KEY is not configured on the server. Add or select one in Settings > Secrets to enable AI features.",
+      "No AI API key is configured. Add one in Settings > AI engine to enable AI features.",
       500,
     );
   }
@@ -44,7 +55,8 @@ async function runWithRetryAndFallback<T>(
   requestedModel: string | undefined,
   executor: (model: string) => Promise<T>,
 ): Promise<{ result: T; model: string }> {
-  const primary = resolveModel(requestedModel, process.env.GEMINI_MODEL);
+  const cfg = getActiveAiConfig();
+  const primary = resolveModel(requestedModel || cfg?.model, process.env.GEMINI_MODEL);
   const candidates = primary === FALLBACK_GEMINI_MODEL ? [primary] : [primary, FALLBACK_GEMINI_MODEL];
   let lastError: GeminiApiError | null = null;
 
@@ -104,6 +116,16 @@ export async function geminiJSON<T>(options: {
   schema: Schema;
   model?: string;
 }): Promise<T> {
+  const external = externalProvider();
+  if (external) {
+    return providerJSON<T>(external, {
+      system: options.system,
+      user: options.user,
+      schema: options.schema,
+      model: options.model,
+    });
+  }
+
   const ai = createClient();
   const { result } = await runWithRetryAndFallback(options.model, async (model) => {
     const response = await ai.models.generateContent({
@@ -130,6 +152,18 @@ export async function geminiGroundedJSON<T>(options: {
   user: string;
   model?: string;
 }): Promise<{ data: T; groundingUrls: { uri: string; title: string }[] }> {
+  const external = externalProvider();
+  if (external) {
+    // Google Search grounding only exists on Gemini; other providers still
+    // return the structured result, just without source URLs.
+    const data = await providerJSON<T>(external, {
+      system: `${options.system}\n\nYou do not have live web search. Use well-known, verifiable facts and set confidence accordingly.`,
+      user: options.user,
+      model: options.model,
+    });
+    return { data, groundingUrls: [] };
+  }
+
   const ai = createClient();
   const { result } = await runWithRetryAndFallback(options.model, async (model) => {
     const response = await ai.models.generateContent({
@@ -171,6 +205,22 @@ export async function geminiAgentTurn(options: {
   modelContent: Content;
   modelUsed: string;
 }> {
+  const external = externalProvider();
+  if (external) {
+    const result = await providerAgentTurn(external, {
+      system: options.system,
+      contents: options.contents as unknown as Parameters<typeof providerAgentTurn>[1]["contents"],
+      tools: options.tools,
+      model: options.model,
+    });
+    return {
+      text: result.text,
+      functionCalls: result.functionCalls as unknown as FunctionCall[],
+      modelContent: result.modelContent as unknown as Content,
+      modelUsed: result.modelUsed,
+    };
+  }
+
   const ai = createClient();
   const { result, model: modelUsed } = await runWithRetryAndFallback(options.model, async (activeModel) => {
     const response = await ai.models.generateContent({
@@ -216,7 +266,13 @@ export async function geminiAgentTurn(options: {
   return { ...result, modelUsed };
 }
 
-export async function testGeminiConnection(model?: string): Promise<{ model: string; ms: number; reply: string }> {
+export async function testGeminiConnection(model?: string): Promise<{ model: string; ms: number; reply: string; provider: string }> {
+  const external = externalProvider();
+  if (external) {
+    const result = await probeProvider(external, external.model?.trim() || model?.trim() || "");
+    return { ...result, provider: external.provider };
+  }
+
   const ai = createClient();
   const started = Date.now();
   const { result, model: usedModel } = await runWithRetryAndFallback(model, async (activeModel) => {
@@ -234,5 +290,6 @@ export async function testGeminiConnection(model?: string): Promise<{ model: str
     model: usedModel,
     ms: Date.now() - started,
     reply: result,
+    provider: "gemini",
   };
 }

@@ -12,8 +12,8 @@ import {
   saveSettings,
 } from "@/lib/firestore-store";
 import { fmtDate } from "@/lib/format";
-import { SUPPORTED_GEMINI_MODELS, resolveModel } from "@/lib/gemini-utils";
 import type { Settings, Suppression } from "@/lib/types";
+import { AiEngineCard } from "@/components/AiEngineCard";
 
 export default function SettingsPage() {
   const { user } = useAuth();
@@ -145,25 +145,6 @@ export default function SettingsPage() {
                   onChange={(e) => set("unsubscribe_email", e.target.value)}
                 />
               </Field>
-              <Field
-                label="Gemini model"
-                hint="Use Gemini 3.1 Flash Lite if you hit 429 free-tier quota limits on Gemini 4 Hydrogen."
-              >
-                <select
-                  className="select"
-                  value={resolveModel(form.model)}
-                  onChange={(e) => set("model", e.target.value)}
-                >
-                  {SUPPORTED_GEMINI_MODELS.map((m) => (
-                    <option key={m.id} value={m.id}>
-                      {m.label}
-                    </option>
-                  ))}
-                  {!SUPPORTED_GEMINI_MODELS.some((m) => m.id === resolveModel(form.model)) && (
-                    <option value={resolveModel(form.model)}>{resolveModel(form.model)}</option>
-                  )}
-                </select>
-              </Field>
             </div>
             <Field label="Physical address (optional)" hint="Some jurisdictions require a postal address in cold email.">
               <input
@@ -173,6 +154,15 @@ export default function SettingsPage() {
               />
             </Field>
           </Card>
+        )}
+
+        {form && (
+          <AiEngineCard
+            uid={user.uid}
+            settings={form}
+            onChange={(patch) => setForm((prev) => (prev ? { ...prev, ...patch } : prev))}
+            onSaved={(saved) => setForm(saved)}
+          />
         )}
 
         {form && (

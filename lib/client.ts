@@ -3,6 +3,7 @@
 import { getFirebaseIdToken } from "./firebase";
 import { ensureWorkspaceToken, readWorkspaceToken } from "./workspace";
 import { extractErrorMessageFromJson } from "./gemini-utils";
+import { aiConfigHeader, ensureAiConfigLoaded } from "./ai-client";
 
 export async function authedPost<T>(
   path: string,
@@ -19,6 +20,14 @@ export async function authedPost<T>(
     Accept: "application/json",
     "X-Firebase-Token": firebaseToken,
   };
+
+  // AI routes run against whichever provider/model the user connected in
+  // Settings. The key never leaves this request.
+  if (path.startsWith("/api/ai/")) {
+    await ensureAiConfigLoaded();
+    const aiHeader = aiConfigHeader();
+    if (aiHeader) headers["X-AI-Config"] = aiHeader;
+  }
 
   if (options?.requireWorkspace) {
     const ready = await ensureWorkspaceToken();
@@ -97,11 +106,38 @@ export async function authedPost<T>(
   throw new Error("Request failed after retrying. Please try again.");
 }
 
+export async function authedUpload<T>(path: string, form: FormData): Promise<T> {
+  const firebaseToken = await getFirebaseIdToken();
+  if (!firebaseToken) throw new Error("Sign in with Google to continue.");
+  const res = await fetch(path, {
+    method: "POST",
+    headers: { "X-Firebase-Token": firebaseToken, Accept: "application/json" },
+    body: form,
+    cache: "no-store",
+    credentials: "same-origin",
+  });
+  const text = await res.text();
+  let data: unknown = null;
+  try {
+    data = text ? JSON.parse(text) : null;
+  } catch {
+    data = null;
+  }
+  if (!res.ok) {
+    const message =
+      data && typeof data === "object" && "error" in data
+        ? String((data as { error: unknown }).error)
+        : `Upload failed (HTTP ${res.status}).`;
+    throw new Error(message);
+  }
+  return data as T;
+}
+
 export function errorMessage(err: unknown): string {
   if (err instanceof Error) {
     const nested = extractErrorMessageFromJson(err.message);
     if (nested?.code === 429 || nested?.status === "RESOURCE_EXHAUSTED") {
-      return "Gemini API quota or rate limit exceeded (429). Wait briefly, switch the model to Gemini 3.1 Flash Lite in Settings, or select a billing-enabled API key in Settings > Secrets.";
+      return "AI quota or rate limit exceeded (429) for the selected provider. Wait briefly, pick a lighter model, or connect a billing-enabled key in Settings > AI engine.";
     }
     if (nested?.message) return nested.message;
     try {

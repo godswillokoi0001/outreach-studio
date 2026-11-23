@@ -540,6 +540,7 @@ export async function runSendBatch(
             inReplyTo: msg.kind === "followup" ? previousSent?.rfc_message_id ?? null : null,
             threadId: msg.kind === "followup" ? previousSent?.thread_id ?? null : null,
             unsubscribeEmail: settings.unsubscribe_email || senderEmail,
+            tracking: { enabled: true, messageId: msg.id, leadId: lead.id },
           },
         },
         { requireWorkspace: true },

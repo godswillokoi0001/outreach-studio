@@ -1,12 +1,9 @@
 "use client";
 
 import { MotionConfig } from "framer-motion";
+import type { ReactNode } from "react";
 
-/**
- * Global motion defaults. `reducedMotion="user"` makes every Framer Motion
- * animation respect the operating system's reduce-motion setting.
- */
-export function MotionProvider({ children }: { children: React.ReactNode }) {
+export function MotionProvider({ children }: { children: ReactNode }) {
   return (
     <MotionConfig
       reducedMotion="user"

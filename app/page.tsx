@@ -63,6 +63,12 @@ export default function DashboardPage() {
     const replyRate = data.emails.sent
       ? Math.round((data.replies.total / data.emails.sent) * 1000) / 10
       : 0;
+    const today = new Date().toISOString().slice(0, 10);
+    const openedMessages = new Set(data.opens.map((event) => event.message_id)).size;
+    const opensToday = data.opens.filter((event) => event.opened_at.slice(0, 10) === today).length;
+    const openRate = data.emails.sent
+      ? Math.round((openedMessages / data.emails.sent) * 1000) / 10
+      : 0;
     const sendsMap = new Map(data.sends.map((entry) => [entry.day, entry.c]));
     const days = Array.from({ length: 14 }).map((_, index) => {
       const date = new Date();
@@ -135,6 +141,9 @@ export default function DashboardPage() {
       pending,
       queued,
       replyRate,
+      openRate,
+      opensToday,
+      openedMessages,
       days,
       maxSend,
       funnel,
@@ -231,6 +240,17 @@ export default function DashboardPage() {
                   <CountUp value={data.emails.pending} />
                 </div>
                 <div className="hero-chip-note">{data.emails.generated} drafted</div>
+              </div>
+              <div className="hero-chip">
+                <div className="hero-chip-label">Emails opened</div>
+                <div className="hero-chip-value">
+                  <CountUp value={derived.openedMessages} />
+                </div>
+                <div className="hero-chip-note">
+                  {derived.opensToday > 0
+                    ? `${derived.opensToday} open${derived.opensToday === 1 ? "" : "s"} today`
+                    : `${derived.openRate}% of sends`}
+                </div>
               </div>
               <div className="hero-chip">
                 <div className="hero-chip-label">Reply rate</div>

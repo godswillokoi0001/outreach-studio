@@ -69,13 +69,15 @@ service cloud.firestore {
           'ownerId', 'sender_name', 'sender_role', 'sender_company', 'sender_email', 'signature',
           'daily_limit', 'campaign_limit', 'interval_seconds', 'send_window_start', 'send_window_end',
           'send_days', 'timezone_offset', 'followup_days', 'min_score', 'unsubscribe_email',
-          'physical_address', 'model', 'createdAt', 'updatedAt'
+          'physical_address', 'model', 'ai_provider', 'ai_api_key', 'ai_base_url', 'ai_verified_at',
+          'ai_key_hint', 'createdAt', 'updatedAt'
         ]) &&
         data.keys().hasOnly([
           'ownerId', 'sender_name', 'sender_role', 'sender_company', 'sender_email', 'signature',
           'daily_limit', 'campaign_limit', 'interval_seconds', 'send_window_start', 'send_window_end',
           'send_days', 'timezone_offset', 'followup_days', 'min_score', 'unsubscribe_email',
-          'physical_address', 'model', 'createdAt', 'updatedAt'
+          'physical_address', 'model', 'ai_provider', 'ai_api_key', 'ai_base_url', 'ai_verified_at',
+          'ai_key_hint', 'createdAt', 'updatedAt'
         ]) &&
         isValidId(data.ownerId) &&
         data.ownerId == request.auth.uid &&
@@ -95,7 +97,12 @@ service cloud.firestore {
         isReqInt(data, 'min_score', 0, 100) &&
         isOptStr(data, 'unsubscribe_email', 320) &&
         isOptStr(data, 'physical_address', 400) &&
-        isReqStr(data, 'model', 1, 80) &&
+        isReqStr(data, 'model', 1, 200) &&
+        isOptStr(data, 'ai_provider', 40) &&
+        isOptStr(data, 'ai_api_key', 512) &&
+        isOptStr(data, 'ai_base_url', 400) &&
+        isOptStr(data, 'ai_verified_at', 64) &&
+        isOptStr(data, 'ai_key_hint', 40) &&
         data.createdAt is timestamp &&
         data.updatedAt is timestamp;
     }
@@ -107,7 +114,7 @@ service cloud.firestore {
         data.ownerId == request.auth.uid &&
         isReqStr(data, 'category', 1, 64) &&
         isReqStr(data, 'title', 1, 200) &&
-        isReqStr(data, 'content', 0, 50000) &&
+        isReqStr(data, 'content', 0, 700000) &&
         isReqInt(data, 'sort', 0, 10000) &&
         data.is_master is bool &&
         data.createdAt is timestamp &&
@@ -122,7 +129,7 @@ service cloud.firestore {
         isReqStr(data, 'label', 1, 200) &&
         data.kind in ['url', 'text', 'document', 'note'] &&
         isOptStr(data, 'url', 1000) &&
-        isOptStr(data, 'content', 30000) &&
+        isOptStr(data, 'content', 700000) &&
         data.createdAt is timestamp &&
         data.updatedAt is timestamp;
     }
@@ -309,6 +316,23 @@ service cloud.firestore {
         data.createdAt is timestamp;
     }
 
+    // Open-tracking events are written by the public pixel endpoint, so the
+    // create is unauthenticated but constrained to a real owner and message.
+    match /tracking/{eventId} {
+      allow read: if isSignedIn() && resource.data.ownerId == request.auth.uid;
+      allow create: if isValidId(eventId) &&
+        incoming().keys().hasAll(['ownerId', 'message_id', 'opened_at']) &&
+        incoming().keys().hasOnly(['ownerId', 'message_id', 'lead_id', 'opened_at', 'user_agent']) &&
+        isValidId(incoming().ownerId) &&
+        isValidId(incoming().message_id) &&
+        (!('lead_id' in incoming()) || incoming().lead_id == null || isValidId(incoming().lead_id)) &&
+        isReqStr(incoming(), 'opened_at', 10, 64) &&
+        isOptStr(incoming(), 'user_agent', 400) &&
+        exists(/databases/$(database)/documents/users/$(incoming().ownerId)) &&
+        exists(/databases/$(database)/documents/users/$(incoming().ownerId)/messages/$(incoming().message_id));
+      allow update, delete: if false;
+    }
+
     match /users/{userId} {
       allow get: if isOwner(userId) && isValidId(userId);
       allow list: if false;
@@ -342,7 +366,8 @@ service cloud.firestore {
             'sender_name', 'sender_role', 'sender_company', 'sender_email', 'signature',
             'daily_limit', 'campaign_limit', 'interval_seconds', 'send_window_start',
             'send_window_end', 'send_days', 'timezone_offset', 'followup_days', 'min_score',
-            'unsubscribe_email', 'physical_address', 'model', 'updatedAt'
+            'unsubscribe_email', 'physical_address', 'model', 'ai_provider', 'ai_api_key',
+            'ai_base_url', 'ai_verified_at', 'ai_key_hint', 'updatedAt'
           ]);
         allow delete: if false;
       }

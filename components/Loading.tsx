@@ -10,7 +10,6 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { AlertCircle, CheckCircle2, Loader2, X } from "lucide-react";
 import { AnimatePresence, motion } from "framer-motion";
 
 /* ------------------------------------------------------------------ *
@@ -44,310 +43,274 @@ export function useElapsed(active: boolean): number {
   return ms;
 }
 
-/* ------------------------------------------------------------------ *
- * Loading panel — used for every page/section load
- * ------------------------------------------------------------------ */
-
 export interface LoadingStep {
   label: string;
-  /** Approximate duration of this step in ms. */
   ms: number;
 }
 
-export function LoadingPanel({
-  label,
-  hint,
-  estimateMs,
-  steps,
-  compact,
-}: {
-  label: string;
-  hint?: string;
-  /** Rough time this usually takes. Drives the bar and the countdown. */
-  estimateMs?: number;
-  steps?: LoadingStep[];
-  compact?: boolean;
-}) {
-  const elapsed = useElapsed(true);
-  const cumulative = useMemo(() => {
-    if (!steps?.length) return [];
-    let total = 0;
-    return steps.map((step) => {
-      total += step.ms;
-      return total;
-    });
-  }, [steps]);
-
-  const estimatedTotal = estimateMs ?? (cumulative.length ? cumulative[cumulative.length - 1] : undefined);
-  const pct = estimatedTotal ? Math.min(94, Math.round((elapsed / estimatedTotal) * 94)) : null;
-  const remaining = estimatedTotal ? estimatedTotal - elapsed : 0;
-  const activeStep = cumulative.findIndex((until) => elapsed < until);
-
-  return (
-    <div className={`load-panel${compact ? " compact" : ""}`} role="status" aria-live="polite">
-      <div className="load-head">
-        <span className="load-ring" aria-hidden="true" />
-        <div className="load-copy">
-          <div className="load-label">{label}</div>
-          <div className="load-hint">
-            {steps?.length && activeStep >= 0 ? steps[activeStep].label : hint ?? "Reading your workspace…"}
-          </div>
-        </div>
-        <div className="load-timing">
-          <span className="load-elapsed">{fmtClock(elapsed)}</span>
-          {estimatedTotal ? (
-            <span className="load-eta">{remaining > 600 ? fmtEta(remaining) : "finishing up"}</span>
-          ) : null}
-        </div>
-      </div>
-
-      <div className={`load-track${pct === null ? " indeterminate" : ""}`} aria-hidden="true">
-        <motion.span
-          initial={{ width: "6%" }}
-          animate={{ width: pct === null ? "36%" : `${Math.max(6, pct)}%` }}
-          transition={{ type: "spring", stiffness: 120, damping: 24 }}
-        />
-      </div>
-
-      {steps?.length ? (
-        <ul className="load-steps">
-          {steps.map((step, index) => {
-            const done = activeStep === -1 ? true : index < activeStep;
-            const current = index === activeStep;
-            return (
-              <li key={step.label} data-state={done ? "done" : current ? "current" : "next"}>
-                <span className="load-step-dot" aria-hidden="true" />
-                {step.label}
-              </li>
-            );
-          })}
-        </ul>
-      ) : null}
-    </div>
-  );
-}
-
-/* ------------------------------------------------------------------ *
- * Skeletons
- * ------------------------------------------------------------------ */
-
 export function Skeleton({
   height = 16,
-  width = "100%",
-  radius = 8,
+  radius = 10,
+  width,
   className,
 }: {
   height?: number | string;
+  radius?: number | string;
   width?: number | string;
-  radius?: number;
   className?: string;
 }) {
   return (
     <div
       className={`skel${className ? ` ${className}` : ""}`}
-      style={{ height, width, borderRadius: radius }}
+      style={{ height, borderRadius: radius, width }}
       aria-hidden="true"
     />
   );
 }
 
-export function CardSkeleton({ lines = 3, height = 180 }: { lines?: number; height?: number }) {
+export function LoadingPanel({
+  label,
+  hint,
+  estimateMs = 2000,
+  steps,
+  compact = false,
+}: {
+  label: string;
+  hint?: string;
+  estimateMs?: number;
+  steps?: LoadingStep[];
+  compact?: boolean;
+}) {
+  const [elapsed, setElapsed] = useState(0);
+
+  useEffect(() => {
+    const startedAt = Date.now();
+    const id = window.setInterval(() => setElapsed(Date.now() - startedAt), 200);
+    return () => window.clearInterval(id);
+  }, [label, estimateMs]);
+
+  const progress = Math.min(0.97, elapsed / Math.max(800, estimateMs));
+  const percent = Math.max(3, Math.round(progress * 100));
+
+  const activeStep = useMemo(() => {
+    if (!steps || steps.length === 0) return -1;
+    let cumulative = 0;
+    for (let index = 0; index < steps.length; index += 1) {
+      cumulative += steps[index].ms;
+      if (elapsed < cumulative) return index;
+    }
+    return steps.length - 1;
+  }, [elapsed, steps]);
+
   return (
-    <section className="card" aria-hidden="true" style={{ minHeight: height }}>
-      <Skeleton height={13} width="38%" />
-      <div style={{ height: 12 }} />
-      {Array.from({ length: lines }).map((_, index) => (
-        <div key={index} style={{ marginBottom: 8 }}>
-          <Skeleton height={11} width={`${88 - index * 12}%`} />
+    <div
+      className={`load-panel${compact ? " compact" : ""}`}
+      role="status"
+      aria-live="polite"
+      aria-label={label}
+    >
+      <div className="load-head">
+        <span className="spinner" aria-hidden="true" />
+        <div className="load-copy">
+          <div className="load-title">{label}</div>
+          {hint && <div className="load-hint">{hint}</div>}
         </div>
-      ))}
-    </section>
+        <span className="load-percent">{percent}%</span>
+      </div>
+
+      <div className="load-bar">
+        <span className="load-fill" style={{ width: `${percent}%` }} />
+      </div>
+
+      {steps && steps.length > 0 && !compact && (
+        <ul className="load-steps">
+          {steps.map((step, index) => {
+            const state = index < activeStep ? "done" : index === activeStep ? "active" : "waiting";
+            return (
+              <li key={`${step.label}-${index}`} className="load-step" data-state={state}>
+                <span className="load-dot" aria-hidden="true" />
+                <span className="load-step-label">{step.label}</span>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </div>
   );
 }
 
-/* ------------------------------------------------------------------ *
- * Task dock — the floating "what is running right now" panel
- * ------------------------------------------------------------------ */
-
 export type TaskStatus = "running" | "done" | "error" | "stopped";
+
+export interface TaskPatch {
+  detail?: string;
+  count?: number;
+  estimatedMs?: number;
+}
+
+export interface TaskHandle {
+  update: (patch: TaskPatch) => void;
+  finish: (status: Exclude<TaskStatus, "running">, message?: string) => void;
+}
+
+export interface StartTaskOptions {
+  title: string;
+  detail?: string;
+  estimatedMs?: number;
+  onStop?: () => void;
+}
 
 interface DockTask {
   id: string;
   title: string;
-  detail: string;
-  status: TaskStatus;
-  startedAt: number;
-  estimatedMs: number;
+  detail?: string;
   count?: number;
-  elapsedAtEnd?: number;
+  estimatedMs: number;
+  startedAt: number;
+  status: TaskStatus;
+  message?: string;
   onStop?: () => void;
 }
 
-export interface TaskHandle {
-  update: (patch: { detail?: string; estimatedMs?: number; count?: number }) => void;
-  finish: (status: Exclude<TaskStatus, "running">, detail?: string) => void;
-}
-
 interface TaskDockValue {
-  start: (opts: { title: string; detail?: string; estimatedMs: number; onStop?: () => void }) => TaskHandle;
+  start: (options: StartTaskOptions) => TaskHandle;
 }
 
 const TaskDockContext = createContext<TaskDockValue | null>(null);
 
 export function useTaskDock(): TaskDockValue {
-  const value = useContext(TaskDockContext);
-  if (!value) {
-    // Safe no-op fallback so components never crash outside the provider.
-    return {
-      start: () => ({ update: () => undefined, finish: () => undefined }),
-    };
-  }
-  return value;
+  const ctx = useContext(TaskDockContext);
+  if (!ctx) throw new Error("useTaskDock must be used inside TaskDockProvider.");
+  return ctx;
 }
 
 export function TaskDockProvider({ children }: { children: ReactNode }) {
   const [tasks, setTasks] = useState<DockTask[]>([]);
-  const timers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
-
-  const dismiss = useCallback((id: string) => {
-    setTasks((prev) => prev.filter((task) => task.id !== id));
-    const timer = timers.current[id];
-    if (timer) {
-      clearTimeout(timer);
-      delete timers.current[id];
-    }
-  }, []);
-
-  const start = useCallback<TaskDockValue["start"]>((opts) => {
-    const id = `task_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-    const task: DockTask = {
-      id,
-      title: opts.title,
-      detail: opts.detail ?? "Preparing…",
-      status: "running",
-      startedAt: Date.now(),
-      estimatedMs: Math.max(1200, opts.estimatedMs),
-      onStop: opts.onStop,
-    };
-    setTasks((prev) => [...prev.slice(-2), task]);
-
-    return {
-      update: (patch) =>
-        setTasks((prev) =>
-          prev.map((item) =>
-            item.id === id
-              ? {
-                  ...item,
-                  detail: patch.detail ?? item.detail,
-                  estimatedMs: patch.estimatedMs ?? item.estimatedMs,
-                  count: patch.count ?? item.count,
-                }
-              : item,
-          ),
-        ),
-      finish: (status, detail) => {
-        setTasks((prev) =>
-          prev.map((item) =>
-            item.id === id
-              ? {
-                  ...item,
-                  status,
-                  detail: detail ?? item.detail,
-                  onStop: undefined,
-                  elapsedAtEnd: Date.now() - item.startedAt,
-                }
-              : item,
-          ),
-        );
-        timers.current[id] = setTimeout(() => dismiss(id), status === "error" ? 14_000 : 5_500);
-      },
-    };
-  }, [dismiss]);
+  const timers = useRef<number[]>([]);
 
   useEffect(() => {
     const pending = timers.current;
     return () => {
-      for (const timer of Object.values(pending)) clearTimeout(timer);
+      for (const id of pending) window.clearTimeout(id);
     };
   }, []);
 
-  const value = useMemo(() => ({ start }), [start]);
+  const start = useCallback((options: StartTaskOptions): TaskHandle => {
+    const id = `task-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    const task: DockTask = {
+      id,
+      title: options.title,
+      detail: options.detail,
+      estimatedMs: Math.max(1200, options.estimatedMs ?? 6000),
+      startedAt: Date.now(),
+      status: "running",
+      onStop: options.onStop,
+    };
+    setTasks((current) => [...current.slice(-2), task]);
+
+    return {
+      update(patch: TaskPatch) {
+        setTasks((current) =>
+          current.map((item) =>
+            item.id === id
+              ? {
+                  ...item,
+                  detail: patch.detail ?? item.detail,
+                  count: patch.count ?? item.count,
+                  estimatedMs: patch.estimatedMs ? Math.max(1200, patch.estimatedMs) : item.estimatedMs,
+                }
+              : item,
+          ),
+        );
+      },
+      finish(status, message) {
+        setTasks((current) =>
+          current.map((item) =>
+            item.id === id
+              ? {
+                  ...item,
+                  status,
+                  message: message ?? item.message,
+                  onStop: undefined,
+                }
+              : item,
+          ),
+        );
+        const timer = window.setTimeout(
+          () => setTasks((current) => current.filter((item) => item.id !== id)),
+          status === "error" ? 9000 : 5500,
+        );
+        timers.current.push(timer);
+      },
+    };
+  }, []);
+
+  const value = useMemo<TaskDockValue>(() => ({ start }), [start]);
 
   return (
     <TaskDockContext.Provider value={value}>
       {children}
-      <div className="dock" aria-live="polite">
-        <AnimatePresence initial={false}>
-          {tasks.map((task) => (
-            <DockCard key={task.id} task={task} onDismiss={() => dismiss(task.id)} />
-          ))}
-        </AnimatePresence>
-      </div>
+      <AnimatePresence>
+        {tasks.length > 0 && (
+          <motion.div
+            className="taskdock dock"
+            initial={{ opacity: 0, y: 16 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 12 }}
+            transition={{ duration: 0.22, ease: "easeOut" }}
+            aria-live="polite"
+          >
+            {tasks.map((task) => (
+              <DockItem key={task.id} task={task} />
+            ))}
+          </motion.div>
+        )}
+      </AnimatePresence>
     </TaskDockContext.Provider>
   );
 }
 
-function DockCard({ task, onDismiss }: { task: DockTask; onDismiss: () => void }) {
-  const running = task.status === "running";
-  const elapsed = useElapsed(running);
-  const spent = running ? elapsed : task.elapsedAtEnd ?? 0;
-  const pct = running ? Math.min(97, Math.max(4, Math.round((spent / task.estimatedMs) * 100))) : 100;
-  const remaining = Math.max(0, task.estimatedMs - spent);
+const STATUS_LABEL: Record<TaskStatus, string> = {
+  running: "Working",
+  done: "Done",
+  error: "Failed",
+  stopped: "Stopped",
+};
 
-  const tone =
-    task.status === "error" ? "bad" : task.status === "done" ? "ok" : task.status === "stopped" ? "warn" : "run";
+function DockItem({ task }: { task: DockTask }) {
+  const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    if (task.status !== "running") return;
+    const id = window.setInterval(() => setNow(Date.now()), 400);
+    return () => window.clearInterval(id);
+  }, [task.status]);
+
+  const percent =
+    task.status === "running"
+      ? Math.min(97, Math.max(3, Math.round(((now - task.startedAt) / task.estimatedMs) * 100)))
+      : 100;
 
   return (
-    <motion.div
-      className="dock-card"
-      data-tone={tone}
-      layout
-      initial={{ opacity: 0, y: 22, scale: 0.96 }}
-      animate={{ opacity: 1, y: 0, scale: 1 }}
-      exit={{ opacity: 0, x: 28, scale: 0.95 }}
-      transition={{ type: "spring", stiffness: 340, damping: 30 }}
-    >
-      <div className="dock-top">
-        <span className="dock-icon" aria-hidden="true">
-          {task.status === "error" ? (
-            <AlertCircle size={15} />
-          ) : task.status === "done" ? (
-            <CheckCircle2 size={15} />
-          ) : (
-            <Loader2 size={15} className="spin-icon" />
-          )}
-        </span>
-        <div className="dock-copy">
-          <div className="dock-title">{task.title}</div>
-          <div className="dock-detail">{task.detail}</div>
-        </div>
-        {!running && (
-          <button className="dock-x" onClick={onDismiss} type="button" aria-label="Dismiss">
-            <X size={13} />
-          </button>
-        )}
+    <div className="taskdock-item dock-card" data-status={task.status}>
+      <div className="taskdock-head dock-top">
+        <span className="taskdock-title dock-title">{task.title}</span>
+        <span className="taskdock-status">{STATUS_LABEL[task.status]}</span>
       </div>
-
-      <div className="dock-track" aria-hidden="true">
-        <motion.span
-          data-tone={tone}
-          animate={{ width: `${pct}%` }}
-          transition={{ duration: 0.4, ease: "easeOut" }}
-        />
+      {task.detail && <div className="taskdock-detail dock-detail">{task.detail}</div>}
+      {task.message && <div className="taskdock-message">{task.message}</div>}
+      <div className="taskdock-bar dock-track">
+        <span className="taskdock-fill" style={{ width: `${percent}%` }} />
       </div>
-
-      <div className="dock-foot">
-        <span>
-          {fmtClock(spent)} elapsed
-          {running && remaining > 800 ? ` · ${fmtEta(remaining)}` : ""}
-          {running && task.count ? ` · ${task.count} done` : ""}
+      <div className="taskdock-foot dock-foot">
+        <span className="taskdock-count">
+          {typeof task.count === "number" && task.count > 0 ? `${task.count} processed` : ""}
         </span>
-        {running && task.onStop && (
-          <button className="dock-stop" onClick={task.onStop} type="button">
+        {task.status === "running" && task.onStop && (
+          <button className="btn btn-sm btn-ghost dock-stop" type="button" onClick={task.onStop}>
             Stop
           </button>
         )}
       </div>
-    </motion.div>
+    </div>
   );
 }

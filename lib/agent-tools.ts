@@ -484,7 +484,8 @@ export const AGENT_TOOLS: FunctionDeclaration[] = [
         min_score: { type: Type.INTEGER },
         model: {
           type: Type.STRING,
-          enum: ["gemini-4-hydrogen", "gemini-3.1-flash-lite"],
+          description:
+            "Model id from the provider connected in Settings > AI engine (for example gemini-3.5-flash or gpt-4o-mini).",
         },
       },
     },
@@ -503,7 +504,7 @@ export const AGENT_TOOLS: FunctionDeclaration[] = [
   },
   {
     name: "test_gemini_connection",
-    description: "Run a quick live connectivity and latency test against Gemini AI.",
+    description: "Run a quick live connectivity and latency test against the AI provider connected in Settings.",
     parameters: {
       type: Type.OBJECT,
       properties: {

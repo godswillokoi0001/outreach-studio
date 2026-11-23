@@ -40,6 +40,7 @@ import {
   type AuditLog,
   type Campaign,
   type CampaignConfig,
+  type EmailOpen,
   type KnowledgeEntry,
   type KnowledgeSource,
   type Lead,
@@ -118,7 +119,12 @@ function normalizeSettingsPayload(uid: string, input: Partial<Settings>, base: S
     min_score: clampInt(s.min_score, 0, 100, DEFAULT_SETTINGS.min_score),
     unsubscribe_email: clampReqStr(s.unsubscribe_email, 320, ""),
     physical_address: clampReqStr(s.physical_address, 400, ""),
-    model: clampReqStr(s.model, 80, DEFAULT_SETTINGS.model) || DEFAULT_SETTINGS.model,
+    model: clampReqStr(s.model, 200, DEFAULT_SETTINGS.model) || DEFAULT_SETTINGS.model,
+    ai_provider: clampReqStr(s.ai_provider, 40, DEFAULT_SETTINGS.ai_provider) || DEFAULT_SETTINGS.ai_provider,
+    ai_api_key: clampStr(s.ai_api_key, 512) ?? "",
+    ai_base_url: clampStr(s.ai_base_url, 400) ?? "",
+    ai_verified_at: clampStr(s.ai_verified_at, 64) ?? "",
+    ai_key_hint: clampStr(s.ai_key_hint, 40) ?? "",
   };
 }
 
@@ -221,6 +227,11 @@ export async function getSettings(uid: string): Promise<Settings> {
       unsubscribe_email: String(data.unsubscribe_email ?? ""),
       physical_address: String(data.physical_address ?? ""),
       model: String(data.model ?? DEFAULT_SETTINGS.model),
+      ai_provider: String(data.ai_provider ?? DEFAULT_SETTINGS.ai_provider),
+      ai_api_key: String(data.ai_api_key ?? ""),
+      ai_base_url: String(data.ai_base_url ?? ""),
+      ai_verified_at: String(data.ai_verified_at ?? ""),
+      ai_key_hint: String(data.ai_key_hint ?? ""),
     };
   } catch (err) {
     handleFirestoreError(err, OperationType.GET, path);
@@ -317,7 +328,7 @@ export async function saveMasterKnowledge(uid: string, content: string): Promise
   const ref = doc(db, "users", uid, "knowledge", "master");
   try {
     const snap = await getDoc(ref);
-    const trimmed = String(content ?? "").slice(0, 50000);
+    const trimmed = String(content ?? "").slice(0, 700_000);
     if (!snap.exists()) {
       await setDoc(ref, {
         ownerId: uid,
@@ -353,7 +364,7 @@ export async function upsertKnowledgeEntry(
   try {
     const snap = await getDoc(ref);
     const title = clampReqStr(input.title, 200, "Untitled");
-    const content = clampReqStr(input.content, 50000, "");
+    const content = clampReqStr(input.content, 700_000, "");
     const category = clampReqStr(input.category, 64, "custom");
     const sort = clampInt(input.sort, 0, 10000, 50);
     if (!snap.exists()) {
@@ -398,7 +409,7 @@ export async function addKnowledgeSource(
       label: clampReqStr(input.label, 200, "Reference source"),
       kind: input.kind,
       url: clampStr(input.url, 1000),
-      content: clampStr(input.content, 30000),
+      content: clampStr(input.content, 700_000),
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
     });
@@ -420,7 +431,7 @@ export async function deleteKnowledgeSource(uid: string, id: string): Promise<vo
 export function formatKnowledgeDigest(
   bundle: { master: string; entries: KnowledgeEntry[]; sources: KnowledgeSource[] },
   fetchedUrlText: Record<string, string> = {},
-  maxChars = 14_000,
+  maxChars = 60_000,
 ): string {
   let out = "";
   const push = (block: string) => {
@@ -435,13 +446,13 @@ export function formatKnowledgeDigest(
   if (bundle.master.trim()) push(`# MASTER KNOWLEDGE (authoritative)\n${bundle.master.trim()}`);
   if (bundle.sources.length) {
     const blocks: string[] = [];
-    for (const source of bundle.sources.slice(0, 8)) {
+    for (const source of bundle.sources.slice(0, 12)) {
       const body = fetchedUrlText[source.id] ?? source.content ?? "";
-      blocks.push(`## Source: ${source.label}${source.url ? ` (${source.url})` : ""}\n${body.slice(0, 2500)}`);
+      blocks.push(`## Source: ${source.label}${source.url ? ` (${source.url})` : ""}\n${body.slice(0, 20_000)}`);
     }
     push(`# REFERENCE SOURCES\n${blocks.join("\n\n")}`);
   }
-  for (const entry of bundle.entries.slice(0, 20)) {
+  for (const entry of bundle.entries.slice(0, 40)) {
     push(`## ${entry.title}\n${entry.content.trim()}`);
   }
   return out.trim();
@@ -1402,8 +1413,55 @@ export async function getSendQuotaState(uid: string, settings: Settings): Promis
 // Composite Loaders & Subscriptions
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Email open tracking
+// ---------------------------------------------------------------------------
+
+function mapOpen(id: string, data: Record<string, unknown>): EmailOpen {
+  return {
+    id,
+    ownerId: String(data.ownerId ?? ""),
+    message_id: String(data.message_id ?? ""),
+    lead_id: data.lead_id ? String(data.lead_id) : null,
+    opened_at: data.opened_at ? String(data.opened_at) : tsToIso(data.createdAt),
+    user_agent: data.user_agent ? String(data.user_agent) : null,
+  };
+}
+
+export async function listOpenEvents(uid: string): Promise<EmailOpen[]> {
+  const path = "tracking";
+  try {
+    const snap = await getDocs(query(collection(db, path), where("ownerId", "==", uid)));
+    return snap.docs
+      .map((d) => mapOpen(d.id, d.data()))
+      .sort((a, b) => b.opened_at.localeCompare(a.opened_at));
+  } catch (err) {
+    // A missing `tracking` rule or a brand-new account should not break the
+    // dashboard, so treat read failures as "no opens recorded yet".
+    if (err instanceof Error && /permission|insufficient/i.test(err.message)) return [];
+    handleFirestoreError(err, OperationType.LIST, path);
+  }
+}
+
+export function subscribeOpenEvents(
+  uid: string,
+  onChange: (events: EmailOpen[]) => void,
+): () => void {
+  return onSnapshot(
+    query(collection(db, "tracking"), where("ownerId", "==", uid)),
+    (snap) => onChange(snap.docs.map((d) => mapOpen(d.id, d.data()))),
+    (err) => {
+      if (err instanceof Error && /permission|insufficient/i.test(err.message)) {
+        onChange([]);
+        return;
+      }
+      handleFirestoreError(err, OperationType.LIST, "tracking");
+    },
+  );
+}
+
 export async function loadDashboardBundle(uid: string) {
-  const [leads, campaigns, messages, replies, sendLogs, auditLogs, knowledge, settings] =
+  const [leads, campaigns, messages, replies, sendLogs, auditLogs, knowledge, settings, opens] =
     await Promise.all([
       listLeads(uid),
       listCampaigns(uid),
@@ -1413,6 +1471,7 @@ export async function loadDashboardBundle(uid: string) {
       listAuditLogs(uid),
       getKnowledgeBundle(uid),
       getSettings(uid),
+      listOpenEvents(uid),
     ]);
 
   const stats = computeDashboardStats({
@@ -1431,6 +1490,7 @@ export async function loadDashboardBundle(uid: string) {
     ...stats,
     settings,
     knowledgeEmpty,
+    opens,
   };
 }
 

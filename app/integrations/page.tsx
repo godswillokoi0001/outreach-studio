@@ -13,10 +13,13 @@ import {
   Sparkles,
   Unplug,
 } from "lucide-react";
+import Link from "next/link";
 import { useAuth } from "@/components/AuthProvider";
 import { Badge, Banner, Card } from "@/components/ui";
+import { getProvider } from "@/lib/ai/registry";
 import { authedPost, errorMessage } from "@/lib/client";
 import { getSettings } from "@/lib/firestore-store";
+import type { Settings } from "@/lib/types";
 import { disconnectWorkspace, workspaceStatus, type WorkspaceStatus } from "@/lib/workspace";
 
 export default function IntegrationsPage() {
@@ -25,6 +28,7 @@ export default function IntegrationsPage() {
   const [busy, setBusy] = useState<string | null>(null);
   const [note, setNote] = useState<{ tone: "ok" | "bad" | "info"; text: string } | null>(null);
   const [status, setStatus] = useState<WorkspaceStatus | null>(null);
+  const [aiSettings, setAiSettings] = useState<Settings | null>(null);
 
   // Read the OAuth result from the URL on render instead of mirroring it into
   // state from an effect.
@@ -40,6 +44,14 @@ export default function IntegrationsPage() {
 
   useEffect(() => {
     let active = true;
+    getSettings(user.uid).then(
+      (settings) => {
+        if (active) setAiSettings(settings);
+      },
+      () => {
+        if (active) setAiSettings(null);
+      },
+    );
     workspaceStatus().then(
       (next) => {
         if (active) setStatus(next);
@@ -51,7 +63,7 @@ export default function IntegrationsPage() {
     return () => {
       active = false;
     };
-  }, [workspaceToken]);
+  }, [user.uid, workspaceToken]);
 
   const loadStatus = async () => {
     setStatus(await workspaceStatus());
@@ -62,12 +74,14 @@ export default function IntegrationsPage() {
     setNote(null);
     try {
       const settings = await getSettings(user.uid);
-      const result = await authedPost<{ model: string; ms: number; reply: string }>("/api/ai/test", {
+      const result = await authedPost<{ model: string; ms: number; reply: string; provider?: string }>("/api/ai/test", {
         model: settings.model,
       });
+      setAiSettings(settings);
+      const meta = getProvider(result.provider ?? settings.ai_provider);
       setNote({
         tone: "ok",
-        text: `Gemini is live: ${result.model} replied "${result.reply}" in ${result.ms} ms.`,
+        text: `${meta?.label ?? "AI"} is live: ${result.model} replied "${result.reply}" in ${result.ms} ms.`,
       });
     } catch (err) {
       setNote({ tone: "bad", text: errorMessage(err) });
@@ -116,7 +130,7 @@ export default function IntegrationsPage() {
           <h1 className="page-title">Integrations</h1>
           <p className="page-sub">
             Three connections run this app: Firebase (your private data), Google Workspace (Sheets and Gmail) and
-            Gemini (the AI).
+            the AI provider you connect (Gemini, OpenAI, Claude or any compatible API).
           </p>
         </div>
       </div>
@@ -224,24 +238,35 @@ export default function IntegrationsPage() {
         </Card>
 
         <Card
-          title="Google Gemini — the AI engine"
+          title="AI engine — any provider"
           sub="Research, qualification scoring, email writing, reply classification and performance analysis."
-          actions={<Badge tone="ok">Server-managed</Badge>}
+          actions={
+            aiSettings?.ai_api_key ? (
+              <Badge tone="ok">{getProvider(aiSettings.ai_provider)?.label ?? "Connected"}</Badge>
+            ) : (
+              <Badge tone="warn">Server default</Badge>
+            )
+          }
         >
           <div className="row" style={{ gap: 10, marginBottom: 12 }}>
             <Sparkles size={17} style={{ color: "var(--accent)" }} />
             <span style={{ fontSize: 13 }}>
-              Calls run server-side with structured JSON schemas and automatic model fallback, so a retired model id
-              never breaks the pipeline.
+              {aiSettings?.ai_api_key
+                ? `Every AI call uses ${getProvider(aiSettings.ai_provider)?.label ?? aiSettings.ai_provider} · ${aiSettings.model}.`
+                : "No key connected, so calls fall back to the server Gemini key when one is configured."}{" "}
+              Calls run server-side with structured JSON schemas and automatic model fallback.
             </span>
           </div>
-          <div className="row" style={{ gap: 10 }}>
+          <div className="row" style={{ gap: 10, flexWrap: "wrap" }}>
             <button className="btn btn-primary btn-sm" onClick={() => void testGemini()} disabled={busy !== null} type="button">
               <KeyRound size={13} />
-              <span>{busy === "test" ? "Testing Gemini…" : "Test Gemini"}</span>
+              <span>{busy === "test" ? "Testing AI…" : "Test connection"}</span>
             </button>
+            <Link className="btn btn-sm" href="/settings">
+              Manage keys &amp; models
+            </Link>
             <span className="tiny">
-              The API key is read from <code>GEMINI_API_KEY</code> on the server and never reaches the browser.
+              Keys are stored in your private Firebase record and sent only to the provider you pick.
             </span>
           </div>
         </Card>

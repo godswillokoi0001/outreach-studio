@@ -1,0 +1,43 @@
+"use client";
+
+import { useState } from "react";
+import { Landing } from "./Landing";
+import { LoginGate } from "./LoginGate";
+
+export function PreAuth({
+  onGoogleAuth,
+  busy,
+  error,
+}: {
+  onGoogleAuth: () => Promise<boolean>;
+  busy: boolean;
+  error: string | null;
+}) {
+  const [view, setView] = useState<"landing" | "auth">("landing");
+  const [mode, setMode] = useState<"signup" | "signin">("signup");
+
+  if (view === "landing") {
+    return (
+      <Landing
+        onSignIn={() => {
+          setMode("signin");
+          setView("auth");
+        }}
+        onSignUp={() => {
+          setMode("signup");
+          setView("auth");
+        }}
+      />
+    );
+  }
+
+  return (
+    <LoginGate
+      onGoogleAuth={onGoogleAuth}
+      busy={busy}
+      error={error}
+      initialMode={mode}
+      onBack={() => setView("landing")}
+    />
+  );
+}

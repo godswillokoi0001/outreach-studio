@@ -7,7 +7,11 @@ import {
   ArrowUpRight,
   Bot,
   CheckCircle2,
+  ChevronDown,
+  ChevronUp,
   Loader2,
+  Pause,
+  Play,
   RotateCcw,
   Send,
   ShieldAlert,
@@ -15,6 +19,7 @@ import {
   Square,
   X,
 } from "lucide-react";
+import { motion } from "framer-motion";
 import { buildQuickWorkspaceSummary, executeAgentTool } from "@/lib/agent-executor";
 import {
   describeToolCall,
@@ -30,6 +35,7 @@ import { authedPost, errorMessage } from "@/lib/client";
 import { getWorkspaceAccessToken } from "@/lib/firebase";
 import { getSettings } from "@/lib/firestore-store";
 import { useAuth } from "./AuthProvider";
+import { useAgentPresence } from "./AgentPresence";
 
 interface ActionStep {
   id: string;
@@ -136,12 +142,18 @@ export function DashboardChat({
   const router = useRouter();
   const pathname = usePathname();
   const { user, workspaceToken, reconnectWorkspace } = useAuth();
+  const presence = useAgentPresence();
+  const narrate = presence.narrate;
 
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [statusLabel, setStatusLabel] = useState<string | null>(null);
   const [pendingConfirm, setPendingConfirm] = useState<PendingConfirmation | null>(null);
+  const [collapsed, setCollapsed] = useState(false);
+  const [elapsed, setElapsed] = useState(0);
+  const [live, setLive] = useState(true);
+  const [liveNote, setLiveNote] = useState<string | null>(null);
 
   const historyRef = useRef<AgentContent[]>([]);
   const pathnameRef = useRef(pathname);
@@ -168,6 +180,41 @@ export function DashboardChat({
     }
     return undefined;
   }, [open]);
+
+  // Tick a visible clock while the agent is working so progress is legible.
+  useEffect(() => {
+    if (!busy) return undefined;
+    const id = window.setInterval(() => setElapsed((value) => value + 1), 1000);
+    return () => window.clearInterval(id);
+  }, [busy]);
+
+  // "Full-time agent" presence: while idle and open, keep reading the workspace
+  // and narrating what it notices, without taking any action on its own.
+  useEffect(() => {
+    if (!open || !live || busy || pendingConfirm) return undefined;
+    let cancelled = false;
+    const look = async () => {
+      try {
+        const summary = await buildQuickWorkspaceSummary(user.uid);
+        if (cancelled) return;
+        const lines = summary
+          .split("\n")
+          .map((line) => line.replace(/^#+\s*|^[-•*]\s*/, "").trim())
+          .filter((line) => line.length > 8);
+        const note = lines[1] ?? lines[0] ?? "Watching your workspace";
+        setLiveNote(note.slice(0, 120));
+        narrate(note.slice(0, 90));
+      } catch {
+        if (!cancelled) setLiveNote("Watching your workspace");
+      }
+    };
+    void look();
+    const id = window.setInterval(() => void look(), 12_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [open, live, busy, pendingConfirm, user.uid, narrate]);
 
   const updateAssistantMessage = (msgId: string, updater: (msg: ChatMessage) => ChatMessage) => {
     setMessages((prev) => prev.map((m) => (m.id === msgId ? updater(m) : m)));
@@ -276,6 +323,12 @@ export function DashboardChat({
         const stepId = makeLocalId("step");
         const label = describeToolCall(toolName, fc.args);
         setStatusLabel(label);
+        const routeArg = typeof fc.args?.route === "string" ? fc.args.route : null;
+        void presence.moveTo(routeArg ? `[data-agent-nav="${routeArg}"]` : "[data-agent-page]", {
+          label,
+          click: true,
+          dwellMs: 280,
+        });
         appendStep(assistantMsgId, {
           id: stepId,
           toolName,
@@ -290,6 +343,10 @@ export function DashboardChat({
           needsWorkspace: res.needsWorkspace,
           navigatedTo: res.navigatedTo,
         });
+        narrate(res.summary ? `${label} — ${res.summary}`.slice(0, 110) : label);
+        if (res.navigatedTo) {
+          void presence.moveTo("[data-agent-page]", { label: `Now on ${res.navigatedTo}`, click: false, dwellMs: 620 });
+        }
         responses.push({
           id: fc.id,
           name: toolName,
@@ -360,8 +417,15 @@ export function DashboardChat({
 
     cancelledRef.current = false;
     setInput("");
+    setElapsed(0);
     setBusy(true);
     setStatusLabel("Preparing workspace context…");
+    narrate("Reading your request and the current workspace…");
+    void presence.moveTo("[data-agent-page]", {
+      label: "Taking over the workspace",
+      click: false,
+      dwellMs: 180,
+    });
 
     const userMsg: ChatMessage = {
       id: makeLocalId("u"),
@@ -409,7 +473,9 @@ export function DashboardChat({
     const pending = pendingConfirm;
     setPendingConfirm(null);
     setBusy(true);
+    setElapsed(0);
     cancelledRef.current = false;
+    narrate(approved ? "Running the action you confirmed." : "Cancelling that action.");
 
     const env = makeExecEnv();
     const gatedResponses: { id?: string; name: string; response: Record<string, unknown> }[] = [];
@@ -510,19 +576,55 @@ export function DashboardChat({
 
   if (!open) return null;
 
+  const liveLine = busy
+    ? statusLabel ?? "Working…"
+    : pendingConfirm
+      ? "Waiting for your confirmation"
+      : live
+        ? liveNote ?? "Watching your workspace"
+        : "Monitoring paused";
+
   return (
-    <aside className="chat-drawer" aria-label="AI Operator chat">
+    <motion.div
+      className="agent-dock"
+      data-collapsed={collapsed ? "true" : "false"}
+      initial={{ opacity: 0, y: 16, scale: 0.985 }}
+      animate={{ opacity: 1, y: 0, scale: 1 }}
+      transition={{ type: "spring", stiffness: 250, damping: 26 }}
+      aria-label="AI Operator"
+    >
       <div className="chat-header">
         <div className="chat-header-title">
-          <div className="chat-avatar">
+          <div className={`chat-avatar${busy ? " busy" : ""}`}>
             <Sparkles size={15} />
           </div>
-          <div>
+          <div style={{ minWidth: 0 }}>
             <div className="chat-title">AI Operator</div>
-            <div className="chat-subtitle">Autonomous dashboard assistant</div>
+            <div className="chat-live-line" data-busy={busy ? "true" : "false"} title={liveLine}>
+              <span className="chat-live-dot" />
+              <span className="chat-live-text">{liveLine}</span>
+              {busy && <span className="chat-elapsed">{elapsed}s</span>}
+            </div>
           </div>
         </div>
-        <div className="row" style={{ gap: 4 }}>
+        <div className="row" style={{ gap: 2 }}>
+          <button
+            type="button"
+            className="btn btn-sm btn-ghost"
+            onClick={() => {
+              setLive((value) => {
+                const next = !value;
+                if (next) narrate("Back on watch — reading the workspace.");
+                else narrate("Monitoring paused.");
+                return next;
+              });
+            }}
+            title={live ? "Pause live monitoring" : "Resume live monitoring"}
+            aria-label={live ? "Pause live monitoring" : "Resume live monitoring"}
+            aria-pressed={live}
+          >
+            {live ? <Pause size={13} /> : <Play size={13} />}
+          </button>
           {messages.length > 0 && (
             <button
               type="button"
@@ -537,6 +639,16 @@ export function DashboardChat({
           <button
             type="button"
             className="btn btn-sm btn-ghost"
+            onClick={() => setCollapsed((value) => !value)}
+            title={collapsed ? "Expand AI Operator" : "Collapse AI Operator"}
+            aria-label={collapsed ? "Expand AI Operator" : "Collapse AI Operator"}
+            aria-expanded={!collapsed}
+          >
+            {collapsed ? <ChevronUp size={15} /> : <ChevronDown size={15} />}
+          </button>
+          <button
+            type="button"
+            className="btn btn-sm btn-ghost"
             onClick={onClose}
             title="Close AI Operator"
             aria-label="Close AI Operator"
@@ -546,6 +658,8 @@ export function DashboardChat({
         </div>
       </div>
 
+      {collapsed ? null : (
+      <>
       <div className="chat-messages" ref={scrollRef}>
         {messages.length === 0 ? (
           <div className="chat-empty">
@@ -745,6 +859,8 @@ export function DashboardChat({
           )}
         </div>
       </div>
-    </aside>
+      </>
+      )}
+    </motion.div>
   );
 }

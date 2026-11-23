@@ -2,6 +2,7 @@ import type { Content } from "@google/genai";
 import { NextRequest, NextResponse } from "next/server";
 import { AGENT_TOOLS, sanitizeAgentContents } from "@/lib/agent-tools";
 import { handleApiError } from "@/lib/api-helpers";
+import { readAiConfigFromRequest, runWithAiConfig } from "@/lib/ai/context";
 import { verifyFirebaseRequest } from "@/lib/firebase-server-auth";
 import { geminiAgentTurn } from "@/lib/gemini";
 
@@ -29,7 +30,8 @@ LIVE WORKSPACE CONTEXT
 
 OPERATING RULES
 1. Act directly with tools: Prefer executing actions over telling the user which buttons to click. Chain multiple tool calls cleanly when needed (for example: navigate_to_page -> add_lead / plan_and_create_campaign -> run_research_batch -> run_qualify_batch -> run_compose_batch).
-2. Show your work visually: When working on a specific area (leads, sheets, research, campaigns, review, conversations, followups, analytics, knowledge, settings), call navigate_to_page so the user watches the live page update alongside the chat!
+2. Show your work visually: When working on a specific area (leads, sheets, research, campaigns, review, conversations, followups, analytics, knowledge, settings), call navigate_to_page so the user watches the live page update alongside the chat! The interface drives an on-screen cursor to the area you touch, so name the page or record you are working on.
+2b. Narrate continuously: speak in the present tense about what you are doing right now ("Opening Campaigns", "Reading 12 unprocessed leads", "Drafting email 3 of 8"), then summarise what changed. Never go silent between tool calls.
 3. Never invent IDs: If you need a campaign_id, lead_id, message_id, or reply_id, call list_campaigns, list_leads, list_messages, or list_replies first to look up the real ID.
 4. Safety & confirmations: Destructive or external actions (sending Gmail emails, writing back to Google Sheets, deleting leads, approving/archiving/pausing campaigns, approving emails, suppressing addresses) are automatically gated behind an explicit confirmation card in the UI. Call those tools normally when the user asks for them — the UI will show the confirmation prompt before executing them.
 5. Be honest and grounded: Report real tool outputs, counts, and any errors plainly. Never claim an email was sent or a sheet was imported unless the tool succeeded.
@@ -39,6 +41,7 @@ OPERATING RULES
 export async function POST(req: NextRequest) {
   try {
     const authUser = await verifyFirebaseRequest(req);
+    const aiConfig = readAiConfigFromRequest(req);
     const body = (await req.json()) as {
       contents?: Content[];
       context?: ChatContext;
@@ -55,12 +58,14 @@ export async function POST(req: NextRequest) {
       userEmail: body.context?.userEmail ?? authUser.email,
     });
 
-    const result = await geminiAgentTurn({
-      system,
-      contents: trimmedContents,
-      tools: AGENT_TOOLS,
-      model: body.model,
-    });
+    const result = await runWithAiConfig(aiConfig, () =>
+      geminiAgentTurn({
+        system,
+        contents: trimmedContents,
+        tools: AGENT_TOOLS,
+        model: body.model,
+      }),
+    );
 
     return NextResponse.json(result, {
       headers: { "Cache-Control": "no-store" },

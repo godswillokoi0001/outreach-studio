@@ -4,10 +4,14 @@ import { getFirebaseIdToken } from "./firebase";
 import { clearWorkspaceToken, readWorkspaceToken, writeWorkspaceToken } from "./workspace-token";
 
 export interface WorkspaceStatus {
+  /** A server-side OAuth client is configured, so the connection can persist. */
   configured: boolean;
+  /** The server holds a refresh token for this user. */
   connected: boolean;
   email: string | null;
 }
+
+const EMPTY_STATUS: WorkspaceStatus = { configured: false, connected: false, email: null };
 
 async function post<T>(path: string, method: "POST" | "DELETE" = "POST"): Promise<T> {
   const idToken = await getFirebaseIdToken();
@@ -61,7 +65,7 @@ export async function workspaceStatus(): Promise<WorkspaceStatus> {
   try {
     return await post<WorkspaceStatus>("/api/google/status");
   } catch {
-    return { configured: false, connected: false, email: null };
+    return { ...EMPTY_STATUS };
   }
 }
 
@@ -73,7 +77,11 @@ export async function startGoogleConnection(): Promise<void> {
 
 export async function disconnectWorkspace(): Promise<void> {
   clearWorkspaceToken();
-  await post("/api/google/status", "DELETE");
+  try {
+    await post("/api/google/status", "DELETE");
+  } catch {
+    // browser copy cleared
+  }
 }
 
-export { clearWorkspaceToken, readWorkspaceToken } from "./workspace-token";
+export { clearWorkspaceToken, readWorkspaceToken, writeWorkspaceToken } from "./workspace-token";

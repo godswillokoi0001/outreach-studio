@@ -577,3 +577,99 @@ tr.clickable:hover td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
   .detail-head { flex-wrap: wrap; }
   .page-title { font-size: 26px; }
 }
+
+/* ---------- task dock alternative styles ---------- */
+.taskdock {
+  position: fixed;
+  right: 18px;
+  bottom: 88px;
+  z-index: 70;
+  display: grid;
+  gap: 9px;
+  width: min(340px, calc(100vw - 36px));
+  pointer-events: none;
+}
+
+.taskdock-item {
+  pointer-events: auto;
+  display: grid;
+  gap: 7px;
+  padding: 12px 14px;
+  border-radius: 13px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  box-shadow: 0 20px 48px -26px rgba(20, 22, 26, 0.55);
+}
+
+.taskdock-item[data-status="error"] { border-color: color-mix(in srgb, var(--bad) 40%, var(--line)); }
+.taskdock-item[data-status="done"] { border-color: color-mix(in srgb, var(--ok) 38%, var(--line)); }
+
+.taskdock-head { display: flex; align-items: center; gap: 8px; }
+
+.taskdock-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 12.8px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.taskdock-status {
+  font-size: 10.4px;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.taskdock-item[data-status="done"] .taskdock-status { color: var(--ok); }
+.taskdock-item[data-status="error"] .taskdock-status { color: var(--bad); }
+.taskdock-item[data-status="stopped"] .taskdock-status { color: var(--warn); }
+
+.taskdock-detail,
+.taskdock-message {
+  font-size: 11.6px;
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.taskdock-message { color: var(--ink-2); }
+
+.taskdock-bar {
+  height: 5px;
+  border-radius: 99px;
+  background: var(--line-soft);
+  overflow: hidden;
+}
+
+.taskdock-fill {
+  display: block;
+  height: 100%;
+  border-radius: 99px;
+  background: linear-gradient(90deg, var(--accent-2), var(--accent));
+  transition: width 0.4s ease;
+}
+
+.taskdock-item[data-status="done"] .taskdock-fill { background: var(--ok); }
+.taskdock-item[data-status="error"] .taskdock-fill { background: var(--bad); }
+.taskdock-item[data-status="stopped"] .taskdock-fill { background: var(--warn); }
+
+.taskdock-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 22px;
+}
+
+.taskdock-count {
+  font-size: 11px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 640px) {
+  .taskdock { right: 12px; left: 12px; bottom: 76px; width: auto; }
+}

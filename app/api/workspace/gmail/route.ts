@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { extractWorkspaceToken, handleApiError } from "@/lib/api-helpers";
 import { fromB64url } from "@/lib/crypto";
 import { verifyFirebaseRequest } from "@/lib/firebase-server-auth";
-import { buildRawEmail, encodeBase64Url, type RawEmailInput } from "@/lib/outreach-utils";
+import { buildOpenPixelUrl, buildRawEmail, encodeBase64Url, type RawEmailInput } from "@/lib/outreach-utils";
 
 const GMAIL_API = "https://gmail.googleapis.com/gmail/v1/users/me";
 
@@ -87,11 +87,14 @@ function decodeMessage(msg: GmailMessagePayload) {
 
 export async function POST(req: NextRequest) {
   try {
-    await verifyFirebaseRequest(req);
+    const user = await verifyFirebaseRequest(req);
     const token = extractWorkspaceToken(req);
     const body = (await req.json()) as {
       action: "profile" | "send" | "list" | "get" | "findSentByRfc";
-      email?: RawEmailInput & { threadId?: string | null };
+      email?: RawEmailInput & {
+        threadId?: string | null;
+        tracking?: { messageId?: string; leadId?: string | null; enabled?: boolean };
+      };
       q?: string;
       maxResults?: number;
       id?: string;
@@ -107,7 +110,17 @@ export async function POST(req: NextRequest) {
       if (!body.email) {
         return NextResponse.json({ error: "Email payload is required." }, { status: 400 });
       }
-      const raw = buildRawEmail(body.email);
+      const tracking = body.email.tracking;
+      const publicOrigin = (process.env.NEXT_PUBLIC_APP_URL || req.nextUrl.origin).replace(/\/$/, "");
+      const pixelUrl =
+        tracking?.enabled !== false && tracking?.messageId
+          ? buildOpenPixelUrl(publicOrigin, {
+              ownerId: user.uid,
+              messageId: tracking.messageId,
+              leadId: tracking.leadId ?? null,
+            })
+          : null;
+      const raw = buildRawEmail({ ...body.email, openPixelUrl: pixelUrl });
       const sent = await gmailFetch<{ id: string; threadId: string }>(token, "/messages/send", {
         method: "POST",
         body: JSON.stringify({

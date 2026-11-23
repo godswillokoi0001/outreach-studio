@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from "next";
 import "./globals.css";
 import "./theme.css";
 import "./loaders.css";
+import "./marketing.css";
 import { AuthProvider } from "@/components/AuthProvider";
 import { MotionProvider } from "@/components/motion/MotionProvider";
 

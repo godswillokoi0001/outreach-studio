@@ -199,6 +199,15 @@ export interface Suppression {
   updated_at: string;
 }
 
+export interface EmailOpen {
+  id: string;
+  ownerId: string;
+  message_id: string;
+  lead_id: string | null;
+  opened_at: string;
+  user_agent: string | null;
+}
+
 export interface SendLog {
   id: string;
   lead_id: string;
@@ -235,6 +244,16 @@ export interface Settings {
   unsubscribe_email: string;
   physical_address: string;
   model: string;
+  /** Active AI provider id, e.g. "gemini", "openai", "anthropic". */
+  ai_provider: string;
+  /** User-supplied provider key, stored only in their private settings record. */
+  ai_api_key: string;
+  /** Optional custom OpenAI-compatible base URL. */
+  ai_base_url: string;
+  /** When the key was last verified live. */
+  ai_verified_at: string;
+  /** Masked tail of the key, for display. */
+  ai_key_hint: string;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -255,6 +274,11 @@ export const DEFAULT_SETTINGS: Settings = {
   unsubscribe_email: "",
   physical_address: "",
   model: "gemini-3.5-flash",
+  ai_provider: "gemini",
+  ai_api_key: "",
+  ai_base_url: "",
+  ai_verified_at: "",
+  ai_key_hint: "",
 };
 
 export const LEAD_STATUS_LABELS: Record<string, string> = {

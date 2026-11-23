@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   BarChart3,
   BookOpen,
@@ -15,6 +15,7 @@ import {
   LogOut,
   Menu,
   MessageSquare,
+  MousePointerClick,
   PanelLeftClose,
   PanelLeftOpen,
   Plug,
@@ -24,14 +25,15 @@ import {
   Settings,
   Sparkles,
   Users,
-  type LucideIcon,
 } from "lucide-react";
 import { AnimatePresence, motion } from "framer-motion";
+import { initAiConfig } from "@/lib/ai-client";
 import { errorMessage } from "@/lib/client";
-import { subscribeBadgeCounts } from "@/lib/firestore-store";
+import { subscribeBadgeCounts, subscribeOpenEvents } from "@/lib/firestore-store";
 import { runSyncBatch } from "@/lib/pipeline-client";
 import { useAuth } from "./AuthProvider";
 import { DashboardChat } from "./DashboardChat";
+import { AgentPresenceProvider } from "./AgentPresence";
 import { TaskDockProvider, useTaskDock } from "./Loading";
 import { PageMotion } from "./motion/PageMotion";
 
@@ -73,10 +75,19 @@ const NAV = [
   },
 ];
 
+interface SignalToast {
+  id: string;
+  kind: "open" | "reply";
+  title: string;
+  detail: string;
+}
+
 export function Shell({ children }: { children: ReactNode }) {
   return (
     <TaskDockProvider>
-      <ShellInner>{children}</ShellInner>
+      <AgentPresenceProvider>
+        <ShellInner>{children}</ShellInner>
+      </AgentPresenceProvider>
     </TaskDockProvider>
   );
 }
@@ -85,6 +96,11 @@ function ShellInner({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const dock = useTaskDock();
   const { user, workspaceToken, workspaceEmail, workspacePersistent, reconnectWorkspace, signOut } = useAuth();
+
+  useEffect(() => {
+    void initAiConfig(user.uid);
+  }, [user.uid]);
+
   const [open, setOpen] = useState(false);
   const [chatOpen, setChatOpen] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
@@ -92,6 +108,8 @@ function ShellInner({ children }: { children: ReactNode }) {
   const [counts, setCounts] = useState({ review: 0, replies: 0, followups: 0 });
   const [syncing, setSyncing] = useState(false);
   const [syncNote, setSyncNote] = useState<string | null>(null);
+  const [signals, setSignals] = useState<SignalToast[]>([]);
+  const previousReplies = useRef<number | null>(null);
 
   useEffect(() => {
     const frame = requestAnimationFrame(() => {
@@ -108,9 +126,47 @@ function ShellInner({ children }: { children: ReactNode }) {
     });
   };
 
+  const pushSignal = (signal: Omit<SignalToast, "id">) => {
+    const id = `${signal.kind}_${Date.now()}`;
+    setSignals((current) => [...current.slice(-2), { ...signal, id }]);
+    window.setTimeout(() => {
+      setSignals((current) => current.filter((item) => item.id !== id));
+    }, 9000);
+  };
+
   useEffect(() => {
     if (!user?.uid) return;
-    const unsub = subscribeBadgeCounts(user.uid, setCounts);
+    const unsub = subscribeBadgeCounts(user.uid, (next) => {
+      setCounts(next);
+      const previous = previousReplies.current;
+      previousReplies.current = next.replies;
+      if (previous !== null && next.replies > previous) {
+        pushSignal({
+          kind: "reply",
+          title: "A prospect replied",
+          detail: "Open Conversations to read it and send the suggested answer.",
+        });
+      }
+    });
+    return () => unsub();
+  }, [user?.uid]);
+
+  // Open tracking: tell the operator the moment a sent email is read.
+  useEffect(() => {
+    if (!user?.uid) return;
+    let baseline = true;
+    const unsub = subscribeOpenEvents(user.uid, (events) => {
+      if (baseline) {
+        baseline = false;
+        return;
+      }
+      pushSignal({
+        kind: "open",
+        title: "An email was just opened",
+        detail: `${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} · see which send in Sent emails.`,
+      });
+      void events;
+    });
     return () => unsub();
   }, [user?.uid]);
 
@@ -197,6 +253,7 @@ function ShellInner({ children }: { children: ReactNode }) {
                     className={`nav-link${active ? " active" : ""}`}
                     onClick={() => setOpen(false)}
                     title={collapsed ? item.label : undefined}
+                    data-agent-nav={item.href}
                   >
                     {active && (
                       <span className="nav-pill" />
@@ -212,7 +269,7 @@ function ShellInner({ children }: { children: ReactNode }) {
         </nav>
       </aside>
 
-      <div className="main">
+      <div className="main" data-refresh={refreshKey}>
         <header className="topbar">
           <button
             className="btn btn-sm menu-btn"
@@ -280,6 +337,35 @@ function ShellInner({ children }: { children: ReactNode }) {
 
         <PageMotion>{children}</PageMotion>
       </div>
+
+      <DashboardChat
+        open={chatOpen}
+        onClose={() => setChatOpen(false)}
+        onDataMutated={() => setRefreshKey((k) => k + 1)}
+      />
+
+      {signals.length > 0 && (
+        <div className="signal-stack" role="status" aria-live="polite">
+          {signals.map((signal) => (
+            <div key={signal.id} className="signal-toast" data-kind={signal.kind}>
+              <span className="signal-toast-icon">
+                {signal.kind === "open" ? <MousePointerClick size={14} /> : <MessageSquare size={14} />}
+              </span>
+              <div>
+                <strong>{signal.title}</strong>
+                <span>{signal.detail}</span>
+              </div>
+              <button
+                type="button"
+                aria-label="Dismiss notification"
+                onClick={() => setSignals((current) => current.filter((item) => item.id !== signal.id))}
+              >
+                ×
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

@@ -3,119 +3,132 @@
 import { useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {
+  ArrowLeft,
   ArrowRight,
+  BookOpen,
   CheckCircle2,
   FileSpreadsheet,
-  Mail,
+  Lock,
+  MailCheck,
+  MousePointerClick,
   Search,
   ShieldCheck,
   Sparkles,
-  Users,
 } from "lucide-react";
 
-const PILLARS = [
+const PROOF_POINTS = [
   {
-    icon: Users,
-    title: "Every prospect, researched",
-    body: "The app reads the company's website, records verified facts with sources, then scores the fit against what you actually sell.",
+    icon: Search,
+    title: "Researched prospects",
+    body: "Every business read, every claim sourced before it is used.",
   },
   {
-    icon: Sparkles,
-    title: "Emails written from your knowledge",
-    body: "Your master knowledge and sources are the only ground truth. No generic templates, no invented claims.",
+    icon: BookOpen,
+    title: "Written from your knowledge",
+    body: "Your offers, prices, proof and tone. Nothing invented.",
   },
   {
-    icon: Mail,
-    title: "Sent from your own Gmail",
-    body: "Nothing leaves without your approval. Replies and bounces are read back and classified automatically.",
+    icon: MailCheck,
+    title: "Gmail-native sending",
+    body: "Real email from your address, approved by you, one at a time.",
   },
   {
-    icon: FileSpreadsheet,
-    title: "Google Sheets in and out",
-    body: "Import a prospect list in one click and write campaign statuses back to the same sheet.",
+    icon: MousePointerClick,
+    title: "Opens and replies",
+    body: "See who read it and who answered, the moment it happens.",
   },
+];
+
+const TRUST = [
+  { icon: ShieldCheck, text: "Each account is isolated with Firestore row-level rules." },
+  { icon: Lock, text: "Google tokens stay in memory, never in browser storage." },
+  { icon: CheckCircle2, text: "Nothing sends until you approve it." },
 ];
 
 export function LoginGate({
   onGoogleAuth,
   busy,
   error,
+  initialMode = "signup",
+  onBack,
 }: {
   onGoogleAuth: () => Promise<boolean>;
   busy: boolean;
   error: string | null;
+  initialMode?: "signup" | "signin";
+  onBack?: () => void;
 }) {
-  const [mode, setMode] = useState<"signup" | "signin">("signup");
+  const [mode, setMode] = useState<"signup" | "signin">(initialMode);
   const domainIssue =
     error && /unauthori[sz]ed domain|not authorised in Firebase|auth\/unauthorized-domain/i.test(error);
+  const isSignup = mode === "signup";
 
   return (
-    <main className="login-wrap">
-      <motion.div
-        className="login-shell"
-        initial={{ opacity: 0, y: 24, scale: 0.985 }}
-        animate={{ opacity: 1, y: 0, scale: 1 }}
-        transition={{ type: "spring", stiffness: 260, damping: 28 }}
-      >
-        <aside className="login-aside">
-          <div className="login-brand" style={{ marginBottom: 0 }}>
-            <div className="brand-mark">OS</div>
-            <div>
-              <div style={{ fontWeight: 600, fontSize: 15.5, color: "#fff" }}>Outreach Studio</div>
-              <div className="tiny" style={{ color: "rgba(234,243,238,0.65)" }}>
-                Sales intelligence workspace
-              </div>
-            </div>
-          </div>
+    <main className="auth-shell">
+      <div className="auth-aurora" aria-hidden="true" />
 
-          <div>
-            <div className="hero-eyebrow" style={{ color: "rgba(234,243,238,0.55)" }}>
-              Research → qualify → write → send
-            </div>
+      <div className="auth-top">
+        <div className="landing-brand">
+          <span className="brand-mark">OS</span>
+          <span className="landing-brand-name">Outreach Studio</span>
+        </div>
+        {onBack && (
+          <button type="button" className="btn btn-ghost auth-back" onClick={onBack}>
+            <ArrowLeft size={14} />
+            Back to site
+          </button>
+        )}
+      </div>
+
+      <motion.div
+        className="auth-card"
+        initial={{ opacity: 0, y: 22, scale: 0.99 }}
+        animate={{ opacity: 1, y: 0, scale: 1 }}
+        transition={{ type: "spring", stiffness: 240, damping: 26 }}
+      >
+        <aside className="auth-aside">
+          <div className="auth-aside-glow" aria-hidden="true" />
+          <div className="auth-aside-top">
+            <span className="auth-eyebrow">The outreach workspace</span>
             <h2>
-              Stop guessing who to email,
+              Outreach that
               <br />
-              and what to say.
+              reports back.
             </h2>
-            <p style={{ marginTop: 10 }}>
-              One private workspace that turns a list of businesses into researched, personalised, approved outreach
-              sent from your own inbox.
+            <p>
+              Research, personalised writing, approved sending and live open + reply signals — in one private
+              workspace.
             </p>
           </div>
 
-          <ul className="login-points">
-            {PILLARS.map((pillar) => {
-              const Icon = pillar.icon;
-              return (
-                <li key={pillar.title}>
-                  <span className="login-point-icon">
-                    <Icon size={14} strokeWidth={1.9} aria-hidden="true" />
-                  </span>
-                  <span>
-                    <strong style={{ color: "#fff", fontWeight: 600 }}>{pillar.title}</strong>
-                    <br />
-                    <span style={{ color: "rgba(234,243,238,0.72)", fontSize: 12.6 }}>{pillar.body}</span>
-                  </span>
-                </li>
-              );
-            })}
+          <ul className="auth-proof">
+            {PROOF_POINTS.map(({ icon: Icon, title, body }) => (
+              <li key={title}>
+                <span className="auth-proof-icon">
+                  <Icon size={15} strokeWidth={1.9} />
+                </span>
+                <span>
+                  <strong>{title}</strong>
+                  <span>{body}</span>
+                </span>
+              </li>
+            ))}
           </ul>
 
-          <div className="login-proof">
-            <span>Firebase-secured</span>
-            <span>Per-account isolation</span>
-            <span>Approval before sending</span>
-            <span>Unsubscribe-safe</span>
+          <div className="auth-aside-foot">
+            <span className="auth-live-dot" />
+            <span>Opens &amp; replies surface in your dashboard in real time</span>
           </div>
         </aside>
 
-        <section className="login-panel">
-          <div className="tabs" role="tablist" aria-label="Authentication mode" style={{ marginBottom: 18 }}>
+        <section className="auth-panel">
+          <div className="auth-mode" role="tablist" aria-label="Authentication mode">
+            <span className="auth-mode-thumb" data-mode={mode} aria-hidden="true" />
             <button
               type="button"
               role="tab"
-              aria-selected={mode === "signup"}
-              className={`tab${mode === "signup" ? " active" : ""}`}
+              aria-selected={isSignup}
+              className={isSignup ? "active" : ""}
               onClick={() => setMode("signup")}
             >
               Create account
@@ -123,8 +136,8 @@ export function LoginGate({
             <button
               type="button"
               role="tab"
-              aria-selected={mode === "signin"}
-              className={`tab${mode === "signin" ? " active" : ""}`}
+              aria-selected={!isSignup}
+              className={!isSignup ? "active" : ""}
               onClick={() => setMode("signin")}
             >
               Sign in
@@ -134,22 +147,26 @@ export function LoginGate({
           <AnimatePresence mode="wait" initial={false}>
             <motion.div
               key={mode}
+              className="auth-heading"
               initial={{ opacity: 0, y: 6 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -4 }}
               transition={{ duration: 0.18, ease: "easeOut" }}
             >
-              <h1>{mode === "signup" ? "Create your workspace" : "Welcome back"}</h1>
-              <p className="tiny" style={{ marginBottom: 18, fontSize: 13 }}>
-                {mode === "signup"
-                  ? "One Google account creates your private workspace and connects Gmail and Google Sheets at the same time."
-                  : "Sign in with the Google account you use for outreach. Your campaigns, research and replies come back exactly as you left them."}
+              <span className="auth-heading-icon">
+                <Sparkles size={16} />
+              </span>
+              <h1>{isSignup ? "Start your workspace" : "Welcome back"}</h1>
+              <p>
+                {isSignup
+                  ? "One Google account creates a private workspace and connects Gmail and Google Sheets at the same time."
+                  : "Sign in with the Google account you use for outreach. Everything returns exactly as you left it."}
               </p>
             </motion.div>
           </AnimatePresence>
 
           {error && (
-            <div className="banner" data-tone="bad" style={{ marginBottom: 14 }}>
+            <div className="banner auth-error" data-tone="bad">
               <div>
                 {error}
                 {domainIssue && (
@@ -183,7 +200,7 @@ export function LoginGate({
           )}
 
           <button
-            className="gsi-material-button"
+            className="gsi-material-button auth-google"
             type="button"
             disabled={busy}
             onClick={() => void onGoogleAuth()}
@@ -218,7 +235,7 @@ export function LoginGate({
               <span className="gsi-material-button-contents">
                 {busy
                   ? "Connecting Google…"
-                  : mode === "signup"
+                  : isSignup
                     ? "Continue with Google"
                     : "Sign in with Google"}
               </span>
@@ -226,27 +243,31 @@ export function LoginGate({
             </span>
           </button>
 
-          <p className="tiny" style={{ marginTop: 12, lineHeight: 1.6 }}>
-            You will be asked for Sheets and Gmail permissions. Access can be revoked at any time from your Google
-            account, and nothing is ever sent without your explicit approval.
+          <p className="auth-fineprint">
+            You will be asked for Sheets and Gmail permissions. Access can be revoked any time from your Google
+            account.
           </p>
 
-          <div className="divider" style={{ margin: "18px 0 14px" }} />
-
-          <ul className="stack" style={{ listStyle: "none", padding: 0, margin: 0, gap: 9, fontSize: 12.6 }}>
-            <li className="row" style={{ gap: 8, flexWrap: "nowrap", alignItems: "flex-start" }}>
-              <ShieldCheck size={15} style={{ flexShrink: 0, marginTop: 2, color: "var(--accent)" }} />
-              <span>Each account is isolated in Cloud Firestore with row-level rules.</span>
-            </li>
-            <li className="row" style={{ gap: 8, flexWrap: "nowrap", alignItems: "flex-start" }}>
-              <CheckCircle2 size={15} style={{ flexShrink: 0, marginTop: 2, color: "var(--accent)" }} />
-              <span>New workspaces start completely empty — no sample data pretending to be yours.</span>
-            </li>
-            <li className="row" style={{ gap: 8, flexWrap: "nowrap", alignItems: "flex-start" }}>
-              <Search size={15} style={{ flexShrink: 0, marginTop: 2, color: "var(--accent)" }} />
-              <span>AI research and writing run on Gemini through a server route; your key stays server-side.</span>
-            </li>
+          <ul className="auth-trust">
+            {TRUST.map(({ icon: Icon, text }) => (
+              <li key={text}>
+                <Icon size={14} />
+                <span>{text}</span>
+              </li>
+            ))}
           </ul>
+
+          <div className="auth-switch">
+            {isSignup ? "Already have a workspace?" : "New to Outreach Studio?"}{" "}
+            <button type="button" onClick={() => setMode(isSignup ? "signin" : "signup")}>
+              {isSignup ? "Sign in" : "Create an account"}
+            </button>
+          </div>
+
+          <div className="auth-panel-foot">
+            <FileSpreadsheet size={13} />
+            <span>Gmail + Google Sheets, connected in a single sign-in.</span>
+          </div>
         </section>
       </motion.div>
     </main>

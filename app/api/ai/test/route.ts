@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { readAiConfigFromRequest, runWithAiConfig } from "@/lib/ai/context";
 import { handleApiError } from "@/lib/api-helpers";
 import { verifyFirebaseRequest } from "@/lib/firebase-server-auth";
 import { testGeminiConnection } from "@/lib/gemini";
@@ -6,9 +7,10 @@ import { testGeminiConnection } from "@/lib/gemini";
 export async function POST(req: NextRequest) {
   try {
     await verifyFirebaseRequest(req);
+    const aiConfig = readAiConfigFromRequest(req);
     const body = (await req.json().catch(() => ({}))) as { model?: string };
-    const result = await testGeminiConnection(body.model);
-    return NextResponse.json(result);
+    const result = await runWithAiConfig(aiConfig, () => testGeminiConnection(body.model || aiConfig?.model));
+    return NextResponse.json({ ...result, provider: result.provider ?? aiConfig?.provider ?? "gemini" });
   } catch (err) {
     return handleApiError(err);
   }
