@@ -96,7 +96,8 @@ export function Shell({ children }: { children: ReactNode }) {
 function ShellInner({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const dock = useTaskDock();
-  const { user, workspaceToken, workspaceEmail, workspacePersistent, reconnectWorkspace, signOut } = useAuth();
+  const { user, workspaceToken, workspaceEmail, workspacePersistent, workspaceIssue, reconnectWorkspace, signOut } =
+    useAuth();
 
   useEffect(() => {
     void initAiConfig(user.uid);
@@ -336,9 +337,11 @@ function ShellInner({ children }: { children: ReactNode }) {
           </div>
         </header>
 
-        <div style={{ padding: "12px 28px 0" }}>
-          <WorkspaceIssueNotice />
-        </div>
+        {workspaceIssue && (
+          <div style={{ padding: "12px 28px 0" }}>
+            <WorkspaceIssueNotice />
+          </div>
+        )}
 
         <PageMotion>{children}</PageMotion>
       </div>

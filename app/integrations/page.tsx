@@ -15,7 +15,6 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { useAuth } from "@/components/AuthProvider";
-import { WorkspaceIssueNotice } from "@/components/WorkspaceIssueNotice";
 import { Badge, Banner, Card } from "@/components/ui";
 import { getProvider } from "@/lib/ai/registry";
 import { authedPost, errorMessage } from "@/lib/client";
@@ -140,8 +139,6 @@ export default function IntegrationsPage() {
         {(note || redirectNote) && (
           <Banner tone={(note ?? redirectNote)!.tone}>{(note ?? redirectNote)!.text}</Banner>
         )}
-
-        <WorkspaceIssueNotice />
 
         <Card
           title="Firebase — authentication and Firestore"
