@@ -18,7 +18,7 @@ let activeRunner: string | null = null;
 
 /** A batch that loses the tab to a reload or crash is resumed from here. */
 const JOB_KEY = "outreach-batch-job";
-const MAX_STALLS = 6;
+const MAX_STALLS = 24;
 const RESUME_WINDOW_MS = 45 * 60 * 1000;
 
 interface StoredJob {
@@ -99,6 +99,7 @@ export function BatchRunner({
   const [error, setError] = useState<string | null>(null);
   const stopRef = useRef(false);
   const stallCount = useRef(0);
+  const pausedRef = useRef(false);
   const runRef = useRef<(() => Promise<void>) | null>(null);
 
   const executeBatch = async (): Promise<BatchResult> => {
@@ -129,6 +130,7 @@ export function BatchRunner({
     activeRunner = `${type}:${campaignId ?? "all"}`;
     stopRef.current = false;
     stallCount.current = 0;
+    pausedRef.current = false;
     writeStoredJob({ type, campaignId, limit, startedAt: Date.now() });
     setRunning(true);
     setError(null);
@@ -185,7 +187,9 @@ export function BatchRunner({
           // The provider or the network hiccuped. Pause, say so, and try the
           // same batch again instead of ending the run.
           stallCount.current += 1;
-          const waitSec = Math.min(60, 8 * 2 ** (stallCount.current - 1));
+          // 8s, 16s, 32s … up to 5 minutes between rounds, so 24 rounds cover
+          // roughly an hour and a half of provider trouble without giving up.
+          const waitSec = Math.min(300, 8 * 2 ** (stallCount.current - 1));
           setError(null);
           handle.update({
             detail: `Service busy — retrying in ${waitSec}s (attempt ${stallCount.current}/${MAX_STALLS})…`,
@@ -201,6 +205,8 @@ export function BatchRunner({
 
         if (pausedMessage) {
           ended = true;
+          // Keep the job marker: reloading the page picks the run back up.
+          pausedRef.current = true;
           handle.finish("error", pausedMessage);
           setNote(pausedMessage);
           break;
@@ -245,7 +251,12 @@ export function BatchRunner({
       handle.finish("error", message);
     } finally {
       activeRunner = null;
-      writeStoredJob(null);
+      // A paused run stays resumable; a finished or stopped one does not.
+      writeStoredJob(
+        pausedRef.current && !stopRef.current
+          ? { type, campaignId, limit, startedAt: Date.now() }
+          : null,
+      );
       setRunning(false);
     }
   };

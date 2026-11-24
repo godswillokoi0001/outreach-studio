@@ -46,7 +46,7 @@ export async function authedPost<T>(
   // failing the moment the provider is busy. Anything else (sending mail,
   // writing a sheet) only retries when a caller explicitly opts in.
   const isAiRoute = path.startsWith("/api/ai/");
-  const maxAttempts = options?.retryTransient || isAiRoute ? 4 : 1;
+  const maxAttempts = options?.retryTransient || isAiRoute ? 6 : 1;
   const backoffMs = (attempt: number) =>
     Math.min(8_000, 900 * 2 ** attempt) + Math.round(Math.random() * 400);
   const serialized = body === undefined ? undefined : JSON.stringify(body);

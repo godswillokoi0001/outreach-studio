@@ -463,9 +463,9 @@ export function DashboardChat({
             { retryTransient: true },
           ),
         {
-          attempts: 3,
-          baseDelayMs: 6_000,
-          maxDelayMs: 20_000,
+          attempts: 8,
+          baseDelayMs: 5_000,
+          maxDelayMs: 60_000,
           onRetry: ({ attempt, attempts, delayMs }) => {
             const seconds = Math.round(delayMs / 1000);
             setStatusLabel(`Service busy — retrying in ${seconds}s (attempt ${attempt}/${attempts})`);
