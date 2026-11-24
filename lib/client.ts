@@ -42,7 +42,13 @@ export async function authedPost<T>(
     headers.Authorization = `Bearer ${firebaseToken}`;
   }
 
-  const maxAttempts = options?.retryTransient ? 2 : 1;
+  // AI routes are safe to replay, so they back off and retry instead of
+  // failing the moment the provider is busy. Anything else (sending mail,
+  // writing a sheet) only retries when a caller explicitly opts in.
+  const isAiRoute = path.startsWith("/api/ai/");
+  const maxAttempts = options?.retryTransient || isAiRoute ? 4 : 1;
+  const backoffMs = (attempt: number) =>
+    Math.min(8_000, 900 * 2 ** attempt) + Math.round(Math.random() * 400);
   const serialized = body === undefined ? undefined : JSON.stringify(body);
 
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
@@ -68,21 +74,33 @@ export async function authedPost<T>(
     }
 
     if (!res.ok) {
-      const isTransientStatus = res.status === 502 || res.status === 503 || res.status === 504;
+      const isTransientStatus =
+        res.status === 408 ||
+        res.status === 425 ||
+        res.status === 429 ||
+        res.status === 500 ||
+        res.status === 502 ||
+        res.status === 503 ||
+        res.status === 504;
       if (isTransientStatus && attempt < maxAttempts - 1) {
-        await sleep(700);
+        const retryAfter = Number(res.headers.get("retry-after"));
+        await sleep(
+          Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter * 1000 : backoffMs(attempt),
+        );
         continue;
       }
       const message =
         data && typeof data === "object" && "error" in data && (data as { error: unknown }).error
           ? String((data as { error: unknown }).error)
           : `Request failed (HTTP ${res.status}).`;
-      throw new Error(message);
+      const error = new Error(message) as Error & { status?: number };
+      error.status = res.status;
+      throw error;
     }
 
     if (data === null || typeof data !== "object") {
       if (attempt < maxAttempts - 1) {
-        await sleep(700);
+        await sleep(backoffMs(attempt));
         continue;
       }
       const looksHtml =

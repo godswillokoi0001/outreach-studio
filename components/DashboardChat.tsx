@@ -43,6 +43,7 @@ import {
   type AppRoute,
 } from "@/lib/agent-meta";
 import { authedPost, errorMessage } from "@/lib/client";
+import { withRetry } from "@/lib/retry";
 import { getWorkspaceAccessToken } from "@/lib/firebase";
 import { getSettings } from "@/lib/firestore-store";
 import { useAuth } from "./AuthProvider";
@@ -444,20 +445,33 @@ export function DashboardChat({
 
       setStatusLabel(round === 0 ? "Thinking…" : "Reviewing results…");
       const summary = await buildQuickWorkspaceSummary(user.uid);
-      const rawTurn = await authedPost<AgentTurnResponse>(
-        "/api/ai/chat",
+      const rawTurn = await withRetry(
+        () =>
+          authedPost<AgentTurnResponse>(
+            "/api/ai/chat",
+            {
+              contents: workingHistory,
+              model: activeModel,
+              context: {
+                currentPath: pathnameRef.current,
+                workspaceConnected: Boolean(getWorkspaceAccessToken()),
+                userEmail: user.email,
+                userName: user.displayName,
+                summary,
+              },
+            },
+            { retryTransient: true },
+          ),
         {
-          contents: workingHistory,
-          model: activeModel,
-          context: {
-            currentPath: pathnameRef.current,
-            workspaceConnected: Boolean(getWorkspaceAccessToken()),
-            userEmail: user.email,
-            userName: user.displayName,
-            summary,
+          attempts: 3,
+          baseDelayMs: 6_000,
+          maxDelayMs: 20_000,
+          onRetry: ({ attempt, attempts, delayMs }) => {
+            const seconds = Math.round(delayMs / 1000);
+            setStatusLabel(`Service busy — retrying in ${seconds}s (attempt ${attempt}/${attempts})`);
+            narrate(`Service busy. Retrying in ${seconds}s…`);
           },
         },
-        { retryTransient: true },
       );
 
       const turn = normalizeAgentTurnResponse(rawTurn);
