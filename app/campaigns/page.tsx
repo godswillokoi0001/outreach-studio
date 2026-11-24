@@ -11,6 +11,7 @@ import { authedPost, errorMessage } from "@/lib/client";
 import {
   assignLeadsToCampaign,
   createCampaign,
+  deleteCampaign,
   getSettings,
   importSheetRows,
   listCampaigns,
@@ -259,7 +260,7 @@ export default function CampaignsPage() {
 
   const act = async (
     campaign: Campaign,
-    action: "approve" | "pause" | "resume" | "unarchive" | "archive" | "complete" | "delete",
+    action: "approve" | "pause" | "resume" | "unarchive" | "archive" | "complete" | "delete" | "assign",
   ) => {
     const confirmations: Record<string, string> = {
       approve:
@@ -470,7 +471,7 @@ function CampaignDetail({
   campaign: Enriched;
   prospects: Lead[];
   busy: string | null;
-  onAct: (campaign: Campaign, action: "approve" | "pause" | "resume" | "unarchive" | "archive" | "complete" | "delete") => Promise<void>;
+  onAct: (campaign: Campaign, action: "approve" | "pause" | "resume" | "unarchive" | "archive" | "complete" | "delete" | "assign") => Promise<void>;
   onDone: () => void | Promise<void>;
 }) {
   const c = campaign;
@@ -694,7 +695,7 @@ function NextAction({
   campaignId: string;
   campaign: Campaign;
   busy: string | null;
-  onAct: (campaign: Campaign, action: "approve" | "pause" | "resume" | "unarchive" | "archive" | "complete" | "delete") => Promise<void>;
+  onAct: (campaign: Campaign, action: "approve" | "pause" | "resume" | "unarchive" | "archive" | "complete" | "delete" | "assign") => Promise<void>;
   onDone: () => void | Promise<void>;
 }) {
   if (next.kind === "approve" || next.kind === "resume") {
