@@ -159,7 +159,7 @@ export function LoginGate({
               <h1>{isSignup ? "Start your workspace" : "Welcome back"}</h1>
               <p>
                 {isSignup
-                  ? "One Google account creates a private workspace and connects Gmail and Google Sheets at the same time."
+                  ? "One Google account creates a private workspace. Gmail and Google Sheets connect in a single extra click, whenever you are ready."
                   : "Sign in with the Google account you use for outreach. Everything returns exactly as you left it."}
               </p>
             </motion.div>
@@ -244,8 +244,8 @@ export function LoginGate({
           </button>
 
           <p className="auth-fineprint">
-            You will be asked for Sheets and Gmail permissions. Access can be revoked any time from your Google
-            account.
+            Sign-in only reads your name, email and photo. Gmail and Sheets access is asked for separately and can be
+            revoked any time from your Google account.
           </p>
 
           <ul className="auth-trust">
@@ -266,7 +266,7 @@ export function LoginGate({
 
           <div className="auth-panel-foot">
             <FileSpreadsheet size={13} />
-            <span>Gmail + Google Sheets, connected in a single sign-in.</span>
+            <span>Gmail + Google Sheets connect on demand from Integrations.</span>
           </div>
         </section>
       </motion.div>

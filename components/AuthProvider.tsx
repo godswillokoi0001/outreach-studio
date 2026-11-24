@@ -2,7 +2,13 @@
 
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from "react";
 import type { User } from "firebase/auth";
-import { logout, signInWithGoogle, subscribeAuthState, testFirestoreConnection } from "@/lib/firebase";
+import {
+  connectWorkspacePopup,
+  logout,
+  signInWithGoogle,
+  subscribeAuthState,
+  testFirestoreConnection,
+} from "@/lib/firebase";
 import { ensureUserWorkspace } from "@/lib/firestore-store";
 import {
   ensureWorkspaceToken,
@@ -51,6 +57,9 @@ function friendlyAuthError(err: unknown): string {
   }
   if (raw.includes("permission-denied") || raw.includes("Missing or insufficient permissions")) {
     return "Firestore denied the request. Deploy firestore.rules to the Firebase project (or check that your account's email is verified).";
+  }
+  if (/has not completed the Google verification|Access blocked|access_denied/i.test(raw)) {
+    return "Google blocked this request because the app is not verified. Sign-in works without it; Gmail and Sheets need your Google account added as a test user in Google Cloud Console → OAuth consent screen → Test users, until the app is verified.";
   }
   return raw;
 }
@@ -107,9 +116,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setSigningIn(true);
     setAuthError(null);
     try {
-      const { user: signedInUser, accessToken } = await signInWithGoogle();
+      const { user: signedInUser } = await signInWithGoogle();
       await ensureUserWorkspace(signedInUser);
-      setWorkspaceToken(accessToken);
       setUser(signedInUser);
       void hydrateWorkspace();
       return true;
@@ -132,9 +140,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
     const ready = await hydrateWorkspace();
     if (ready) return true;
-    // No server OAuth client yet: fall back to the Firebase popup token.
-    return handleGoogleAuth();
-  }, [handleGoogleAuth, hydrateWorkspace]);
+    // No server OAuth client yet: ask Google for the Workspace scopes directly.
+    try {
+      const { accessToken } = await connectWorkspacePopup();
+      setWorkspaceToken(accessToken);
+      void hydrateWorkspace();
+      return true;
+    } catch (err) {
+      setAuthError(friendlyAuthError(err));
+      return false;
+    }
+  }, [hydrateWorkspace]);
 
   const signOut = async () => {
     await logout();

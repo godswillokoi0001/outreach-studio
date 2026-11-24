@@ -26,16 +26,24 @@ const app = getApps().length ? getApp() : initializeApp(firebaseConfig);
 export const auth = getAuth(app);
 export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
 
+// Sign-in asks only for basic Google identity scopes (openid, email, profile).
+// Google blocks unverified apps that request Gmail/Sheets scopes during sign-in,
+// so those scopes are requested separately, on demand, by connectWorkspacePopup().
 const provider = new GoogleAuthProvider();
-for (const scope of WORKSPACE_SCOPES) {
-  provider.addScope(scope);
-}
 provider.setCustomParameters({
+  prompt: "select_account",
+});
+
+// Gmail + Sheets are requested only when the user presses "Connect Google".
+const workspaceProvider = new GoogleAuthProvider();
+for (const scope of WORKSPACE_SCOPES) {
+  workspaceProvider.addScope(scope);
+}
+workspaceProvider.setCustomParameters({
   prompt: "consent select_account",
 });
 
 // Strictly in-memory Workspace OAuth token (never localStorage or sessionStorage).
-let isSigningIn = false;
 let connectionTested = false;
 
 export enum OperationType {
@@ -102,34 +110,30 @@ export async function testFirestoreConnection(): Promise<void> {
   }
 }
 
-export function subscribeAuthState(
-  onChange: (user: User | null, workspaceToken: string | null) => void,
-) {
+export function subscribeAuthState(onChange: (user: User | null) => void) {
   return onAuthStateChanged(auth, (user) => {
-    if (!user) {
-      clearWorkspaceToken();
-      onChange(null, null);
-      return;
-    }
-    onChange(user, isSigningIn ? readWorkspaceToken() : null);
+    if (!user) clearWorkspaceToken();
+    onChange(user);
   });
 }
 
-export async function signInWithGoogle(): Promise<{ user: User; accessToken: string }> {
-  try {
-    isSigningIn = true;
-    const result = await signInWithPopup(auth, provider);
-    const credential = GoogleAuthProvider.credentialFromResult(result);
-    if (!credential?.accessToken) {
-      throw new Error(
-        "Google sign-in completed, but no Workspace access token was returned. Please grant Gmail and Google Sheets permissions.",
-      );
-    }
-    writeWorkspaceToken(credential.accessToken);
-    return { user: result.user, accessToken: credential.accessToken };
-  } finally {
-    isSigningIn = false;
+/** Identity-only sign-in: no Gmail or Sheets scopes, so Google never blocks it. */
+export async function signInWithGoogle(): Promise<{ user: User }> {
+  const result = await signInWithPopup(auth, provider);
+  return { user: result.user };
+}
+
+/** Asks Google for the Workspace scopes (Sheets + Gmail) on demand. */
+export async function connectWorkspacePopup(): Promise<{ accessToken: string }> {
+  const result = await signInWithPopup(auth, workspaceProvider);
+  const credential = GoogleAuthProvider.credentialFromResult(result);
+  if (!credential?.accessToken) {
+    throw new Error(
+      "Google did not return a Workspace access token. Gmail and Sheets permissions were not granted.",
+    );
   }
+  writeWorkspaceToken(credential.accessToken);
+  return { accessToken: credential.accessToken };
 }
 
 export function getWorkspaceAccessToken(): string | null {
