@@ -1,7 +1,14 @@
 "use client";
 
 import { usePathname, useRouter } from "next/navigation";
-import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type KeyboardEvent,
+  type ReactNode,
+} from "react";
 import {
   AlertCircle,
   ArrowUpRight,
@@ -96,6 +103,8 @@ function timeAgo(timestamp: number, now: number): string {
   return `${Math.round(hours / 24)}d ago`;
 }
 
+const noopSubscribe = () => () => {};
+
 function readStored<T>(key: string): T | null {
   try {
     const raw = window.localStorage.getItem(key);
@@ -186,7 +195,7 @@ export function DashboardChat({
 
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
-  const [busy, setBusy] = useState(false);
+  const [busy, setBusyState] = useState(false);
   const [statusLabel, setStatusLabel] = useState<string | null>(null);
   const [pendingConfirm, setPendingConfirm] = useState<PendingConfirmation | null>(null);
   const [collapsed, setCollapsed] = useState(false);
@@ -194,10 +203,31 @@ export function DashboardChat({
   const [live, setLive] = useState(true);
   const [liveNote, setLiveNote] = useState<string | null>(null);
   const [view, setView] = useState<"chat" | "history">("chat");
-  const [recent, setRecent] = useState<RecentAction[]>([]);
-  const [dockPos, setDockPos] = useState<{ x: number; y: number } | null>(null);
+  // The panel only exists in the browser: its saved position and work log come
+  // from localStorage, and mounting after hydration keeps those reads out of
+  // effects and out of the server render.
+  const hydrated = useSyncExternalStore(
+    noopSubscribe,
+    () => true,
+    () => false,
+  );
+  const [recent, setRecent] = useState<RecentAction[]>(() => {
+    if (typeof window === "undefined") return [];
+    const stored = readStored<RecentAction[]>(RECENT_KEY);
+    return Array.isArray(stored) ? stored.slice(0, RECENT_LIMIT) : [];
+  });
+  const [dockPos, setDockPos] = useState<{ x: number; y: number } | null>(() => {
+    if (typeof window === "undefined") return null;
+    const stored = readStored<{ x: number; y: number }>(DOCK_KEY);
+    return stored && Number.isFinite(stored.x) && Number.isFinite(stored.y) ? stored : null;
+  });
   const [dragging, setDragging] = useState(false);
   const [now, setNow] = useState(() => Date.now());
+
+  const setBusy = (value: boolean) => {
+    setBusyState(value);
+    setAgentBusy(value);
+  };
 
   const historyRef = useRef<AgentContent[]>([]);
   const pathnameRef = useRef(pathname);
@@ -205,23 +235,12 @@ export function DashboardChat({
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const dockRef = useRef<HTMLDivElement | null>(null);
-  const dockPosRef = useRef<{ x: number; y: number } | null>(null);
+  const dockPosRef = useRef<{ x: number; y: number } | null>(dockPos);
   const dragStartRef = useRef<{ pointerX: number; pointerY: number; left: number; top: number } | null>(null);
 
   useEffect(() => {
     pathnameRef.current = pathname;
   }, [pathname]);
-
-  // Restore the operator's panel position and recent-work log across reloads.
-  useEffect(() => {
-    const storedRecent = readStored<RecentAction[]>(RECENT_KEY);
-    if (Array.isArray(storedRecent)) setRecent(storedRecent.slice(0, RECENT_LIMIT));
-    const storedDock = readStored<{ x: number; y: number }>(DOCK_KEY);
-    if (storedDock && Number.isFinite(storedDock.x) && Number.isFinite(storedDock.y)) {
-      dockPosRef.current = storedDock;
-      setDockPos(storedDock);
-    }
-  }, []);
 
   useEffect(() => {
     try {
@@ -230,10 +249,6 @@ export function DashboardChat({
       /* storage unavailable */
     }
   }, [recent]);
-
-  useEffect(() => {
-    setAgentBusy(busy);
-  }, [busy, setAgentBusy]);
 
   useEffect(() => {
     if (view !== "history") return undefined;
@@ -737,7 +752,7 @@ export function DashboardChat({
     }
   };
 
-  if (!open) return null;
+  if (!open || !hydrated) return null;
 
   const liveLine = busy
     ? statusLabel ?? "Working…"

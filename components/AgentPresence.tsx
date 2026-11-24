@@ -8,6 +8,7 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
   type ReactNode,
 } from "react";
 
@@ -44,6 +45,43 @@ export function useAgentPresence(): AgentPresenceValue {
 const ENABLED_KEY = "agent-operator-cursor";
 const TRAIL_POINTS = 3;
 
+/**
+ * The cursor on/off preference lives in localStorage, which does not exist on
+ * the server. A tiny external store keeps the reads out of effects (and out of
+ * hydration): the server snapshot is "on", then React reconciles to the stored
+ * value right after hydration.
+ */
+const enabledListeners = new Set<() => void>();
+let enabledSnapshot: string | null = null;
+
+function readEnabled(): boolean {
+  if (enabledSnapshot === null) {
+    try {
+      enabledSnapshot = window.localStorage.getItem(ENABLED_KEY) ?? "true";
+    } catch {
+      enabledSnapshot = "true";
+    }
+  }
+  return enabledSnapshot !== "false";
+}
+
+function subscribeEnabled(listener: () => void): () => void {
+  enabledListeners.add(listener);
+  return () => {
+    enabledListeners.delete(listener);
+  };
+}
+
+function writeEnabled(next: boolean): void {
+  enabledSnapshot = String(next);
+  try {
+    window.localStorage.setItem(ENABLED_KEY, enabledSnapshot);
+  } catch {
+    /* storage blocked */
+  }
+  enabledListeners.forEach((listener) => listener());
+}
+
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 const easeInOutCubic = (t: number) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
 
@@ -60,7 +98,7 @@ interface Point {
 }
 
 export function AgentPresenceProvider({ children }: { children: ReactNode }) {
-  const [enabled, setEnabledState] = useState(true);
+  const enabled = useSyncExternalStore(subscribeEnabled, readEnabled, () => true);
   const [busy, setBusy] = useState(false);
   const [pos, setPos] = useState<Point>({ x: 0, y: 0 });
   const [trail, setTrail] = useState<Point[]>([]);
@@ -84,34 +122,22 @@ export function AgentPresenceProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
-  // Restore the operator's on/off choice and drop the cursor somewhere visible
-  // so the very first move is a real glide instead of a jump from 0,0.
   useEffect(() => {
-    try {
-      const stored = window.localStorage.getItem(ENABLED_KEY);
-      if (stored === "false") {
-        setEnabledState(false);
-        enabledRef.current = false;
-      }
-    } catch {
-      /* storage blocked — keep the default */
-    }
-    const start = {
+    enabledRef.current = enabled;
+  }, [enabled]);
+
+  // Prime the starting point in a ref only: the ref is never rendered, so the
+  // first glide can begin from a natural spot without a hydration mismatch.
+  useEffect(() => {
+    posRef.current = {
       x: Math.round(window.innerWidth * 0.68),
       y: Math.round(window.innerHeight * 0.62),
     };
-    posRef.current = start;
-    setPos(start);
   }, []);
 
   const setEnabled = useCallback((next: boolean) => {
     enabledRef.current = next;
-    setEnabledState(next);
-    try {
-      window.localStorage.setItem(ENABLED_KEY, String(next));
-    } catch {
-      /* ignore quota/privacy errors */
-    }
+    writeEnabled(next);
     if (!next) {
       setTrail([]);
       setSpot(null);
@@ -306,7 +332,7 @@ export function AgentPresenceProvider({ children }: { children: ReactNode }) {
             className="agent-cursor"
             data-visible={placed ? "true" : "false"}
             data-pressing={pressing ? "true" : "false"}
-            style={{ transform: `translate3d(${pos.x}px, ${pos.y}px, 0)` }}
+            style={placed ? { transform: `translate3d(${pos.x}px, ${pos.y}px, 0)` } : undefined}
           >
             <span className="agent-halo" />
             {clickKey > 0 && <span className="agent-click-ripple" key={`ripple-${clickKey}`} />}
