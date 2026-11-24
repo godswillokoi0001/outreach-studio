@@ -1,7 +1,6 @@
 "use client";
 
 import { getSettings } from "./firestore-store";
-import { getSupabaseSettings } from "./supabase";
 import type { AiConfig, AiProviderId } from "./ai/types";
 import type { Settings } from "./types";
 
@@ -56,29 +55,9 @@ export function aiConfigHeader(): string | null {
 export function initAiConfig(uid: string): Promise<AiConfig | null> {
   if (loadedUid === uid && pending) return pending;
   loadedUid = uid;
-  pending = Promise.all([
-    getSettings(uid).catch(() => null),
-    getSupabaseSettings(uid).catch(() => null),
-  ])
-    .then(([firestoreSettings, supabaseSettings]) => {
-      const base = firestoreSettings;
-      const remoteKey = (supabaseSettings?.ai_api_key ?? "").trim();
-
-      // The Supabase row wins when it holds a key, otherwise the private
-      // Firestore record (which also carries the selected model) is used.
-      const merged: Settings | null = remoteKey
-        ? ({
-            ...(base ?? {}),
-            ai_provider: supabaseSettings?.ai_provider || base?.ai_provider || "gemini",
-            ai_api_key: remoteKey,
-            ai_base_url: supabaseSettings?.ai_base_url ?? base?.ai_base_url ?? "",
-            ai_verified_at: supabaseSettings?.ai_verified_at ?? base?.ai_verified_at ?? "",
-            ai_key_hint: supabaseSettings?.ai_key_hint ?? base?.ai_key_hint ?? "",
-            model: (supabaseSettings?.model || base?.model || "").trim(),
-          } as Settings)
-        : base;
-
-      cached = aiConfigFromSettings(merged);
+  pending = getSettings(uid)
+    .then((settings) => {
+      cached = aiConfigFromSettings(settings);
       return cached;
     })
     .catch(() => {

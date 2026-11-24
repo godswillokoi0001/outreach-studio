@@ -11,7 +11,6 @@ import {
   removeSuppression,
   saveSettings,
 } from "@/lib/firestore-store";
-import { getSupabaseSettings, saveSupabaseSettings } from "@/lib/supabase";
 import { fmtDate } from "@/lib/format";
 import { DEFAULT_SETTINGS, type Settings, type Suppression } from "@/lib/types";
 import { AiEngineCard } from "@/components/AiEngineCard";
@@ -29,23 +28,10 @@ export default function SettingsPage() {
 
   useEffect(() => {
     let active = true;
-    Promise.all([
-      getSettings(user.uid),
-      getSupabaseSettings(user.uid).catch(() => null),
-      listSuppressions(user.uid),
-    ]).then(
-      ([fsSettings, sbSettings, sup]) => {
+    Promise.all([getSettings(user.uid), listSuppressions(user.uid)]).then(
+      ([settings, sup]) => {
         if (!active) return;
-        const initial: Settings = { ...(fsSettings || DEFAULT_SETTINGS) };
-        if (sbSettings) {
-          if (sbSettings.ai_api_key) initial.ai_api_key = sbSettings.ai_api_key;
-          if (sbSettings.ai_provider) initial.ai_provider = sbSettings.ai_provider;
-          if (sbSettings.ai_base_url) initial.ai_base_url = sbSettings.ai_base_url;
-          if (sbSettings.model) initial.model = sbSettings.model;
-          if (sbSettings.ai_key_hint) initial.ai_key_hint = sbSettings.ai_key_hint;
-          if (sbSettings.ai_verified_at) initial.ai_verified_at = sbSettings.ai_verified_at;
-        }
-        setForm(initial);
+        setForm(settings);
         setSuppressions(sup);
         setLoading(false);
       },
@@ -68,18 +54,9 @@ export default function SettingsPage() {
     setFailure(null);
     setNotice(null);
     try {
-      const supabaseOk = await saveSupabaseSettings(form, user.uid).catch(() => false);
-      try {
-        const saved = await saveSettings(user.uid, form);
-        setForm(saved);
-        setNotice("Settings saved.");
-      } catch (err) {
-        if (!supabaseOk) throw err;
-        setForm(form);
-        setNotice(
-          "AI settings saved to Supabase. Firestore rejected the copy; publish the latest firestore.rules to save sender and sending settings.",
-        );
-      }
+      const saved = await saveSettings(user.uid, form);
+      setForm(saved);
+      setNotice("Settings saved.");
     } catch (err) {
       setFailure(errorMessage(err));
     } finally {

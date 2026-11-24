@@ -1,7 +1,6 @@
 // Server-side Supabase client using the service role key.
-// This runs purely on the server (Next.js routes) and never exposes the
-// service role key to the browser. The settings table has RLS enabled, so the
-// service role is the only way in.
+// Runs only on the server (Next.js routes); the service role key never reaches
+// the browser. The settings table has RLS enabled, so this is the only way in.
 
 import { createClient } from "@supabase/supabase-js";
 import type { Database } from "./database.types";
@@ -27,23 +26,42 @@ export const supabaseServer =
  */
 export const SETTINGS_ROW_ID = "00000000-0000-0000-0000-000000000001";
 
-const AI_COLUMNS = [
+const STRING_FIELDS = [
+  "sender_name",
+  "sender_role",
+  "sender_company",
+  "sender_email",
+  "signature",
+  "unsubscribe_email",
+  "physical_address",
+  "send_days",
+  "model",
   "ai_provider",
   "ai_api_key",
   "ai_base_url",
   "ai_verified_at",
   "ai_key_hint",
-  "model",
-] as const;
+] as const satisfies readonly (keyof Settings)[];
 
-/** Get settings from Supabase (server side). */
+const NUMBER_FIELDS = [
+  "daily_limit",
+  "campaign_limit",
+  "interval_seconds",
+  "send_window_start",
+  "send_window_end",
+  "timezone_offset",
+  "followup_days",
+  "min_score",
+] as const satisfies readonly (keyof Settings)[];
+
+/** Get the settings document from Supabase (server side). */
 export async function getSupabaseSettingsServer(): Promise<Settings | null> {
   if (!supabaseServer) return null;
 
   try {
     const { data, error } = await supabaseServer
       .from("settings")
-      .select("id, ai_provider, ai_api_key, ai_base_url, ai_verified_at, ai_key_hint, model")
+      .select("*")
       .order("updated_at", { ascending: false })
       .limit(1)
       .maybeSingle();
@@ -60,7 +78,7 @@ export async function getSupabaseSettingsServer(): Promise<Settings | null> {
   }
 }
 
-/** Save settings to Supabase (server side). */
+/** Save the settings document to Supabase (server side). */
 export async function saveSupabaseSettingsServer(
   partial: Partial<Settings>,
 ): Promise<boolean> {
@@ -71,7 +89,7 @@ export async function saveSupabaseSettingsServer(
     updated_at: new Date().toISOString(),
   };
 
-  for (const key of AI_COLUMNS) {
+  for (const key of STRING_FIELDS) {
     const value = partial[key];
     if (typeof value !== "string") continue;
 
@@ -81,7 +99,12 @@ export async function saveSupabaseSettingsServer(
       continue;
     }
 
-    payload[key] = value;
+    payload[key] = value.slice(0, 2000);
+  }
+
+  for (const key of NUMBER_FIELDS) {
+    const value = partial[key];
+    if (typeof value === "number" && Number.isFinite(value)) payload[key] = Math.round(value);
   }
 
   // Nothing but the update timestamp changed.

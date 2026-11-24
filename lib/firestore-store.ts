@@ -159,7 +159,6 @@ export async function ensureUserWorkspace(user: User): Promise<void> {
     handleFirestoreError(err, OperationType.WRITE, userPath);
   }
 
-  const settingsPath = `users/${uid}/settings/default`;
   const settingsRef = doc(db, "users", uid, "settings", "default");
   try {
     const sSnap = await getDoc(settingsRef);
@@ -175,7 +174,9 @@ export async function ensureUserWorkspace(user: User): Promise<void> {
       });
     }
   } catch (err) {
-    handleFirestoreError(err, OperationType.WRITE, settingsPath);
+    // Settings live in Supabase now; a Firestore rules rejection here must not
+    // block sign-in.
+    console.warn("[settings] skipped Firestore bootstrap:", err instanceof Error ? err.message : err);
   }
 
   const masterPath = `users/${uid}/knowledge/master`;
@@ -203,13 +204,8 @@ export async function ensureUserWorkspace(user: User): Promise<void> {
 // Settings
 // ---------------------------------------------------------------------------
 
-export async function getSettings(uid: string): Promise<Settings> {
-  const path = `users/${uid}/settings/default`;
-  try {
-    const snap = await getDoc(doc(db, "users", uid, "settings", "default"));
-    if (!snap.exists()) return { ...DEFAULT_SETTINGS };
-    const data = snap.data() as Record<string, unknown>;
-    return {
+function toSettings(data: Record<string, unknown>): Settings {
+  return {
       sender_name: String(data.sender_name ?? ""),
       sender_role: String(data.sender_role ?? ""),
       sender_company: String(data.sender_company ?? ""),
@@ -233,15 +229,37 @@ export async function getSettings(uid: string): Promise<Settings> {
       ai_verified_at: String(data.ai_verified_at ?? ""),
       ai_key_hint: String(data.ai_key_hint ?? ""),
     };
+}
+
+/**
+ * Settings live in Supabase now (Firebase is auth only), so they keep saving
+ * when Firestore rules reject writes. Firestore is read only as a legacy
+ * fallback for accounts that have not saved since the migration.
+ */
+export async function getSettings(uid: string): Promise<Settings> {
+  const { getSupabaseSettings } = await import("./supabase");
+  const remote = await getSupabaseSettings(uid).catch(() => null);
+  if (remote) return toSettings(remote as unknown as Record<string, unknown>);
+
+  const path = `users/${uid}/settings/default`;
+  try {
+    const snap = await getDoc(doc(db, "users", uid, "settings", "default"));
+    if (!snap.exists()) return { ...DEFAULT_SETTINGS };
+    return toSettings(snap.data() as Record<string, unknown>);
   } catch (err) {
     handleFirestoreError(err, OperationType.GET, path);
   }
 }
 
 export async function saveSettings(uid: string, patch: Partial<Settings>): Promise<Settings> {
-  const path = `users/${uid}/settings/default`;
   const current = await getSettings(uid);
   const payload = normalizeSettingsPayload(uid, patch, current);
+  const { saveSupabaseSettings } = await import("./supabase");
+  const ok = await saveSupabaseSettings(payload, uid).catch(() => false);
+  if (ok) return toSettings(payload as unknown as Record<string, unknown>);
+
+  // Legacy fallback for deployments without Supabase configured.
+  const path = `users/${uid}/settings/default`;
   const ref = doc(db, "users", uid, "settings", "default");
   try {
     const existingSnap = await getDoc(ref);
