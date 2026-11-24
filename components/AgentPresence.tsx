@@ -11,16 +11,26 @@ import {
   type ReactNode,
 } from "react";
 
+export interface MoveOptions {
+  label?: string;
+  click?: boolean;
+  dwellMs?: number;
+}
+
 interface AgentPresenceValue {
-  /** Move the on-screen cursor onto an element and optionally "click" it. */
-  moveTo: (selector: string, options?: { label?: string; click?: boolean; dwellMs?: number }) => Promise<void>;
-  moveToPoint: (x: number, y: number, label?: string, click?: boolean) => void;
+  /** Whether the on-screen cursor is shown at all. Persisted per browser. */
+  enabled: boolean;
+  setEnabled: (enabled: boolean) => void;
+  /** Drives the "working" chip that follows the cursor while the agent runs. */
+  busy: boolean;
+  setBusy: (busy: boolean) => void;
+  /** Glide the cursor onto an element, spotlight it, then optionally tap it. */
+  moveTo: (selector: string, options?: MoveOptions) => Promise<void>;
+  moveToPoint: (x: number, y: number, label?: string, click?: boolean) => Promise<void>;
   /** Show a short narration bubble next to the cursor. */
   narrate: (text: string) => void;
-  /** Highlight a region of the screen (for "reading" a section). */
   spotlight: (selector: string | null) => void;
   visible: boolean;
-  setVisible: (visible: boolean) => void;
 }
 
 const AgentPresenceContext = createContext<AgentPresenceValue | null>(null);
@@ -31,7 +41,11 @@ export function useAgentPresence(): AgentPresenceValue {
   return ctx;
 }
 
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+const ENABLED_KEY = "agent-operator-cursor";
+const TRAIL_POINTS = 3;
+
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+const easeInOutCubic = (t: number) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
 
 interface Rect {
   left: number;
@@ -40,14 +54,28 @@ interface Rect {
   height: number;
 }
 
+interface Point {
+  x: number;
+  y: number;
+}
+
 export function AgentPresenceProvider({ children }: { children: ReactNode }) {
-  const [pos, setPos] = useState({ x: 0, y: 0 });
-  const [label, setLabel] = useState<string>("");
-  const [visible, setVisible] = useState(false);
+  const [enabled, setEnabledState] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [pos, setPos] = useState<Point>({ x: 0, y: 0 });
+  const [trail, setTrail] = useState<Point[]>([]);
+  const [label, setLabel] = useState("");
+  const [pressing, setPressing] = useState(false);
   const [clickKey, setClickKey] = useState(0);
   const [spot, setSpot] = useState<Rect | null>(null);
-  const [ready, setReady] = useState(false);
+  const [placed, setPlaced] = useState(false);
+
   const mounted = useRef(true);
+  const enabledRef = useRef(true);
+  const posRef = useRef<Point>({ x: 0, y: 0 });
+  const rafRef = useRef<number | null>(null);
+  const settleRef = useRef<(() => void) | null>(null);
+  const spotTimer = useRef<number | null>(null);
 
   useEffect(() => {
     mounted.current = true;
@@ -56,26 +84,49 @@ export function AgentPresenceProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
-  const moveToPoint = useCallback((x: number, y: number, nextLabel?: string, click = false) => {
-    setVisible(true);
-    setReady(true);
-    setPos({ x, y });
-    if (nextLabel !== undefined) setLabel(nextLabel);
-    if (click) {
-      setTimeout(() => {
-        if (!mounted.current) return;
-        setClickKey((key) => key + 1);
-      }, 520);
+  // Restore the operator's on/off choice and drop the cursor somewhere visible
+  // so the very first move is a real glide instead of a jump from 0,0.
+  useEffect(() => {
+    try {
+      const stored = window.localStorage.getItem(ENABLED_KEY);
+      if (stored === "false") {
+        setEnabledState(false);
+        enabledRef.current = false;
+      }
+    } catch {
+      /* storage blocked — keep the default */
+    }
+    const start = {
+      x: Math.round(window.innerWidth * 0.68),
+      y: Math.round(window.innerHeight * 0.62),
+    };
+    posRef.current = start;
+    setPos(start);
+  }, []);
+
+  const setEnabled = useCallback((next: boolean) => {
+    enabledRef.current = next;
+    setEnabledState(next);
+    try {
+      window.localStorage.setItem(ENABLED_KEY, String(next));
+    } catch {
+      /* ignore quota/privacy errors */
+    }
+    if (!next) {
+      setTrail([]);
+      setSpot(null);
+      setLabel("");
+      setPressing(false);
+      setPlaced(false);
     }
   }, []);
 
-  const narrate = useCallback((text: string) => {
-    setLabel(text);
-    setVisible(true);
-  }, []);
-
   const spotlight = useCallback((selector: string | null) => {
-    if (!selector) {
+    if (spotTimer.current) {
+      window.clearTimeout(spotTimer.current);
+      spotTimer.current = null;
+    }
+    if (!selector || !enabledRef.current) {
       setSpot(null);
       return;
     }
@@ -83,60 +134,232 @@ export function AgentPresenceProvider({ children }: { children: ReactNode }) {
     if (!el) return;
     const rect = el.getBoundingClientRect();
     setSpot({ left: rect.left, top: rect.top, width: rect.width, height: rect.height });
+    spotTimer.current = window.setTimeout(() => {
+      if (mounted.current) setSpot(null);
+    }, 2_200);
+  }, []);
+
+  const travelTo = useCallback(
+    (targetX: number, targetY: number) =>
+      new Promise<void>((resolve) => {
+        if (rafRef.current !== null) {
+          window.cancelAnimationFrame(rafRef.current);
+          rafRef.current = null;
+        }
+        if (settleRef.current) {
+          const settle = settleRef.current;
+          settleRef.current = null;
+          settle();
+        }
+
+        const start = { ...posRef.current };
+        const dx = targetX - start.x;
+        const dy = targetY - start.y;
+        const distance = Math.hypot(dx, dy);
+
+        if (distance < 2) {
+          posRef.current = { x: targetX, y: targetY };
+          setPos(posRef.current);
+          resolve();
+          return;
+        }
+
+        // Curved travel reads as a hand moving, not a teleport.
+        const duration = Math.min(860, Math.max(260, distance * 0.85));
+        const nx = -dy / distance;
+        const ny = dx / distance;
+        const bow = Math.min(64, distance * 0.14) * (Math.random() > 0.5 ? 1 : -1);
+        const controlX = start.x + dx / 2 + nx * bow;
+        const controlY = start.y + dy / 2 + ny * bow;
+        const startedAt = performance.now();
+        let lastTrailAt = 0;
+
+        settleRef.current = resolve;
+
+        const frame = (now: number) => {
+          const progress = Math.min(1, (now - startedAt) / duration);
+          const eased = easeInOutCubic(progress);
+          const inv = 1 - eased;
+          const x = inv * inv * start.x + 2 * inv * eased * controlX + eased * eased * targetX;
+          const y = inv * inv * start.y + 2 * inv * eased * controlY + eased * eased * targetY;
+
+          posRef.current = { x, y };
+          setPos({ x, y });
+
+          if (now - lastTrailAt > 45) {
+            lastTrailAt = now;
+            setTrail((prev) => [...prev.slice(-(TRAIL_POINTS - 1)), { x, y }]);
+          }
+
+          if (progress < 1) {
+            rafRef.current = window.requestAnimationFrame(frame);
+            return;
+          }
+
+          rafRef.current = null;
+          settleRef.current = null;
+          setTrail([]);
+          resolve();
+        };
+
+        rafRef.current = window.requestAnimationFrame(frame);
+      }),
+    [],
+  );
+
+  const moveToPoint = useCallback(
+    async (x: number, y: number, nextLabel?: string, click = false) => {
+      if (!enabledRef.current || typeof window === "undefined") return;
+      const targetX = Math.min(window.innerWidth - 8, Math.max(8, x));
+      const targetY = Math.min(window.innerHeight - 8, Math.max(8, y));
+
+      setPlaced(true);
+      if (nextLabel !== undefined) setLabel(nextLabel);
+      await travelTo(targetX, targetY);
+      if (!mounted.current || !enabledRef.current) return;
+
+      if (click) {
+        setPressing(true);
+        await sleep(110);
+        if (!mounted.current) return;
+        setPressing(false);
+        setClickKey((key) => key + 1);
+        await sleep(90);
+      }
+    },
+    [travelTo],
+  );
+
+  const narrate = useCallback((text: string) => {
+    if (!enabledRef.current) return;
+    setLabel(text);
+    setPlaced(true);
   }, []);
 
   const moveTo = useCallback(
-    async (selector: string, options?: { label?: string; click?: boolean; dwellMs?: number }) => {
+    async (selector: string, options?: MoveOptions) => {
+      if (!enabledRef.current || typeof window === "undefined") return;
       const el = document.querySelector<HTMLElement>(selector);
       if (!el) {
         if (options?.label) narrate(options.label);
         return;
       }
-      el.scrollIntoView({ block: "center", inline: "nearest", behavior: "smooth" });
-      await sleep(options?.dwellMs ?? 420);
-      if (!mounted.current) return;
+
+      const reduceMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches ?? false;
+      el.scrollIntoView({ block: "center", inline: "nearest", behavior: reduceMotion ? "auto" : "smooth" });
+      await sleep(options?.dwellMs ?? 240);
+      if (!mounted.current || !enabledRef.current) return;
+
       const rect = el.getBoundingClientRect();
-      const x = Math.min(window.innerWidth - 24, Math.max(24, rect.left + rect.width / 2));
-      const y = Math.min(window.innerHeight - 24, Math.max(24, rect.top + rect.height / 2));
-      moveToPoint(x, y, options?.label, options?.click);
-      await sleep(620);
+      const x = rect.left + rect.width / 2;
+      const y = rect.top + rect.height / 2;
+
+      spotlight(selector);
+      await moveToPoint(x, y, options?.label, options?.click);
+      await sleep(160);
     },
-    [moveToPoint, narrate],
+    [moveToPoint, narrate, spotlight],
   );
 
   const value = useMemo<AgentPresenceValue>(
-    () => ({ moveTo, moveToPoint, narrate, spotlight, visible, setVisible }),
-    [moveTo, moveToPoint, narrate, spotlight, visible],
+    () => ({
+      enabled,
+      setEnabled,
+      busy,
+      setBusy,
+      moveTo,
+      moveToPoint,
+      narrate,
+      spotlight,
+      visible: placed,
+    }),
+    [busy, enabled, moveTo, moveToPoint, narrate, placed, setEnabled, spotlight],
   );
 
   return (
     <AgentPresenceContext.Provider value={value}>
       {children}
-      <div className="agent-layer" aria-hidden="true" data-ready={ready ? "true" : "false"}>
-        {spot && (
-          <div
-            className="agent-spot"
-            style={{ left: spot.left - 6, top: spot.top - 6, width: spot.width + 12, height: spot.height + 12 }}
-          />
-        )}
-        <div
-          className="agent-cursor"
-          data-visible={visible ? "true" : "false"}
-          style={{ transform: `translate3d(${pos.x}px, ${pos.y}px, 0)` }}
-        >
-          <span className="agent-click-ripple" key={clickKey} />
-          <svg width="22" height="26" viewBox="0 0 22 26" fill="none">
-            <path
-              d="M2 1.6 19.2 13.2a.9.9 0 0 1-.43 1.63l-7.1.83-3.42 6.62a.9.9 0 0 1-1.65-.2L2.02 2.76A.9.9 0 0 1 2 1.6Z"
-              fill="#f7fbf8"
-              stroke="#143c2e"
-              strokeWidth="1.6"
-              strokeLinejoin="round"
+      {enabled && (
+        <div className="agent-layer" aria-hidden="true" data-busy={busy ? "true" : "false"}>
+          {spot && (
+            <div
+              className="agent-spot"
+              style={{
+                left: spot.left - 6,
+                top: spot.top - 6,
+                width: spot.width + 12,
+                height: spot.height + 12,
+              }}
             />
-          </svg>
-          {label && <span className="agent-cursor-label">{label}</span>}
+          )}
+          {trail.map((point, index) => (
+            <span
+              key={`trail-${index}`}
+              className="agent-trail"
+              style={{
+                transform: `translate3d(${point.x}px, ${point.y}px, 0)`,
+                opacity: 0.08 + index * 0.06,
+              }}
+            />
+          ))}
+          <div
+            className="agent-cursor"
+            data-visible={placed ? "true" : "false"}
+            data-pressing={pressing ? "true" : "false"}
+            style={{ transform: `translate3d(${pos.x}px, ${pos.y}px, 0)` }}
+          >
+            <span className="agent-halo" />
+            {clickKey > 0 && <span className="agent-click-ripple" key={`ripple-${clickKey}`} />}
+            <svg
+              className="agent-pointer"
+              width="24"
+              height="28"
+              viewBox="0 0 24 28"
+              fill="none"
+              xmlns="http://www.w3.org/2000/svg"
+            >
+              <defs>
+                <linearGradient id="agent-pointer-fill" x1="1" y1="0" x2="19" y2="26" gradientUnits="userSpaceOnUse">
+                  <stop offset="0" stopColor="#ffffff" />
+                  <stop offset="0.55" stopColor="#e8f6ee" />
+                  <stop offset="1" stopColor="#b9dfcc" />
+                </linearGradient>
+                <linearGradient id="agent-pointer-stroke" x1="1" y1="1" x2="19" y2="27" gradientUnits="userSpaceOnUse">
+                  <stop offset="0" stopColor="#2b7a5c" />
+                  <stop offset="1" stopColor="#0d3226" />
+                </linearGradient>
+              </defs>
+              <path
+                d="M2.6 1.9 21 14.3a.95.95 0 0 1-.42 1.74l-8.1.9-3.98 7.5a.95.95 0 0 1-1.75-.2L2.5 3.1a.95.95 0 0 1 1.1-1.2Z"
+                fill="url(#agent-pointer-fill)"
+                stroke="url(#agent-pointer-stroke)"
+                strokeWidth="1.5"
+                strokeLinejoin="round"
+              />
+              <path
+                d="M4.4 4.3 9.2 17"
+                stroke="#ffffff"
+                strokeOpacity="0.75"
+                strokeWidth="1.1"
+                strokeLinecap="round"
+              />
+            </svg>
+            {label && (
+              <span className="agent-cursor-label">
+                <span className="agent-label-dot" />
+                <span className="agent-label-text">{label}</span>
+                {busy && (
+                  <span className="agent-typing">
+                    <i />
+                    <i />
+                    <i />
+                  </span>
+                )}
+              </span>
+            )}
+          </div>
         </div>
-      </div>
+      )}
     </AgentPresenceContext.Provider>
   );
 }

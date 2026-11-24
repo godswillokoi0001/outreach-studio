@@ -9,7 +9,10 @@ import {
   CheckCircle2,
   ChevronDown,
   ChevronUp,
+  GripVertical,
+  History,
   Loader2,
+  MousePointer2,
   Pause,
   Play,
   RotateCcw,
@@ -17,6 +20,7 @@ import {
   ShieldAlert,
   Sparkles,
   Square,
+  Trash2,
   X,
 } from "lucide-react";
 import { motion } from "framer-motion";
@@ -68,6 +72,38 @@ interface PendingConfirmation {
 }
 
 const MAX_TOOL_ROUNDS = 8;
+const RECENT_KEY = "agent-operator-recent";
+const DOCK_KEY = "agent-operator-dock";
+const RECENT_LIMIT = 40;
+
+interface RecentAction {
+  id: string;
+  label: string;
+  toolName: string;
+  status: ActionStep["status"];
+  at: number;
+  summary?: string;
+}
+
+function timeAgo(timestamp: number, now: number): string {
+  const seconds = Math.max(0, Math.round((now - timestamp) / 1000));
+  if (seconds < 10) return "just now";
+  if (seconds < 60) return `${seconds}s ago`;
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.round(hours / 24)}d ago`;
+}
+
+function readStored<T>(key: string): T | null {
+  try {
+    const raw = window.localStorage.getItem(key);
+    return raw ? (JSON.parse(raw) as T) : null;
+  } catch {
+    return null;
+  }
+}
 
 let localIdSeq = 0;
 function makeLocalId(prefix: string): string {
@@ -144,6 +180,9 @@ export function DashboardChat({
   const { user, workspaceToken, reconnectWorkspace } = useAuth();
   const presence = useAgentPresence();
   const narrate = presence.narrate;
+  const cursorEnabled = presence.enabled;
+  const setCursorEnabled = presence.setEnabled;
+  const setAgentBusy = presence.setBusy;
 
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
@@ -154,16 +193,53 @@ export function DashboardChat({
   const [elapsed, setElapsed] = useState(0);
   const [live, setLive] = useState(true);
   const [liveNote, setLiveNote] = useState<string | null>(null);
+  const [view, setView] = useState<"chat" | "history">("chat");
+  const [recent, setRecent] = useState<RecentAction[]>([]);
+  const [dockPos, setDockPos] = useState<{ x: number; y: number } | null>(null);
+  const [dragging, setDragging] = useState(false);
+  const [now, setNow] = useState(() => Date.now());
 
   const historyRef = useRef<AgentContent[]>([]);
   const pathnameRef = useRef(pathname);
   const cancelledRef = useRef(false);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
+  const dockRef = useRef<HTMLDivElement | null>(null);
+  const dockPosRef = useRef<{ x: number; y: number } | null>(null);
+  const dragStartRef = useRef<{ pointerX: number; pointerY: number; left: number; top: number } | null>(null);
 
   useEffect(() => {
     pathnameRef.current = pathname;
   }, [pathname]);
+
+  // Restore the operator's panel position and recent-work log across reloads.
+  useEffect(() => {
+    const storedRecent = readStored<RecentAction[]>(RECENT_KEY);
+    if (Array.isArray(storedRecent)) setRecent(storedRecent.slice(0, RECENT_LIMIT));
+    const storedDock = readStored<{ x: number; y: number }>(DOCK_KEY);
+    if (storedDock && Number.isFinite(storedDock.x) && Number.isFinite(storedDock.y)) {
+      dockPosRef.current = storedDock;
+      setDockPos(storedDock);
+    }
+  }, []);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(RECENT_KEY, JSON.stringify(recent));
+    } catch {
+      /* storage unavailable */
+    }
+  }, [recent]);
+
+  useEffect(() => {
+    setAgentBusy(busy);
+  }, [busy, setAgentBusy]);
+
+  useEffect(() => {
+    if (view !== "history") return undefined;
+    const id = window.setInterval(() => setNow(Date.now()), 30_000);
+    return () => window.clearInterval(id);
+  }, [view]);
 
   useEffect(() => {
     if (!open) return;
@@ -220,11 +296,28 @@ export function DashboardChat({
     setMessages((prev) => prev.map((m) => (m.id === msgId ? updater(m) : m)));
   };
 
+  const recordRecent = (step: ActionStep) => {
+    setRecent((prev) =>
+      [
+        {
+          id: step.id,
+          label: step.label,
+          toolName: step.toolName,
+          status: step.status,
+          at: Date.now(),
+          summary: step.summary,
+        },
+        ...prev.filter((entry) => entry.id !== step.id),
+      ].slice(0, RECENT_LIMIT),
+    );
+  };
+
   const appendStep = (msgId: string, step: ActionStep) => {
     updateAssistantMessage(msgId, (m) => ({
       ...m,
       steps: [...(m.steps ?? []), step],
     }));
+    recordRecent(step);
   };
 
   const patchStep = (msgId: string, stepId: string, patch: Partial<ActionStep>) => {
@@ -232,6 +325,75 @@ export function DashboardChat({
       ...m,
       steps: (m.steps ?? []).map((s) => (s.id === stepId ? { ...s, ...patch } : s)),
     }));
+    if (patch.status) {
+      const nextStatus = patch.status;
+      setRecent((prev) =>
+        prev.map((entry) =>
+          entry.id === stepId
+            ? { ...entry, status: nextStatus, summary: patch.summary ?? entry.summary }
+            : entry,
+        ),
+      );
+    }
+  };
+
+  const persistDock = (next: { x: number; y: number } | null) => {
+    dockPosRef.current = next;
+    setDockPos(next);
+    try {
+      if (next) window.localStorage.setItem(DOCK_KEY, JSON.stringify(next));
+      else window.localStorage.removeItem(DOCK_KEY);
+    } catch {
+      /* storage unavailable */
+    }
+  };
+
+  const onHeaderPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (window.innerWidth < 900) return;
+    const target = event.target as HTMLElement;
+    if (target.closest("button, a, input, textarea, select")) return;
+    const dock = dockRef.current;
+    if (!dock) return;
+    const rect = dock.getBoundingClientRect();
+    dragStartRef.current = {
+      pointerX: event.clientX,
+      pointerY: event.clientY,
+      left: rect.left,
+      top: rect.top,
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+    setDragging(true);
+  };
+
+  const onHeaderPointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
+    const start = dragStartRef.current;
+    const dock = dockRef.current;
+    if (!start || !dock) return;
+    const width = dock.offsetWidth;
+    const height = dock.offsetHeight;
+    const x = Math.min(
+      Math.max(8, start.left + (event.clientX - start.pointerX)),
+      Math.max(8, window.innerWidth - width - 8),
+    );
+    const y = Math.min(
+      Math.max(8, start.top + (event.clientY - start.pointerY)),
+      Math.max(8, window.innerHeight - height - 8),
+    );
+    dockPosRef.current = { x, y };
+    setDockPos({ x, y });
+  };
+
+  const onHeaderPointerUp = () => {
+    if (!dragStartRef.current) return;
+    dragStartRef.current = null;
+    setDragging(false);
+    persistDock(dockPosRef.current);
+  };
+
+  const resetDock = () => {
+    dragStartRef.current = null;
+    setDragging(false);
+    persistDock(null);
   };
 
   const makeExecEnv = () => ({
@@ -416,6 +578,7 @@ export function DashboardChat({
     if (!clean || busy || pendingConfirm) return;
 
     cancelledRef.current = false;
+    setView("chat");
     setInput("");
     setElapsed(0);
     setBusy(true);
@@ -586,15 +749,33 @@ export function DashboardChat({
 
   return (
     <motion.div
+      ref={dockRef}
       className="agent-dock"
       data-collapsed={collapsed ? "true" : "false"}
+      data-dragging={dragging ? "true" : "false"}
       initial={{ opacity: 0, y: 16, scale: 0.985 }}
       animate={{ opacity: 1, y: 0, scale: 1 }}
       transition={{ type: "spring", stiffness: 250, damping: 26 }}
+      style={
+        dockPos
+          ? { left: dockPos.x, top: dockPos.y, right: "auto", bottom: "auto" }
+          : undefined
+      }
       aria-label="AI Operator"
     >
-      <div className="chat-header">
+      <div
+        className="chat-header"
+        onPointerDown={onHeaderPointerDown}
+        onPointerMove={onHeaderPointerMove}
+        onPointerUp={onHeaderPointerUp}
+        onPointerCancel={onHeaderPointerUp}
+        onDoubleClick={resetDock}
+        title={dockPos ? "Drag to move · double-click to dock it back" : "Drag to move this panel"}
+      >
         <div className="chat-header-title">
+          <span className="chat-drag-grip" aria-hidden="true">
+            <GripVertical size={13} />
+          </span>
           <div className={`chat-avatar${busy ? " busy" : ""}`}>
             <Sparkles size={15} />
           </div>
@@ -608,6 +789,31 @@ export function DashboardChat({
           </div>
         </div>
         <div className="row" style={{ gap: 2 }}>
+          <button
+            type="button"
+            className="btn btn-sm btn-ghost chat-toggle-btn"
+            data-on={cursorEnabled ? "true" : "false"}
+            onClick={() => {
+              const next = !cursorEnabled;
+              setCursorEnabled(next);
+              if (next) narrate("AI cursor on — I'll show every move.");
+            }}
+            title={cursorEnabled ? "Hide the AI cursor" : "Show the AI cursor"}
+            aria-label={cursorEnabled ? "Hide the AI cursor" : "Show the AI cursor"}
+            aria-pressed={cursorEnabled}
+          >
+            <MousePointer2 size={13} />
+          </button>
+          <button
+            type="button"
+            className="btn btn-sm btn-ghost chat-toggle-btn"
+            data-on={view === "history" ? "true" : "false"}
+            onClick={() => setView((value) => (value === "history" ? "chat" : "history"))}
+            title={view === "history" ? "Back to the conversation" : "Recent work history"}
+            aria-label={view === "history" ? "Back to the conversation" : "Recent work history"}
+          >
+            <History size={13} />
+          </button>
           <button
             type="button"
             className="btn btn-sm btn-ghost"
@@ -661,7 +867,59 @@ export function DashboardChat({
       {collapsed ? null : (
       <>
       <div className="chat-messages" ref={scrollRef}>
-        {messages.length === 0 ? (
+        {view === "history" ? (
+          <div className="agent-history">
+            <div className="agent-history-head">
+              <div>
+                <div className="strong">Recent work</div>
+                <div className="tiny">
+                  {recent.length > 0
+                    ? `${recent.length} action${recent.length === 1 ? "" : "s"} logged`
+                    : "Nothing logged yet"}
+                </div>
+              </div>
+              {recent.length > 0 && (
+                <button
+                  type="button"
+                  className="btn btn-sm btn-ghost"
+                  onClick={() => setRecent([])}
+                  title="Clear history"
+                  aria-label="Clear history"
+                >
+                  <Trash2 size={13} />
+                </button>
+              )}
+            </div>
+            {recent.length === 0 ? (
+              <div className="agent-history-empty">
+                <History size={18} />
+                <p>
+                  Every move I make is logged here — navigation, research, drafts, sends and settings
+                  changes — with the time it happened.
+                </p>
+              </div>
+            ) : (
+              <div className="agent-history-list">
+                {recent.map((entry) => (
+                  <div key={entry.id} className="agent-history-row" data-status={entry.status}>
+                    <span className="agent-history-icon">
+                      {entry.status === "running" && <Loader2 size={12} className="spin-icon" />}
+                      {entry.status === "done" && <CheckCircle2 size={12} />}
+                      {entry.status === "error" && <AlertCircle size={12} />}
+                      {entry.status === "cancelled" && <X size={12} />}
+                      {entry.status === "awaiting" && <ShieldAlert size={12} />}
+                    </span>
+                    <span className="agent-history-body">
+                      <span className="agent-history-label">{entry.label}</span>
+                      {entry.summary && <span className="agent-history-summary">{entry.summary}</span>}
+                    </span>
+                    <span className="agent-history-time">{timeAgo(entry.at, now)}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        ) : messages.length === 0 ? (
           <div className="chat-empty">
             <div className="chat-empty-icon">
               <Bot size={20} />
