@@ -276,7 +276,7 @@ export function AiEngineCard({
             hint={
               connected && settings.ai_key_hint
                 ? `Saved key ${settings.ai_key_hint} · verified ${settings.ai_verified_at ? new Date(settings.ai_verified_at).toLocaleString() : "recently"}`
-                : "Stored in your private Firebase record and sent only to the provider you choose."
+                : "Stored in your private settings record in the database and sent only to the provider you choose."
             }
           >
             <div className="row" style={{ gap: 8 }}>

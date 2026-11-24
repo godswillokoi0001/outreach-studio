@@ -61,7 +61,11 @@ export function initAiConfig(uid: string): Promise<AiConfig | null> {
       return cached;
     })
     .catch(() => {
+      // Never cache a failure: the next call retries the database instead of
+      // running keyless for the rest of the session.
       cached = null;
+      pending = null;
+      loadedUid = null;
       return null;
     });
   return pending;

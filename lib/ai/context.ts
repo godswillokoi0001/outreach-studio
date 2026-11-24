@@ -1,6 +1,8 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { NextRequest } from "next/server";
-import { getProvider, isProviderId, providerBaseUrl } from "./registry";
+import { getSupabaseSettingsServer } from "../supabase-server";
+import { listProviderModels } from "./chat";
+import { getProvider, isProviderId, pickRecommendedModel, providerBaseUrl } from "./registry";
 import type { AiConfig } from "./types";
 
 /**
@@ -9,6 +11,31 @@ import type { AiConfig } from "./types";
  * stateless and never needs a service account.
  */
 const storage = new AsyncLocalStorage<AiConfig>();
+
+/** Providers such as Numes ship no static default model, so it is resolved once from their live catalogue. */
+const modelCache = new Map<string, { model: string; at: number }>();
+const MODEL_CACHE_MS = 10 * 60 * 1000;
+
+async function resolveProviderModel(cfg: AiConfig): Promise<AiConfig> {
+  if (cfg.model) return cfg;
+  const meta = getProvider(cfg.provider);
+  if (!meta) return cfg;
+
+  const cacheKey = `${meta.id}:${cfg.baseUrl ?? meta.baseUrl}`;
+  const cached = modelCache.get(cacheKey);
+  if (cached && Date.now() - cached.at < MODEL_CACHE_MS) return { ...cfg, model: cached.model };
+  if (cached) modelCache.delete(cacheKey);
+
+  try {
+    const models = await listProviderModels(cfg);
+    const model = pickRecommendedModel(meta, models);
+    if (!model) return cfg;
+    modelCache.set(cacheKey, { model, at: Date.now() });
+    return { ...cfg, model };
+  } catch {
+    return cfg;
+  }
+}
 
 export function runWithAiConfig<T>(config: AiConfig | null | undefined, fn: () => Promise<T> | T): Promise<T> | T {
   if (!config) return fn();
@@ -109,4 +136,47 @@ export function readAiConfigFromRequest(req: NextRequest): AiConfig | null {
   };
   if (!providerBaseUrl(cfg)) return null;
   return cfg;
+}
+
+/**
+ * The AI key lives in the user's settings row, so the server can run a request
+ * even when the browser never attached X-AI-Config (expired session, a failed
+ * settings read, or a different device).
+ */
+export async function storedAiConfig(): Promise<AiConfig | null> {
+  const settings = await getSupabaseSettingsServer();
+  if (!settings) return null;
+
+  const apiKey = (settings.ai_api_key ?? "").trim();
+  if (!apiKey || apiKey.length > MAX_KEY_LENGTH) return null;
+
+  const providerId = (settings.ai_provider ?? "").trim().toLowerCase();
+  if (!isProviderId(providerId)) return null;
+
+  const meta = getProvider(providerId);
+  if (!meta) return null;
+
+  const baseUrl = (settings.ai_base_url ?? "").trim();
+  if (baseUrl && !isSafeProviderUrl(baseUrl)) return null;
+
+  const cfg: AiConfig = {
+    provider: meta.id,
+    model: (settings.model ?? "").trim().slice(0, MAX_MODEL_LENGTH) || meta.defaultModel,
+    apiKey,
+    ...(baseUrl ? { baseUrl } : {}),
+  };
+
+  if (!providerBaseUrl(cfg)) return null;
+  return resolveProviderModel(cfg);
+}
+
+/** The request header wins for provider/base URL; the database fills the gaps. */
+export async function resolveAiConfigForRequest(req: NextRequest): Promise<AiConfig | null> {
+  const fromRequest = readAiConfigFromRequest(req);
+  const stored = await storedAiConfig().catch(() => null);
+
+  if (!fromRequest) return stored;
+  if (!stored) return resolveProviderModel(fromRequest);
+
+  return resolveProviderModel({ ...fromRequest, model: fromRequest.model || stored.model });
 }

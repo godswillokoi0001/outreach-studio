@@ -9,19 +9,34 @@ const STRING_FIELDS = ["sender_name","sender_role","sender_company","sender_emai
 const NUMBER_FIELDS = ["daily_limit","campaign_limit","interval_seconds","send_window_start","send_window_end","timezone_offset","followup_days","min_score"] as const satisfies readonly (keyof Settings)[];
 
 /**
- * Settings live in Supabase, but the table has RLS enabled so the browser can
- * never read or write it directly (it holds the AI key). All access goes
- * through /api/settings, which verifies the Firebase session and uses the
- * service role on the server.
+ * Result of a settings read/write.
+ *
+ * `unconfigured` is only true when the deployment itself has no Supabase
+ * credentials (HTTP 503). Any other failure is a real error and must be
+ * surfaced: treating it as "no settings" is what made a stored AI key look
+ * like it had disappeared.
  */
-async function callSettingsApi(method: "GET" | "PUT", body?: unknown): Promise<{ settings?: Settings | null } | null> {
-  if (typeof window === "undefined") return null;
+export type SettingsResult =
+  | { ok: true; settings: Settings | null }
+  | { ok: false; unconfigured: boolean; message: string };
+
+async function request(method: "GET" | "PUT", body?: unknown): Promise<SettingsResult> {
+  if (typeof window === "undefined") {
+    return { ok: false, unconfigured: false, message: "Settings are only available in the browser." };
+  }
 
   const token = await getFirebaseIdToken();
-  if (!token) return null;
+  if (!token) {
+    return {
+      ok: false,
+      unconfigured: false,
+      message: "Your session expired. Sign in with Google again, then reload.",
+    };
+  }
 
+  let res: Response;
   try {
-    const res = await fetch("/api/settings", {
+    res = await fetch("/api/settings", {
       method,
       headers: {
         Accept: "application/json",
@@ -32,26 +47,45 @@ async function callSettingsApi(method: "GET" | "PUT", body?: unknown): Promise<{
       cache: "no-store",
       credentials: "same-origin",
     });
-
-    if (!res.ok) return null;
-    const text = await res.text();
-    if (!text.trim()) return null;
-    return JSON.parse(text) as { settings?: Settings | null };
   } catch {
-    return null;
+    return {
+      ok: false,
+      unconfigured: false,
+      message: "Could not reach the settings service. Check your connection and try again.",
+    };
   }
+
+  const text = await res.text().catch(() => "");
+  let parsed: unknown = null;
+  try {
+    parsed = text ? JSON.parse(text) : null;
+  } catch {
+    parsed = null;
+  }
+
+  const message =
+    parsed && typeof parsed === "object" && "error" in parsed
+      ? String((parsed as { error: unknown }).error)
+      : `Settings request failed (HTTP ${res.status}).`;
+
+  if (res.status === 503) return { ok: false, unconfigured: true, message };
+  if (!res.ok) return { ok: false, unconfigured: false, message };
+
+  const settings =
+    parsed && typeof parsed === "object" && "settings" in parsed
+      ? ((parsed as { settings: Settings | null }).settings ?? null)
+      : null;
+
+  return { ok: true, settings };
 }
 
-/** Reads the settings document from Supabase (via the authenticated API). */
-export async function getSupabaseSettings(uid: string): Promise<Settings | null> {
-  void uid;
-  const data = await callSettingsApi("GET");
-  return data?.settings ?? null;
+/** Reads the settings document from the database through the authenticated API. */
+export async function fetchSettingsDocument(): Promise<SettingsResult> {
+  return request("GET");
 }
 
-/** Saves the settings document to Supabase (via the authenticated API). */
-export async function saveSupabaseSettings(partial: Partial<Settings>, uid: string): Promise<boolean> {
-  void uid;
+/** Saves the settings document to the database through the authenticated API. */
+export async function saveSettingsDocument(partial: Partial<Settings>): Promise<SettingsResult> {
   const payload: Record<string, unknown> = {};
 
   for (const key of STRING_FIELDS) {
@@ -63,8 +97,8 @@ export async function saveSupabaseSettings(partial: Partial<Settings>, uid: stri
     if (typeof value === "number" && Number.isFinite(value)) payload[key] = value;
   }
 
-  if (Object.keys(payload).length === 0) return true;
-  return Boolean(await callSettingsApi("PUT", payload));
+  if (Object.keys(payload).length === 0) return { ok: true, settings: null };
+  return request("PUT", payload);
 }
 
 /** Push device registration is Firebase-only by design. */

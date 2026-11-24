@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { handleApiError } from "@/lib/api-helpers";
-import { readAiConfigFromRequest, runWithAiConfig } from "@/lib/ai/context";
+import { resolveAiConfigForRequest, runWithAiConfig } from "@/lib/ai/context";
 import { verifyFirebaseRequest } from "@/lib/firebase-server-auth";
 import { planCampaignServer } from "@/lib/intelligence";
 import type { Settings } from "@/lib/types";
@@ -8,7 +8,7 @@ import type { Settings } from "@/lib/types";
 export async function POST(req: NextRequest) {
   try {
     await verifyFirebaseRequest(req);
-    const aiConfig = readAiConfigFromRequest(req);
+    const aiConfig = await resolveAiConfigForRequest(req);
     const body = (await req.json()) as {
       instruction?: string;
       settings: Settings;

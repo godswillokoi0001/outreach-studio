@@ -110,16 +110,30 @@ export async function saveSupabaseSettingsServer(
   // Nothing but the update timestamp changed.
   if (Object.keys(payload).length === 2) return true;
 
-  // New rows need a key value because the column is NOT NULL.
-  if (!("ai_api_key" in payload) && !(await rowExists())) {
-    payload.ai_api_key = "";
+  const { id: _rowId, ...fields } = payload;
+  void _rowId;
+
+  // Update in place when the single settings row exists. PostgREST's upsert
+  // attempts an INSERT first, which fails on the NOT NULL ai_api_key column and
+  // silently dropped every partial save (profile, model, limits).
+  if (await rowExists()) {
+    const { error } = await supabaseServer
+      .from("settings")
+      .update(fields as never)
+      .eq("id", SETTINGS_ROW_ID)
+      .select("id");
+
+    if (error) {
+      console.error("[supabase-server] saveSettings error:", error.message);
+      return false;
+    }
+    return true;
   }
 
   const { error } = await supabaseServer
     .from("settings")
-    .upsert(payload as never, { onConflict: "id" })
-    .select("id")
-    .single();
+    .insert({ id: SETTINGS_ROW_ID, ai_api_key: "", ...fields } as never)
+    .select("id");
 
   if (error) {
     console.error("[supabase-server] saveSettings error:", error.message);

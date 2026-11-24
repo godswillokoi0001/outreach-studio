@@ -1,13 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { handleApiError } from "@/lib/api-helpers";
-import { readAiConfigFromRequest, runWithAiConfig } from "@/lib/ai/context";
+import { resolveAiConfigForRequest, runWithAiConfig } from "@/lib/ai/context";
 import { verifyFirebaseRequest } from "@/lib/firebase-server-auth";
 import { discoverProspectsServer } from "@/lib/intelligence";
 
 export async function POST(req: NextRequest) {
   try {
     await verifyFirebaseRequest(req);
-    const aiConfig = readAiConfigFromRequest(req);
+    const aiConfig = await resolveAiConfigForRequest(req);
     const body = (await req.json()) as {
       industry?: string;
       location?: string;

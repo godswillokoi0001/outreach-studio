@@ -2,7 +2,7 @@ import type { Content } from "@google/genai";
 import { NextRequest, NextResponse } from "next/server";
 import { AGENT_TOOLS, sanitizeAgentContents } from "@/lib/agent-tools";
 import { handleApiError } from "@/lib/api-helpers";
-import { readAiConfigFromRequest, runWithAiConfig } from "@/lib/ai/context";
+import { resolveAiConfigForRequest, runWithAiConfig } from "@/lib/ai/context";
 import { verifyFirebaseRequest } from "@/lib/firebase-server-auth";
 import { geminiAgentTurn } from "@/lib/gemini";
 
@@ -41,7 +41,7 @@ OPERATING RULES
 export async function POST(req: NextRequest) {
   try {
     const authUser = await verifyFirebaseRequest(req);
-    const aiConfig = readAiConfigFromRequest(req);
+    const aiConfig = await resolveAiConfigForRequest(req);
     const body = (await req.json()) as {
       contents?: Content[];
       context?: ChatContext;

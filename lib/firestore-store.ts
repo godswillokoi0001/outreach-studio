@@ -237,9 +237,15 @@ function toSettings(data: Record<string, unknown>): Settings {
  * fallback for accounts that have not saved since the migration.
  */
 export async function getSettings(uid: string): Promise<Settings> {
-  const { getSupabaseSettings } = await import("./supabase");
-  const remote = await getSupabaseSettings(uid).catch(() => null);
-  if (remote) return toSettings(remote as unknown as Record<string, unknown>);
+  const { fetchSettingsDocument } = await import("./supabase");
+  const remote = await fetchSettingsDocument();
+  if (remote.ok) {
+    if (remote.settings) return toSettings(remote.settings as unknown as Record<string, unknown>);
+  } else if (!remote.unconfigured) {
+    // Never fall through to defaults here: an unreadable settings row used to
+    // look exactly like a missing AI key and silently reset the whole profile.
+    throw new Error(remote.message);
+  }
 
   const path = `users/${uid}/settings/default`;
   try {
@@ -254,9 +260,14 @@ export async function getSettings(uid: string): Promise<Settings> {
 export async function saveSettings(uid: string, patch: Partial<Settings>): Promise<Settings> {
   const current = await getSettings(uid);
   const payload = normalizeSettingsPayload(uid, patch, current);
-  const { saveSupabaseSettings } = await import("./supabase");
-  const ok = await saveSupabaseSettings(payload, uid).catch(() => false);
-  if (ok) return toSettings(payload as unknown as Record<string, unknown>);
+  const { saveSettingsDocument } = await import("./supabase");
+  const remote = await saveSettingsDocument(payload);
+  if (remote.ok) {
+    return remote.settings
+      ? toSettings(remote.settings as unknown as Record<string, unknown>)
+      : toSettings(payload as unknown as Record<string, unknown>);
+  }
+  if (!remote.unconfigured) throw new Error(remote.message);
 
   // Legacy fallback for deployments without Supabase configured.
   const path = `users/${uid}/settings/default`;

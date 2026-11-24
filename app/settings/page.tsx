@@ -28,19 +28,24 @@ export default function SettingsPage() {
 
   useEffect(() => {
     let active = true;
-    Promise.all([getSettings(user.uid), listSuppressions(user.uid)]).then(
-      ([settings, sup]) => {
-        if (!active) return;
-        setForm(settings);
-        setSuppressions(sup);
-        setLoading(false);
-      },
-      (err) => {
-        if (!active) return;
-        setFailure(errorMessage(err));
-        setLoading(false);
-      },
-    );
+    void (async () => {
+      try {
+        const settings = await getSettings(user.uid);
+        if (active) setForm(settings);
+      } catch (err) {
+        if (active) setFailure(errorMessage(err));
+      }
+      if (active) setLoading(false);
+
+      // The suppression list is optional: a Firestore hiccup must not hide the
+      // settings that did load.
+      try {
+        const sup = await listSuppressions(user.uid);
+        if (active) setSuppressions(sup);
+      } catch {
+        /* ignore */
+      }
+    })();
     return () => {
       active = false;
     };
@@ -154,12 +159,14 @@ export default function SettingsPage() {
         </Card>
 
         <div id="ai-engine">
-          <AiEngineCard
-            uid={user.uid}
-            settings={form}
-            onChange={(patch) => setForm((prev) => ({ ...prev, ...patch }))}
-            onSaved={(saved) => setForm(saved)}
-          />
+          {!loading && (
+            <AiEngineCard
+              uid={user.uid}
+              settings={form}
+              onChange={(patch) => setForm((prev) => ({ ...prev, ...patch }))}
+              onSaved={(saved) => setForm(saved)}
+            />
+          )}
         </div>
 
         <Card
@@ -326,7 +333,10 @@ export default function SettingsPage() {
           )}
         </Card>
 
-        <Card title="Data" sub="Your data lives privately in Firebase Cloud Firestore under your verified Google account.">
+        <Card
+          title="Data"
+          sub="Settings and your AI key live in your database (Supabase) behind your Google sign-in. Pipeline records stay in Firestore under the same account."
+        >
           <ul className="tiny" style={{ paddingLeft: 16 }}>
             <li>Delete a prospect and its emails from the Leads page; the deletion is recorded in the audit log.</li>
             <li>Google Workspace access tokens stay strictly in memory and clear automatically when you sign out.</li>

@@ -5,33 +5,77 @@ import { handleApiError } from "@/lib/api-helpers";
 import { verifyFirebaseRequest } from "@/lib/firebase-server-auth";
 
 /**
- * Settings REST boundary for the Supabase data layer migration.
+ * Settings REST boundary.
  *
  * - The `settings` table has RLS enabled and is not readable or writable with
  *   the public anon key, because it holds the user's AI API key. Every request
  *   here is authenticated with a verified Firebase session and the write is
  *   performed with the service role on the server.
- * - Leads, Campaigns, Messages, Replies, Suppressions, SendLogs, AuditLogs,
- *   Knowledge and push notification devices stay on Firebase.
+ * - The whole document is persisted (identity, limits, AI engine), not just the
+ *   AI fields: anything dropped here silently reverts to defaults on reload.
+ * - Leads, Campaigns, Messages, Replies, Suppressions, SendLogs, AuditLogs and
+ *   Knowledge stay on Firestore.
  */
 export const dynamic = "force-dynamic";
 export const maxDuration = 30;
+
+const STRING_LIMITS: Record<string, number> = {
+  sender_name: 160,
+  sender_role: 160,
+  sender_company: 200,
+  sender_email: 320,
+  signature: 2000,
+  unsubscribe_email: 320,
+  physical_address: 400,
+  send_days: 32,
+  model: 200,
+  ai_provider: 40,
+  ai_api_key: 512,
+  ai_base_url: 400,
+  ai_verified_at: 64,
+  ai_key_hint: 40,
+};
+
+const NUMBER_RANGES: Record<string, [number, number]> = {
+  daily_limit: [1, 200],
+  campaign_limit: [1, 500],
+  interval_seconds: [30, 900],
+  send_window_start: [0, 23],
+  send_window_end: [1, 24],
+  timezone_offset: [-720, 840],
+  followup_days: [1, 30],
+  min_score: [0, 100],
+};
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, Math.round(value)));
+}
 
 function parseBody(raw: unknown): Partial<Settings> {
   if (typeof raw !== "object" || raw === null) return {};
   const body = raw as Record<string, unknown>;
   const out: Record<string, unknown> = {};
 
-  const stringFields: Array<keyof Settings> = [
-    "ai_provider",
-    "ai_api_key",
-    "ai_base_url",
-    "ai_verified_at",
-    "ai_key_hint",
-  ];
-  for (const key of stringFields) {
+  for (const [key, maxLength] of Object.entries(STRING_LIMITS)) {
     const value = body[key];
-    if (typeof value === "string") out[key] = value;
+    if (typeof value !== "string") continue;
+
+    // ai_verified_at is a timestamptz column, so an empty value simply means
+    // "not verified" and is left untouched.
+    if (key === "ai_verified_at") {
+      const trimmed = value.trim();
+      if (trimmed && !Number.isNaN(Date.parse(trimmed))) out[key] = trimmed;
+      continue;
+    }
+
+    out[key] = value.slice(0, maxLength);
+  }
+
+  for (const [key, range] of Object.entries(NUMBER_RANGES)) {
+    const value = body[key];
+    if (typeof value === "number" && Number.isFinite(value)) {
+      out[key] = clamp(value, range[0], range[1]);
+    }
   }
 
   return out as Partial<Settings>;
@@ -82,7 +126,9 @@ export async function PUT(req: NextRequest) {
       return NextResponse.json({ error: "Supabase request failed." }, { status: 500 });
     }
 
-    return NextResponse.json({ ok: true }, { headers: { "Cache-Control": "no-store" } });
+    // Return the stored document so the UI works from what the database holds.
+    const settings = await getSupabaseSettingsServer();
+    return NextResponse.json({ ok: true, settings }, { headers: { "Cache-Control": "no-store" } });
   } catch (err) {
     return handleApiError(err);
   }
