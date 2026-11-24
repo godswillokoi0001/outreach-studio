@@ -35,6 +35,7 @@ import { useAuth } from "./AuthProvider";
 import { DashboardChat } from "./DashboardChat";
 import { AgentPresenceProvider } from "./AgentPresence";
 import { TaskDockProvider, useTaskDock } from "./Loading";
+import { WorkspaceIssueNotice } from "./WorkspaceIssueNotice";
 import { PageMotion } from "./motion/PageMotion";
 
 const NAV_STATE_KEY = "os:nav:collapsed";
@@ -334,6 +335,10 @@ function ShellInner({ children }: { children: ReactNode }) {
             </button>
           </div>
         </header>
+
+        <div style={{ padding: "12px 28px 0" }}>
+          <WorkspaceIssueNotice />
+        </div>
 
         <PageMotion>{children}</PageMotion>
       </div>

@@ -69,10 +69,32 @@ export async function workspaceStatus(): Promise<WorkspaceStatus> {
   }
 }
 
-/** Full-page redirect into Google's consent screen. */
-export async function startGoogleConnection(): Promise<void> {
-  const { url } = await post<{ url: string }>("/api/google/connect");
-  window.location.href = url;
+/**
+ * Full-page redirect into Google's consent screen through the app's own OAuth
+ * client. Returns false when the server has no client configured, so the caller
+ * can fall back to the Firebase popup instead.
+ */
+export async function startGoogleConnection(): Promise<boolean> {
+  const idToken = await getFirebaseIdToken();
+  if (!idToken) throw new Error("Sign in with Google first.");
+  const res = await fetch("/api/google/connect", {
+    method: "POST",
+    headers: { "X-Firebase-Token": idToken, Authorization: `Bearer ${idToken}` },
+    cache: "no-store",
+    credentials: "same-origin",
+  });
+  const data = (await res.json().catch(() => ({}))) as {
+    url?: string;
+    configured?: boolean;
+    error?: string;
+  };
+  if (!res.ok) {
+    if (data.configured === false) return false;
+    throw new Error(data.error ?? `Request failed (${res.status}).`);
+  }
+  if (!data.url) throw new Error("Google did not return a consent URL.");
+  window.location.href = data.url;
+  return true;
 }
 
 export async function disconnectWorkspace(): Promise<void> {

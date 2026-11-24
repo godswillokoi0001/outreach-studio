@@ -19,12 +19,21 @@ import {
 import { PreAuth } from "./PreAuth";
 import { Shell } from "./Shell";
 
+export interface WorkspaceIssue {
+  /** "verification" means Google itself blocked the Gmail/Sheets consent screen. */
+  kind: "verification" | "other";
+  message: string;
+}
+
 interface AuthContextValue {
   user: User;
   workspaceToken: string | null;
   workspaceEmail: string | null;
   /** True when the server has a stored refresh token, so Gmail/Sheets survive reloads. */
   workspacePersistent: boolean;
+  /** Set when connecting Google failed, so the UI can explain how to fix it. */
+  workspaceIssue: WorkspaceIssue | null;
+  clearWorkspaceIssue: () => void;
   reconnectWorkspace: () => Promise<boolean>;
   refreshWorkspace: () => Promise<void>;
   signOut: () => Promise<void>;
@@ -64,11 +73,23 @@ function friendlyAuthError(err: unknown): string {
   return raw;
 }
 
+/** Separates Google's verification block from ordinary failures. */
+function classifyWorkspaceError(err: unknown): WorkspaceIssue {
+  const raw = err instanceof Error ? err.message : String(err);
+  const kind = /has not completed the Google verification|Access blocked|access_denied|verification process|unverified/i.test(
+    raw,
+  )
+    ? "verification"
+    : "other";
+  return { kind, message: friendlyAuthError(err) };
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [workspaceToken, setWorkspaceToken] = useState<string | null>(null);
   const [workspaceEmail, setWorkspaceEmail] = useState<string | null>(null);
   const [workspacePersistent, setWorkspacePersistent] = useState(false);
+  const [workspaceIssue, setWorkspaceIssue] = useState<WorkspaceIssue | null>(null);
   const [loading, setLoading] = useState(true);
   const [authError, setAuthError] = useState<string | null>(null);
   const [signingIn, setSigningIn] = useState(false);
@@ -78,6 +99,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setWorkspaceToken(ready ? readWorkspaceToken() : null);
     setWorkspaceEmail(status.email);
     setWorkspacePersistent(Boolean(status.configured && status.connected));
+    if (ready) setWorkspaceIssue(null);
     return ready;
   }, []);
 
@@ -130,24 +152,30 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [hydrateWorkspace]);
 
   const reconnectWorkspace = useCallback(async (): Promise<boolean> => {
-    setAuthError(null);
-    const status = await workspaceStatus();
-    // With a persistent OAuth client configured, send the browser through
-    // Google's consent screen so the connection survives reloads.
-    if (status.configured) {
-      await startGoogleConnection();
-      return false;
-    }
+    setWorkspaceIssue(null);
     const ready = await hydrateWorkspace();
     if (ready) return true;
-    // No server OAuth client yet: ask Google for the Workspace scopes directly.
+
+    // Prefer the app's own Google client when the server has one: it stores a
+    // refresh token, so the connection survives reloads. Only fall back to the
+    // Firebase popup (session-only access) when there is no server client.
+    let redirecting: boolean;
+    try {
+      redirecting = await startGoogleConnection();
+    } catch (err) {
+      setWorkspaceIssue(classifyWorkspaceError(err));
+      return false;
+    }
+    if (redirecting) return false; // the browser is navigating to Google
+
     try {
       const { accessToken } = await connectWorkspacePopup();
       setWorkspaceToken(accessToken);
+      setWorkspaceIssue(null);
       void hydrateWorkspace();
       return true;
     } catch (err) {
-      setAuthError(friendlyAuthError(err));
+      setWorkspaceIssue(classifyWorkspaceError(err));
       return false;
     }
   }, [hydrateWorkspace]);
@@ -157,6 +185,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(null);
     setWorkspaceToken(null);
     setWorkspaceEmail(null);
+    setWorkspaceIssue(null);
   };
 
   if (loading) {
@@ -191,6 +220,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         workspaceToken,
         workspaceEmail,
         workspacePersistent,
+        workspaceIssue,
+        clearWorkspaceIssue: () => setWorkspaceIssue(null),
         reconnectWorkspace,
         refreshWorkspace: async () => {
           await hydrateWorkspace();
