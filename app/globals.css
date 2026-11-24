@@ -444,7 +444,7 @@ tr.clickable:hover td { background: #f8faf8; }
   position: fixed;
   inset: 0;
   pointer-events: none;
-  z-index: 120;
+  z-index: 200;
   overflow: hidden;
 }
 
@@ -473,6 +473,33 @@ tr.clickable:hover td { background: #f8faf8; }
 
 .agent-cursor[data-pressing="true"] .agent-pointer {
   transform: scale(0.84);
+}
+
+/* Flip the narration chip inward near the right/bottom edge. */
+.agent-cursor[data-flip-x="true"] {
+  flex-direction: row-reverse;
+}
+
+.agent-cursor[data-flip-x="true"] .agent-cursor-label {
+  margin: 22px 6px 0 0;
+}
+
+.agent-cursor[data-flip-y="true"] .agent-cursor-label {
+  margin-top: -8px;
+}
+
+.agent-cursor[data-busy="true"] .agent-halo {
+  animation-duration: 1.3s;
+  box-shadow: 0 0 0 7px rgba(38, 122, 94, 0.07);
+}
+
+.agent-cursor[data-busy="true"] .agent-pointer {
+  animation: agent-pointer-work 1.6s ease-in-out infinite;
+}
+
+@keyframes agent-pointer-work {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-2px); }
 }
 
 .agent-halo {
@@ -601,6 +628,64 @@ tr.clickable:hover td { background: #f8faf8; }
 @keyframes agent-spot-pulse {
   0%, 100% { box-shadow: 0 0 0 0 rgba(38, 122, 94, 0.18); }
   50% { box-shadow: 0 0 0 7px rgba(38, 122, 94, 0.05); }
+}
+
+/* Compact progress chip shown when the operator panel is closed mid-run. */
+.agent-mini {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  z-index: 115;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  max-width: min(440px, calc(100vw - 32px));
+  padding: 9px 11px;
+  border-radius: 13px;
+  background: linear-gradient(135deg, #17493a, #0f2f26);
+  color: #eef7f1;
+  font-size: 12px;
+  font-weight: 500;
+  box-shadow: 0 20px 40px -22px rgba(15, 42, 33, 0.75);
+}
+
+.agent-mini-spinner {
+  flex: none;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  border: 2px solid rgba(238, 247, 241, 0.3);
+  border-top-color: #9fe3c5;
+  animation: agent-mini-spin 0.8s linear infinite;
+}
+
+@keyframes agent-mini-spin {
+  to { transform: rotate(360deg); }
+}
+
+.agent-mini-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-mini-elapsed {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.75;
+}
+
+.agent-mini .btn {
+  flex: none;
+  background: rgba(255, 255, 255, 0.12);
+  border-color: rgba(255, 255, 255, 0.22);
+  color: #eef7f1;
+}
+
+.agent-mini .btn:hover {
+  background: rgba(255, 255, 255, 0.2);
 }
 
 .agent-dock {

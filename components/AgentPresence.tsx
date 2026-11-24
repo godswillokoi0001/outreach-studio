@@ -239,7 +239,9 @@ export function AgentPresenceProvider({ children }: { children: ReactNode }) {
       const targetX = Math.min(window.innerWidth - 8, Math.max(8, x));
       const targetY = Math.min(window.innerHeight - 8, Math.max(8, y));
 
+      // Paint at the cursor's real current point so it never flashes at 0,0.
       setPlaced(true);
+      setPos({ x: posRef.current.x, y: posRef.current.y });
       if (nextLabel !== undefined) setLabel(nextLabel);
       await travelTo(targetX, targetY);
       if (!mounted.current || !enabledRef.current) return;
@@ -256,18 +258,23 @@ export function AgentPresenceProvider({ children }: { children: ReactNode }) {
     [travelTo],
   );
 
+  // Narration only updates the chip. The cursor appears when it actually
+  // travels somewhere, so idle chatter never parks a pointer at 0,0.
   const narrate = useCallback((text: string) => {
     if (!enabledRef.current) return;
     setLabel(text);
-    setPlaced(true);
   }, []);
 
   const moveTo = useCallback(
     async (selector: string, options?: MoveOptions) => {
       if (!enabledRef.current || typeof window === "undefined") return;
+      // Publish the label at call time, not when the glide ends, so a slower
+      // animation can never overwrite the result of the step it was showing.
+      if (options?.label) narrate(options.label);
       const el = document.querySelector<HTMLElement>(selector);
       if (!el) {
-        if (options?.label) narrate(options.label);
+        setPlaced(true);
+        setPos({ x: posRef.current.x, y: posRef.current.y });
         return;
       }
 
@@ -281,7 +288,7 @@ export function AgentPresenceProvider({ children }: { children: ReactNode }) {
       const y = rect.top + rect.height / 2;
 
       spotlight(selector);
-      await moveToPoint(x, y, options?.label, options?.click);
+      await moveToPoint(x, y, undefined, options?.click);
       await sleep(160);
     },
     [moveToPoint, narrate, spotlight],
@@ -301,6 +308,13 @@ export function AgentPresenceProvider({ children }: { children: ReactNode }) {
     }),
     [busy, enabled, moveTo, moveToPoint, narrate, placed, setEnabled, spotlight],
   );
+
+  // Keep the narration chip inside the viewport when the cursor works near the
+  // right or bottom edge (the operator panel docks there by default).
+  const viewportWidth = typeof window === "undefined" ? 1440 : window.innerWidth;
+  const viewportHeight = typeof window === "undefined" ? 900 : window.innerHeight;
+  const flipX = placed && pos.x > viewportWidth - 300;
+  const flipY = placed && pos.y > viewportHeight - 140;
 
   return (
     <AgentPresenceContext.Provider value={value}>
@@ -332,6 +346,9 @@ export function AgentPresenceProvider({ children }: { children: ReactNode }) {
             className="agent-cursor"
             data-visible={placed ? "true" : "false"}
             data-pressing={pressing ? "true" : "false"}
+            data-busy={busy ? "true" : "false"}
+            data-flip-x={flipX ? "true" : "false"}
+            data-flip-y={flipY ? "true" : "false"}
             style={placed ? { transform: `translate3d(${pos.x}px, ${pos.y}px, 0)` } : undefined}
           >
             <span className="agent-halo" />

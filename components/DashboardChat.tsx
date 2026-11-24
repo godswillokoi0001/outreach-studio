@@ -25,6 +25,7 @@ import {
   RotateCcw,
   Send,
   ShieldAlert,
+  ShieldCheck,
   Sparkles,
   Square,
   Trash2,
@@ -79,7 +80,11 @@ interface PendingConfirmation {
   model?: string;
 }
 
-const MAX_TOOL_ROUNDS = 8;
+// One request keeps running until the job is actually finished. Real work
+// (research → qualify → compose → review) needs dozens of model turns, so this
+// is only a runaway guard, not a place to stop and ask the operator.
+const MAX_TOOL_ROUNDS = 60;
+const CONFIRM_KEY = "agent-operator-confirm-risky";
 const RECENT_KEY = "agent-operator-recent";
 const DOCK_KEY = "agent-operator-dock";
 const RECENT_LIMIT = 40;
@@ -193,6 +198,30 @@ export function DashboardChat({
   const cursorEnabled = presence.enabled;
   const setCursorEnabled = presence.setEnabled;
   const setAgentBusy = presence.setBusy;
+
+  // Autopilot is the default: the operator runs the whole job. Operators who
+  // want a pause before external/irreversible actions can switch it back on.
+  const [confirmRisky, setConfirmRisky] = useState(() => {
+    if (typeof window === "undefined") return false;
+    return readStored<boolean>(CONFIRM_KEY) === true;
+  });
+  const confirmRiskyRef = useRef(confirmRisky);
+
+  const toggleConfirmRisky = () => {
+    const next = !confirmRiskyRef.current;
+    confirmRiskyRef.current = next;
+    setConfirmRisky(next);
+    try {
+      window.localStorage.setItem(CONFIRM_KEY, JSON.stringify(next));
+    } catch {
+      /* storage unavailable */
+    }
+    narrate(
+      next
+        ? "Confirmations on — I'll pause before sending, deleting or writing to Sheets."
+        : "Autopilot on — I won't stop to ask.",
+    );
+  };
 
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
@@ -433,6 +462,17 @@ export function DashboardChat({
     let workingHistory = [...contents];
     let round = startRound;
     let activeModel = model;
+    const narration: string[] = [];
+
+    // Keep the model's running commentary in the reply bubble so the operator
+    // reads what is happening instead of waiting on a silent panel.
+    const showNarration = (line: string) => {
+      const clean = line.trim();
+      if (!clean) return;
+      if (narration[narration.length - 1] === clean) return;
+      narration.push(clean);
+      updateAssistantMessage(assistantMsgId, (m) => ({ ...m, text: narration.join("\n\n") }));
+    };
 
     while (round < MAX_TOOL_ROUNDS) {
       if (cancelledRef.current) {
@@ -479,13 +519,16 @@ export function DashboardChat({
         activeModel = turn.modelUsed;
       }
       const modelContent = turn.modelContent;
+      if (turn.functionCalls.length > 0) {
+        showNarration(turn.text);
+      }
 
       if (turn.functionCalls.length === 0) {
         workingHistory = [...workingHistory, modelContent];
         historyRef.current = workingHistory;
         updateAssistantMessage(assistantMsgId, (m) => ({
           ...m,
-          text: turn.text || "Done.",
+          text: [...narration, turn.text.trim()].filter(Boolean).join("\n\n") || "Done.",
           modelUsed: turn.modelUsed,
           error: undefined,
           retryPrompt: undefined,
@@ -498,7 +541,7 @@ export function DashboardChat({
       const gatedCalls: AgentFunctionCall[] = [];
       for (const fc of turn.functionCalls) {
         const toolName = fc.name ?? "";
-        if (isConfirmationRequired(toolName, fc.args)) {
+        if (confirmRiskyRef.current && isConfirmationRequired(toolName, fc.args)) {
           gatedCalls.push(fc);
         } else {
           safeCalls.push(fc);
@@ -598,7 +641,7 @@ export function DashboardChat({
       ...m,
       text:
         m.text ||
-        "Completed the maximum batch of automated steps for this turn. Ask me to continue if you want me to run the next batch.",
+        `I reached this run's safety limit (${MAX_TOOL_ROUNDS} steps) before the job was fully done. Everything so far is saved — send "continue" and I'll pick up exactly where I stopped.`,
     }));
   };
 
@@ -766,8 +809,6 @@ export function DashboardChat({
     }
   };
 
-  if (!open || !hydrated) return null;
-
   const liveLine = busy
     ? statusLabel ?? "Working…"
     : pendingConfirm
@@ -775,6 +816,31 @@ export function DashboardChat({
       : live
         ? liveNote ?? "Watching your workspace"
         : "Monitoring paused";
+
+  if (!hydrated) return null;
+
+  // Closing the panel must not hide a run that is still going: keep a compact
+  // progress chip on screen until the operator stops it or the job finishes.
+  if (!open) {
+    if (!busy) return null;
+    return (
+      <div className="agent-mini" role="status" aria-live="polite" aria-label="AI Operator is working">
+        <span className="agent-mini-spinner" aria-hidden="true" />
+        <span className="agent-mini-text">{liveLine}</span>
+        <span className="agent-mini-elapsed">{elapsed}s</span>
+        <button
+          type="button"
+          className="btn btn-sm"
+          onClick={() => {
+            cancelledRef.current = true;
+          }}
+        >
+          <Square size={11} />
+          <span>Stop</span>
+        </button>
+      </div>
+    );
+  }
 
   return (
     <motion.div
@@ -818,6 +884,21 @@ export function DashboardChat({
           </div>
         </div>
         <div className="row" style={{ gap: 2 }}>
+          <button
+            type="button"
+            className="btn btn-sm btn-ghost chat-toggle-btn"
+            data-on={confirmRisky ? "true" : "false"}
+            onClick={toggleConfirmRisky}
+            title={
+              confirmRisky
+                ? "Ask me before sending, deleting or writing to Sheets (on)"
+                : "Autopilot: run risky actions without asking (click to require confirmation)"
+            }
+            aria-label={confirmRisky ? "Turn off action confirmations" : "Require confirmation for risky actions"}
+            aria-pressed={confirmRisky}
+          >
+            {confirmRisky ? <ShieldAlert size={13} /> : <ShieldCheck size={13} />}
+          </button>
           <button
             type="button"
             className="btn btn-sm btn-ghost chat-toggle-btn"
@@ -974,7 +1055,7 @@ export function DashboardChat({
             <div className="chat-safety-note">
               <ShieldAlert size={13} />
               <span>
-                Sending emails, approving drafts, deleting leads, and writing to Sheets always ask for your confirmation first.
+                Autopilot runs the whole job without stopping. Use the shield button above if you want a pause before sending emails, deleting leads or writing to Sheets.
               </span>
             </div>
           </div>

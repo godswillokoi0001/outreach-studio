@@ -2,13 +2,14 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { ArrowRight, MoreHorizontal, Sparkles } from "lucide-react";
+import { ArrowRight, MoreHorizontal, Sparkles, UserPlus } from "lucide-react";
 import { useAuth } from "@/components/AuthProvider";
 import { BatchRunner } from "@/components/Runner";
 import { LoadingPanel, Skeleton } from "@/components/Loading";
 import { Badge, Banner, Card, Empty, Field } from "@/components/ui";
 import { authedPost, errorMessage } from "@/lib/client";
 import {
+  addLeadsToCampaign,
   assignLeadsToCampaign,
   createCampaign,
   deleteCampaign,
@@ -258,6 +259,26 @@ export default function CampaignsPage() {
     }
   };
 
+  const addProspects = async (campaignId: string, leadIds: string[]) => {
+    if (leadIds.length === 0) return;
+    setBusy(`${campaignId}:add`);
+    setFailure(null);
+    setNotice(null);
+    try {
+      const moved = await addLeadsToCampaign(user.uid, campaignId, leadIds);
+      setNotice(
+        moved
+          ? `Added ${moved} prospect${moved === 1 ? "" : "s"} to this campaign. New ones are queued, so research can run now.`
+          : "Those prospects are already in this campaign.",
+      );
+      await reload();
+    } catch (err) {
+      setFailure(errorMessage(err));
+    } finally {
+      setBusy(null);
+    }
+  };
+
   const act = async (
     campaign: Campaign,
     action: "approve" | "pause" | "resume" | "unarchive" | "archive" | "complete" | "delete" | "assign",
@@ -449,7 +470,9 @@ export default function CampaignsPage() {
                   campaign={selected}
                   busy={busy}
                   prospects={leads.filter((lead) => lead.campaign_id === selected.id)}
+                  allLeads={leads}
                   onAct={act}
+                  onAddLeads={addProspects}
                   onDone={reload}
                 />
               </section>
@@ -464,18 +487,40 @@ export default function CampaignsPage() {
 function CampaignDetail({
   campaign,
   prospects,
+  allLeads,
   busy,
   onAct,
+  onAddLeads,
   onDone,
 }: {
   campaign: Enriched;
   prospects: Lead[];
+  allLeads: Lead[];
   busy: string | null;
   onAct: (campaign: Campaign, action: "approve" | "pause" | "resume" | "unarchive" | "archive" | "complete" | "delete" | "assign") => Promise<void>;
+  onAddLeads: (campaignId: string, leadIds: string[]) => Promise<void>;
   onDone: () => void | Promise<void>;
 }) {
   const c = campaign;
   const next = c.next;
+
+  const [picking, setPicking] = useState(false);
+  const [pickQuery, setPickQuery] = useState("");
+  const [picked, setPicked] = useState<string[]>([]);
+
+  const candidates = useMemo(() => {
+    const q = pickQuery.trim().toLowerCase();
+    return allLeads
+      .filter((lead) => lead.campaign_id !== c.id)
+      .filter((lead) => {
+        if (!q) return true;
+        const hay = `${lead.business ?? ""} ${lead.contact_name ?? ""} ${lead.email ?? ""} ${lead.industry ?? ""} ${lead.location ?? ""}`;
+        return hay.toLowerCase().includes(q);
+      })
+      .sort((a, b) =>
+        (a.business || a.email || "").localeCompare(b.business || b.email || ""),
+      );
+  }, [allLeads, c.id, pickQuery]);
 
   const stages = [
     {
@@ -619,6 +664,102 @@ function CampaignDetail({
           <NextAction next={next} campaignId={c.id} busy={busy} onAct={onAct} campaign={c} onDone={onDone} />
           {eta && <span className="next-eta">{eta} · you can stop any time</span>}
         </div>
+      </div>
+
+      <div className="add-prospects">
+        <div className="add-prospects-head">
+          <div>
+            <div className="detail-sub">Add prospects to this campaign</div>
+            <div className="tiny">
+              Pick any lead by hand, including prospects parked in another campaign. New ones join the research
+              queue; contacted ones keep their stage so nobody is emailed twice.
+            </div>
+          </div>
+          <button
+            type="button"
+            className="btn btn-sm"
+            onClick={() => setPicking((open) => !open)}
+            disabled={busy !== null}
+          >
+            <UserPlus size={13} />
+            <span>{picking ? "Close picker" : "Choose prospects"}</span>
+          </button>
+        </div>
+
+        {picking && (
+          <div className="add-prospects-body">
+            <input
+              className="input"
+              placeholder="Search business, email, contact, industry or location"
+              value={pickQuery}
+              onChange={(e) => setPickQuery(e.target.value)}
+            />
+            <div className="pick-list">
+              {candidates.length === 0 ? (
+                <div className="tiny" style={{ padding: "10px 12px" }}>
+                  Every prospect is already in this campaign.
+                </div>
+              ) : (
+                candidates.slice(0, 60).map((lead) => {
+                  const checked = picked.includes(lead.id);
+                  return (
+                    <label key={lead.id} className="pick-row" data-checked={checked}>
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() =>
+                          setPicked((prev) =>
+                            prev.includes(lead.id)
+                              ? prev.filter((id) => id !== lead.id)
+                              : [...prev, lead.id],
+                          )
+                        }
+                      />
+                      <span className="pick-main">
+                        <span className="pick-name">
+                          {lead.business || lead.email || lead.website || "Unnamed prospect"}
+                        </span>
+                        <span className="pick-meta">
+                          {[
+                            lead.email,
+                            lead.industry,
+                            label(lead.status),
+                            lead.campaign_id ? "in another campaign" : "unassigned",
+                          ]
+                            .filter(Boolean)
+                            .join(" · ")}
+                        </span>
+                      </span>
+                    </label>
+                  );
+                })
+              )}
+            </div>
+            <div className="row" style={{ marginTop: 10 }}>
+              <button
+                type="button"
+                className="btn btn-sm btn-primary"
+                disabled={picked.length === 0 || busy !== null}
+                onClick={() =>
+                  void onAddLeads(c.id, picked).then(() => {
+                    setPicked([]);
+                    setPicking(false);
+                  })
+                }
+              >
+                Add {picked.length || ""} to campaign
+              </button>
+              {picked.length > 0 && (
+                <button type="button" className="btn btn-sm btn-ghost" onClick={() => setPicked([])}>
+                  Clear
+                </button>
+              )}
+              <span className="tiny row-end">
+                {candidates.length} available{candidates.length > 60 ? " · showing first 60" : ""}
+              </span>
+            </div>
+          </div>
+        )}
       </div>
 
       <div className="detail-links">

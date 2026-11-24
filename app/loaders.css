@@ -294,6 +294,36 @@
 .next-side { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
 .next-eta { font-size: 10.6px; color: var(--muted); }
 
+.add-prospects { padding: 0 20px 16px; }
+.add-prospects-head {
+  display: flex; align-items: flex-start; justify-content: space-between;
+  gap: 12px; flex-wrap: wrap;
+}
+.add-prospects-head .btn { flex: none; }
+.add-prospects-head .detail-sub { margin-bottom: 3px; }
+.add-prospects-body { margin-top: 10px; display: flex; flex-direction: column; gap: 8px; }
+.pick-list {
+  max-height: 250px; overflow-y: auto;
+  border: 1px solid var(--line-soft); border-radius: 10px; background: var(--surface);
+}
+.pick-row {
+  display: flex; align-items: flex-start; gap: 9px; padding: 8px 12px;
+  border-bottom: 1px solid var(--line-soft); cursor: pointer; font-size: 12.4px;
+}
+.pick-row:last-child { border-bottom: none; }
+.pick-row:hover { background: #f7f6f1; }
+.pick-row[data-checked="true"] { background: rgba(38, 122, 94, 0.08); }
+.pick-row input { margin-top: 2px; flex: none; }
+.pick-main { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.pick-name {
+  font-weight: 500; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.pick-meta {
+  font-size: 11.2px; color: var(--muted); min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
 .detail-links {
   display: flex; gap: 6px 14px; flex-wrap: wrap; align-items: center;
   padding: 0 20px 16px; font-size: 12.2px;

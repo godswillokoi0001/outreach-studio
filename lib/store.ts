@@ -843,6 +843,35 @@ export async function assignLeadsToCampaign(
   return matching.length;
 }
 
+export async function addLeadsToCampaign(
+  uid: string,
+  campaignId: string,
+  leadIds: string[],
+): Promise<number> {
+  if (leadIds.length === 0) return 0;
+  const leads = await listLeads(uid);
+  const wanted = new Set(leadIds.map((id) => String(id)));
+  const moving = leads.filter((lead) => wanted.has(lead.id) && lead.campaign_id !== campaignId);
+
+  for (const lead of moving) {
+    const path = `users/${uid}/leads/${lead.id}`;
+    // A brand-new prospect starts at the research queue; anything already
+    // researched or contacted keeps its stage so it is never emailed twice,
+    // but it now belongs to this campaign.
+    const queued = lead.status === "new";
+    try {
+      await updateDoc(doc(db, "users", uid, "leads", lead.id), {
+        campaign_id: campaignId,
+        ...(queued ? { status: "queued_research" as LeadStatus } : {}),
+        updatedAt: serverTimestamp(),
+      });
+    } catch (err) {
+      handleFirestoreError(err, OperationType.UPDATE, path);
+    }
+  }
+  return moving.length;
+}
+
 export async function updateLeadFields(
   uid: string,
   id: string,
