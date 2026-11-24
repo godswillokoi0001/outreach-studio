@@ -259,12 +259,13 @@ export default function CampaignsPage() {
 
   const act = async (
     campaign: Campaign,
-    action: "approve" | "pause" | "resume" | "archive" | "assign",
+    action: "approve" | "pause" | "resume" | "unarchive" | "archive" | "complete" | "delete",
   ) => {
     const confirmations: Record<string, string> = {
       approve:
         "Approve this campaign? Research, writing and sending become available. Each email still needs your approval before it leaves.",
       pause: "Pause this campaign? Nothing is researched or sent until you resume.",
+      unarchive: "Unarchive this campaign? It returns to your active list.",
       archive: "Archive this campaign? It stops appearing in your active list.",
     };
     if (confirmations[action] && !window.confirm(confirmations[action])) return;
@@ -279,6 +280,9 @@ export default function CampaignsPage() {
             ? `Added ${assigned} unprocessed prospect${assigned === 1 ? "" : "s"} to ${campaign.name}.`
             : "No matching unprocessed prospects were found.",
         );
+      } else if (action === "delete") {
+        await deleteCampaign(user.uid, campaign.id);
+        setNotice(`Campaign "${campaign.name}" deleted.`);
       } else {
         await updateCampaignAction(user.uid, campaign.id, action);
       }
@@ -466,7 +470,7 @@ function CampaignDetail({
   campaign: Enriched;
   prospects: Lead[];
   busy: string | null;
-  onAct: (campaign: Campaign, action: "approve" | "pause" | "resume" | "archive" | "assign") => Promise<void>;
+  onAct: (campaign: Campaign, action: "approve" | "pause" | "resume" | "unarchive" | "archive" | "complete" | "delete") => Promise<void>;
   onDone: () => void | Promise<void>;
 }) {
   const c = campaign;
@@ -548,6 +552,35 @@ function CampaignDetail({
                   Pause campaign
                 </button>
               )}
+              {c.status === "archived" ? (
+                <button onClick={() => void onAct(c, "unarchive")} disabled={busy !== null} type="button">
+                  Unarchive campaign
+                </button>
+              ) : null}
+              {c.status !== "approved" && c.status !== "completed" && c.status !== "archived" && (
+                <button onClick={() => void onAct(c, "approve")} disabled={busy !== null} type="button">
+                  Approve campaign
+                </button>
+              )}
+              <div className="kebab-sep" />
+              {c.status === "paused" ? (
+                <button onClick={() => void onAct(c, "resume")} disabled={busy !== null} type="button">
+                  Resume campaign
+                </button>
+              ) : (
+                <button onClick={() => void onAct(c, "pause")} disabled={busy !== null} type="button">
+                  Pause campaign
+                </button>
+              )}
+              {c.status === "archived" ? (
+                <button className="danger"
+                  onClick={() => void onAct(c, "delete")}
+                  disabled={busy !== null}
+                  type="button"
+                >
+                  Delete campaign
+                </button>
+              ) : null}
               <div className="kebab-sep" />
               <button
                 className="danger"
@@ -661,7 +694,7 @@ function NextAction({
   campaignId: string;
   campaign: Campaign;
   busy: string | null;
-  onAct: (campaign: Campaign, action: "approve" | "pause" | "resume" | "archive" | "assign") => Promise<void>;
+  onAct: (campaign: Campaign, action: "approve" | "pause" | "resume" | "unarchive" | "archive" | "complete" | "delete") => Promise<void>;
   onDone: () => void | Promise<void>;
 }) {
   if (next.kind === "approve" || next.kind === "resume") {

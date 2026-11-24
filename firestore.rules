@@ -422,12 +422,8 @@ service cloud.firestore {
           hasValidParentUser(userId);
         allow update: if isOwner(userId) && isValidId(campaignId) &&
           isValidCampaign(incoming()) &&
-          existing().status != 'archived' &&
-          incoming().ownerId == existing().ownerId &&
-          incoming().createdAt == existing().createdAt &&
-          incoming().updatedAt is timestamp &&
           hasValidParentUser(userId) && (
-            // Action: Approve, pause, resume, complete, or archive campaign
+            // Action: Approve, pause, resume, unarchive, complete, or archive campaign
             incoming().diff(existing()).affectedKeys().hasOnly(['status', 'approved_at', 'updatedAt']) ||
             // Action: Update campaign configuration or sheet source
             incoming().diff(existing()).affectedKeys().hasOnly(['name', 'instruction', 'config', 'sheet_source', 'updatedAt'])

@@ -637,7 +637,7 @@ export async function createCampaign(
 export async function updateCampaignAction(
   uid: string,
   id: string,
-  action: "approve" | "pause" | "resume" | "archive" | "complete",
+  action: "approve" | "pause" | "resume" | "unarchive" | "archive" | "complete",
 ): Promise<void> {
   const path = `users/${uid}/campaigns/${id}`;
   const ref = doc(db, "users", uid, "campaigns", id);
@@ -649,14 +649,30 @@ export async function updateCampaignAction(
       await updateDoc(ref, { status: "paused", updatedAt: serverTimestamp() });
     } else if (action === "resume") {
       await updateDoc(ref, { status: "approved", updatedAt: serverTimestamp() });
-    } else if (action === "complete") {
-      await updateDoc(ref, { status: "completed", updatedAt: serverTimestamp() });
+    } else if (action === "unarchive") {
+      await updateDoc(ref, { status: "approved", updatedAt: serverTimestamp() });
     } else if (action === "archive") {
       await updateDoc(ref, { status: "archived", updatedAt: serverTimestamp() });
+    } else if (action === "complete") {
+      await updateDoc(ref, { status: "completed", updatedAt: serverTimestamp() });
     }
     await writeAuditLog(uid, `campaign_${action}`, "campaign", id);
   } catch (err) {
     handleFirestoreError(err, OperationType.UPDATE, path);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Delete campaign
+// ---------------------------------------------------------------------------
+
+export async function deleteCampaign(uid: string, id: string): Promise<void> {
+  const path = `users/${uid}/campaigns/${id}`;
+  try {
+    await deleteDoc(doc(db, "users", uid, "campaigns", id));
+    await writeAuditLog(uid, "campaign_deleted", "campaign", id);
+  } catch (err) {
+    handleFirestoreError(err, OperationType.DELETE, path);
   }
 }
 
