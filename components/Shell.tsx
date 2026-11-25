@@ -154,14 +154,12 @@ function ShellInner({ children }: { children: ReactNode }) {
   }, [user?.uid]);
 
   // Open tracking: tell the operator the moment a sent email is read.
+  // The subscriber only emits events newer than its last snapshot, so we do
+  // not need a manual baseline skip here.
   useEffect(() => {
     if (!user?.uid) return;
-    let baseline = true;
     const unsub = subscribeOpenEvents(user.uid, (events) => {
-      if (baseline) {
-        baseline = false;
-        return;
-      }
+      if (events.length === 0) return;
       pushSignal({
         kind: "open",
         title: "An email was just opened",

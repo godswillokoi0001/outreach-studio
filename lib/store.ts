@@ -1426,30 +1426,59 @@ export async function listOpenEvents(uid: string): Promise<EmailOpen[]> {
     const snap = await getDocs(query(collection(db, path), where("ownerId", "==", uid)));
     return snap.docs
       .map((d) => mapOpen(d.id, d.data()))
-      .sort((a, b) => b.opened_at.localeCompare(a.opened_at));
+      .sort((a, b) => a.opened_at.localeCompare(b.opened_at))
+      .slice();
   } catch (err) {
-    // A missing `tracking` rule or a brand-new account should not break the
-    // dashboard, so treat read failures as "no opens recorded yet".
-    if (err instanceof Error && /permission|insufficient/i.test(err.message)) return [];
     handleDataError(err, OperationType.LIST, path);
+    return [];
   }
 }
 
+/**
+ * Subscribes to new email-open events for `uid`.
+ *
+ * The underlying store has no push subscriptions, so the listener polls
+ * `/api/data?table=email_opens` every 15s and replays the full result each
+ * tick. To avoid re-firing old opens, the subscriber keeps the most recent
+ * snapshot and only emits events strictly newer than that snapshot.
+ */
 export function subscribeOpenEvents(
   uid: string,
-  onChange: (events: EmailOpen[]) => void,
+  onOpen: (events: EmailOpen[]) => void,
 ): () => void {
-  return onSnapshot(
-    query(collection(db, "tracking"), where("ownerId", "==", uid)),
-    (snap) => onChange(snap.docs.map((d) => mapOpen(d.id, d.data()))),
-    (err) => {
-      if (err instanceof Error && /permission|insufficient/i.test(err.message)) {
-        onChange([]);
-        return;
-      }
-      handleDataError(err, OperationType.LIST, "tracking");
-    },
-  );
+  let last: EmailOpen[] = [];
+  let active = true;
+
+  const tick = () => {
+    if (!active) return;
+    getDocs(query(collection(db, "tracking"), where("ownerId", "==", uid)))
+      .then((snap) =>
+        snap.docs
+          .map((d) => mapOpen(d.id, d.data()))
+          .sort((a, b) => a.opened_at.localeCompare(b.opened_at)),
+      )
+      .then((current) => {
+        if (!active) return;
+
+        // Only emit events newer than what we last handed to the caller.
+        const cutoff = last.length ? last[last.length - 1].opened_at : "";
+        const next = current.filter((e) => e.opened_at > cutoff);
+        last = current;
+        if (next.length) onOpen(next);
+      })
+      .catch((err) => {
+        if (active) handleDataError(err, OperationType.LIST, "tracking");
+      });
+  };
+
+  // Prime the baseline immediately, then poll.
+  tick();
+  const timer = setInterval(tick, 15_000);
+
+  return () => {
+    active = false;
+    clearInterval(timer);
+  };
 }
 
 export async function loadDashboardBundle(uid: string) {

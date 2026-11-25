@@ -25,6 +25,10 @@ interface GmailMessagePayload {
   };
 }
 
+function isInsufficientScopeError(errMsg: string): boolean {
+  return /insufficient authentication scopes/i.test(errMsg);
+}
+
 async function gmailFetch<T>(token: string, path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${GMAIL_API}${path}`, {
     ...init,
@@ -42,11 +46,30 @@ async function gmailFetch<T>(token: string, path: string, init?: RequestInit): P
     json = null;
   }
   if (!res.ok) {
-    const errMsg =
+    const rawErrMsg =
       json && typeof json === "object" && "error" in json
         ? String((json as { error?: { message?: string } }).error?.message ?? `Gmail API error (${res.status})`)
         : `Gmail request failed (${res.status}).`;
-    throw new Error(errMsg);
+
+    // The app cannot force Google to re-grant scopes to an existing refresh
+    // token, so the only recovery path for a scope-short token is to drop the
+    // in-memory workspace token for this session and ask the user to
+    // reconnect. The reconnect route (/api/google/connect -> /api/google/
+    // callback -> exchangeCode) already requests `gmail.send`, so a fresh
+    // consent round will give a correctly-scoped token.
+    if (res.status === 403 && isInsufficientScopeError(rawErrMsg)) {
+      const { clearWorkspaceToken } = await import("@/lib/workspace-token");
+      try {
+        clearWorkspaceToken();
+      } catch {
+        /* best-effort: the token cache is in-process only */
+      }
+      throw new Error(
+        "Gmail cannot send because this Google connection was granted without send permission. Reconnect Gmail and Sheets from Settings → Integrations to re-grant the send scope.",
+      );
+    }
+
+    throw new Error(rawErrMsg);
   }
   return json as T;
 }
