@@ -1,0 +1,523 @@
+/* ==========================================================================
+   Knowrevo — dark theme
+   Loaded after every other layer. Only tokens and the few surfaces that
+   hard-code white are re-declared; everything else follows the tokens.
+   Palette stays on brand: navy structure, teal accent, no off-brand hues.
+   ========================================================================== */
+
+html[data-theme="dark"] {
+  color-scheme: dark;
+
+  --bg: #06121e;
+  --surface: #0b1a29;
+  --surface-2: #0f2133;
+  --surface-3: #132940;
+  --sidebar: #040e18;
+  --sidebar-line: rgba(255, 255, 255, 0.07);
+
+  --ink: #eef5fa;
+  --ink-2: #c6d5e2;
+  --muted: #93a8bb;
+
+  --line: #1c3145;
+  --line-soft: #16283a;
+
+  --accent: #dbe9f4;
+  --accent-2: #ffffff;
+  --accent-soft: rgba(32, 204, 200, 0.14);
+  --teal: #20ccc8;
+  --teal-deep: #6fe3df;
+  --teal-soft: rgba(32, 204, 200, 0.14);
+
+  --gold: #6fe3df;
+  --ok: #5fd6b4;
+  --ok-soft: rgba(95, 214, 180, 0.14);
+  --warn: #f0b866;
+  --warn-soft: rgba(240, 184, 102, 0.14);
+  --bad: #f4908a;
+  --bad-soft: rgba(244, 144, 138, 0.14);
+  --info: #93bdf0;
+  --info-soft: rgba(147, 189, 240, 0.14);
+
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 18px 44px -34px rgba(0, 0, 0, 0.9);
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.35);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.35);
+  --shadow-md: 0 1px 2px rgba(0, 0, 0, 0.4), 0 14px 30px -24px rgba(0, 0, 0, 0.9);
+  --shadow-lg: 0 34px 74px -48px rgba(0, 0, 0, 0.95);
+
+  /* Public site tokens */
+  --site-ink: #eef5fa;
+  --site-ink-2: #c6d5e2;
+  --site-muted: #93a8bb;
+  --site-line: #1c3145;
+  --site-band: #0b1a29;
+}
+
+html[data-theme="dark"] body {
+  background:
+    radial-gradient(1100px 560px at 8% -10%, rgba(32, 204, 200, 0.09), rgba(32, 204, 200, 0) 60%),
+    radial-gradient(900px 520px at 100% 0%, rgba(32, 204, 200, 0.05), rgba(8, 22, 37, 0) 55%),
+    var(--bg);
+  color: var(--ink);
+}
+
+html[data-theme="dark"] ::selection {
+  background: rgba(32, 204, 200, 0.32);
+  color: #041018;
+}
+
+html[data-theme="dark"] ::-webkit-scrollbar-thumb {
+  background: #24384c;
+  background-clip: content-box;
+}
+html[data-theme="dark"] ::-webkit-scrollbar-thumb:hover {
+  background: #2f4a63;
+  background-clip: content-box;
+}
+
+/* ---------- chrome ------------------------------------------------------- */
+
+html[data-theme="dark"] .topbar {
+  background: rgba(6, 18, 30, 0.88);
+  border-bottom-color: var(--line);
+  backdrop-filter: saturate(140%) blur(14px);
+}
+
+html[data-theme="dark"] .user-chip,
+html[data-theme="dark"] .landing-nav-actions .btn-ghost:hover,
+html[data-theme="dark"] .mock-window {
+  background: var(--surface);
+  border-color: var(--line);
+  color: var(--ink-2);
+}
+
+html[data-theme="dark"] .card,
+html[data-theme="dark"] .panel,
+html[data-theme="dark"] .modal,
+html[data-theme="dark"] .drawer,
+html[data-theme="dark"] .popover,
+html[data-theme="dark"] .menu,
+html[data-theme="dark"] .sheet {
+  background: var(--surface);
+  border-color: var(--line);
+  color: var(--ink);
+}
+
+html[data-theme="dark"] .btn {
+  background: var(--surface-2);
+  border-color: var(--line);
+  color: var(--ink);
+}
+html[data-theme="dark"] .btn:hover {
+  background: var(--surface-3);
+  border-color: #27425c;
+}
+html[data-theme="dark"] .btn-primary {
+  background: #e9f2f8;
+  border-color: #e9f2f8;
+  color: #081625;
+}
+html[data-theme="dark"] .btn-primary:hover {
+  background: #ffffff;
+  border-color: #ffffff;
+  color: #081625;
+}
+html[data-theme="dark"] .btn-secondary {
+  background: rgba(32, 204, 200, 0.16);
+  border-color: rgba(32, 204, 200, 0.34);
+  color: #9ff1ee;
+}
+html[data-theme="dark"] .btn-ghost {
+  background: transparent;
+  border-color: transparent;
+  color: var(--ink-2);
+}
+html[data-theme="dark"] .btn-ghost:hover {
+  background: var(--surface-2);
+  color: var(--ink);
+}
+html[data-theme="dark"] .btn-danger {
+  background: rgba(244, 144, 138, 0.14);
+  border-color: rgba(244, 144, 138, 0.32);
+  color: #ffb4af;
+}
+
+/* ---------- forms -------------------------------------------------------- */
+
+html[data-theme="dark"] input,
+html[data-theme="dark"] textarea,
+html[data-theme="dark"] select,
+html[data-theme="dark"] .field input,
+html[data-theme="dark"] .field textarea,
+html[data-theme="dark"] .field select {
+  background: var(--surface-2);
+  border-color: var(--line);
+  color: var(--ink);
+}
+html[data-theme="dark"] input::placeholder,
+html[data-theme="dark"] textarea::placeholder {
+  color: #6f879c;
+}
+html[data-theme="dark"] input:focus,
+html[data-theme="dark"] textarea:focus,
+html[data-theme="dark"] select:focus {
+  border-color: rgba(32, 204, 200, 0.55);
+  box-shadow: 0 0 0 3px rgba(32, 204, 200, 0.14);
+}
+
+/* ---------- tables, badges, lists ---------------------------------------- */
+
+html[data-theme="dark"] .table-wrap {
+  background: var(--surface);
+  border-color: var(--line);
+}
+html[data-theme="dark"] .table-wrap table th {
+  background: var(--surface-2);
+  color: var(--muted);
+  border-bottom-color: var(--line);
+}
+html[data-theme="dark"] .table-wrap table td {
+  border-bottom-color: var(--line-soft);
+  color: var(--ink-2);
+}
+html[data-theme="dark"] .table-wrap table tr:hover td {
+  background: rgba(32, 204, 200, 0.05);
+}
+
+html[data-theme="dark"] .badge {
+  background: var(--surface-2);
+  border-color: var(--line);
+  color: var(--ink-2);
+}
+html[data-theme="dark"] .badge[data-tone="ok"] {
+  background: var(--ok-soft);
+  border-color: rgba(95, 214, 180, 0.32);
+  color: var(--ok);
+}
+html[data-theme="dark"] .badge[data-tone="warn"] {
+  background: var(--warn-soft);
+  border-color: rgba(240, 184, 102, 0.32);
+  color: var(--warn);
+}
+html[data-theme="dark"] .badge[data-tone="bad"] {
+  background: var(--bad-soft);
+  border-color: rgba(244, 144, 138, 0.32);
+  color: var(--bad);
+}
+html[data-theme="dark"] .badge[data-tone="info"] {
+  background: var(--info-soft);
+  border-color: rgba(147, 189, 240, 0.32);
+  color: var(--info);
+}
+
+/* Empty states and banners ship light-theme backgrounds/text in globals.css;
+   without these they stay white-on-white inside a dark card. */
+html[data-theme="dark"] .empty {
+  background: var(--surface-2);
+  background-image: none;
+  border-color: var(--line);
+  color: var(--muted);
+}
+html[data-theme="dark"] .empty strong {
+  color: var(--ink);
+}
+html[data-theme="dark"] .empty a {
+  color: var(--teal);
+}
+html[data-theme="dark"] .empty-icon {
+  background: var(--surface);
+  border-color: var(--line);
+}
+
+html[data-theme="dark"] .banner {
+  background: var(--surface-2);
+  border-color: var(--line);
+}
+html[data-theme="dark"] .banner[data-tone="ok"] {
+  background: var(--ok-soft);
+  border-color: rgba(95, 214, 180, 0.32);
+  color: var(--ok);
+}
+html[data-theme="dark"] .banner[data-tone="warn"] {
+  background: var(--warn-soft);
+  border-color: rgba(240, 184, 102, 0.32);
+  color: var(--warn);
+}
+html[data-theme="dark"] .banner[data-tone="bad"] {
+  background: var(--bad-soft);
+  border-color: rgba(244, 144, 138, 0.32);
+  color: var(--bad);
+}
+html[data-theme="dark"] .banner[data-tone="info"] {
+  background: var(--info-soft);
+  border-color: rgba(147, 189, 240, 0.32);
+  color: var(--info);
+}
+
+/* ---------- dashboard surfaces ------------------------------------------- */
+
+html[data-theme="dark"] .wk-kpi,
+html[data-theme="dark"] .wk-row,
+html[data-theme="dark"] .wk-setup-step {
+  background: var(--surface);
+  border-color: var(--line);
+}
+html[data-theme="dark"] .wk-row:hover,
+html[data-theme="dark"] .wk-setup-step:hover {
+  background: var(--surface-2);
+  border-color: #27425c;
+}
+html[data-theme="dark"] .wk-bar-track {
+  background: var(--surface-2);
+}
+html[data-theme="dark"] .wk-chart-bar {
+  background: linear-gradient(180deg, rgba(32, 204, 200, 0.85), rgba(32, 204, 200, 0.32));
+}
+
+/* ---------- loading, skeletons, operator --------------------------------- */
+
+html[data-theme="dark"] .skel {
+  background: linear-gradient(90deg, var(--surface-2) 25%, var(--surface-3) 37%, var(--surface-2) 63%);
+  background-size: 400% 100%;
+}
+html[data-theme="dark"] .load-panel,
+html[data-theme="dark"] .taskdock-item,
+html[data-theme="dark"] .signal-toast,
+html[data-theme="dark"] .agent-label {
+  background: var(--surface);
+  border-color: var(--line);
+  color: var(--ink);
+}
+html[data-theme="dark"] .agent-label-text {
+  color: var(--ink-2);
+}
+
+html[data-theme="dark"] .chat-panel,
+html[data-theme="dark"] .chat-window,
+html[data-theme="dark"] .chat-dock,
+html[data-theme="dark"] .agent-dock {
+  background: var(--surface);
+  border-color: var(--line);
+}
+html[data-theme="dark"] .chat-bubble.assistant,
+html[data-theme="dark"] .chat-msg.assistant {
+  background: var(--surface-2);
+  border-color: var(--line);
+  color: var(--ink);
+}
+html[data-theme="dark"] .chat-bubble.user,
+html[data-theme="dark"] .chat-msg.user {
+  background: rgba(32, 204, 200, 0.16);
+  border-color: rgba(32, 204, 200, 0.3);
+  color: #e6fffd;
+}
+
+/* ---------- public site -------------------------------------------------- */
+
+html[data-theme="dark"] .site {
+  background: var(--bg);
+  color: var(--site-ink);
+}
+html[data-theme="dark"] .site-nav {
+  background: rgba(6, 18, 30, 0.86);
+  border-bottom-color: var(--line);
+}
+html[data-theme="dark"] .site-nav a,
+html[data-theme="dark"] .site-links a {
+  color: var(--site-ink-2);
+}
+html[data-theme="dark"] .site-links a:hover {
+  color: var(--site-ink);
+}
+html[data-theme="dark"] .site-band,
+html[data-theme="dark"] .site-section-alt {
+  background: var(--surface);
+}
+html[data-theme="dark"] .site-card,
+html[data-theme="dark"] .site-preview,
+html[data-theme="dark"] .pv-frame,
+html[data-theme="dark"] .site-quote,
+html[data-theme="dark"] .site-footer {
+  background: var(--surface);
+  border-color: var(--line);
+  color: var(--site-ink);
+}
+html[data-theme="dark"] .site-preview *,
+html[data-theme="dark"] .pv-body,
+html[data-theme="dark"] .pv-main {
+  border-color: var(--line);
+}
+html[data-theme="dark"] .site-hero h1,
+html[data-theme="dark"] .site h1,
+html[data-theme="dark"] .site h2,
+html[data-theme="dark"] .site h3 {
+  color: var(--site-ink);
+}
+html[data-theme="dark"] .site-lede,
+html[data-theme="dark"] .site p {
+  color: var(--site-ink-2);
+}
+
+/* Authentication screens */
+html[data-theme="dark"] .auth-shell {
+  background: var(--bg);
+}
+html[data-theme="dark"] .login-panel,
+html[data-theme="dark"] .auth-card {
+  background: var(--surface);
+  border-color: var(--line);
+  color: var(--ink);
+}
+html[data-theme="dark"] .legal-page {
+  background: var(--bg);
+  color: var(--ink);
+}
+html[data-theme="dark"] .legal-content,
+html[data-theme="dark"] .legal-toc,
+html[data-theme="dark"] .legal-contact {
+  background: var(--surface);
+  border-color: var(--line);
+}
+
+/* ---------- theme toggle -------------------------------------------------- */
+
+.theme-toggle {
+  position: relative;
+  display: inline-flex;
+}
+.theme-toggle-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 32px;
+  padding: 0 10px;
+  border-radius: 9px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--ink-2);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+  transition: background var(--transition), color var(--transition), border-color var(--transition);
+}
+.theme-toggle-btn:hover {
+  background: var(--surface-2);
+  color: var(--ink);
+  border-color: #cfdae6;
+}
+html[data-theme="dark"] .theme-toggle-btn:hover {
+  border-color: #2b4763;
+}
+.theme-toggle-btn:focus-visible {
+  outline: 2px solid var(--color-teal);
+  outline-offset: 2px;
+}
+.theme-menu {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 80;
+  min-width: 168px;
+  padding: 6px;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  box-shadow: var(--shadow-md);
+  display: grid;
+  gap: 2px;
+}
+.theme-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 8px 9px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ink-2);
+  font: inherit;
+  font-size: 12.8px;
+  text-align: left;
+  cursor: pointer;
+}
+.theme-menu-item:hover {
+  background: var(--surface-2);
+  color: var(--ink);
+}
+.theme-menu-item.is-active {
+  color: var(--ink);
+  font-weight: 600;
+}
+.theme-menu-item em {
+  font-style: normal;
+  font-size: 11px;
+  color: var(--muted);
+  text-transform: capitalize;
+}
+.theme-check {
+  margin-left: auto;
+  color: var(--teal-deep);
+}
+html[data-theme="dark"] .theme-check {
+  color: var(--teal);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .theme-toggle-btn {
+    transition: none;
+  }
+}
+
+/* Landing preview window: keep it on the dark surface so its copy stays legible */
+html[data-theme="dark"] .pv-frame,
+html[data-theme="dark"] .pv-bar,
+html[data-theme="dark"] .pv-body,
+html[data-theme="dark"] .pv-main,
+html[data-theme="dark"] .pv-side,
+html[data-theme="dark"] .pv-card,
+html[data-theme="dark"] .pv-stat,
+html[data-theme="dark"] .pv-panel {
+  background: var(--surface);
+  border-color: var(--line);
+  color: var(--ink-2);
+}
+html[data-theme="dark"] .pv-side-item.is-active {
+  background: var(--surface-2);
+  color: var(--ink);
+}
+html[data-theme="dark"] .pv-title,
+html[data-theme="dark"] .pv-heading,
+html[data-theme="dark"] .pv-stat-value,
+html[data-theme="dark"] .pv-card-title {
+  color: var(--ink);
+}
+html[data-theme="dark"] .pv-stat-value,
+html[data-theme="dark"] .pv-card-title,
+html[data-theme="dark"] .pv-title {
+  text-shadow: none;
+}
+
+html[data-theme="dark"] .pv-row strong,
+html[data-theme="dark"] .pv-metric b,
+html[data-theme="dark"] .pv-bar-name,
+html[data-theme="dark"] .pv-list-head span,
+html[data-theme="dark"] .pv-head strong {
+  color: var(--ink);
+}
+html[data-theme="dark"] .pv-row span,
+html[data-theme="dark"] .pv-list-meta,
+html[data-theme="dark"] .pv-eyebrow,
+html[data-theme="dark"] .pv-note,
+html[data-theme="dark"] .pv-metric span {
+  color: var(--muted);
+}
+html[data-theme="dark"] .pv-row b,
+html[data-theme="dark"] .pv-pill {
+  color: var(--teal);
+}
+
+.theme-menu-item em {
+  margin-left: 5px;
+  margin-right: auto;
+}

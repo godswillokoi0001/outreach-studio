@@ -1,11 +1,15 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowRight, MoreHorizontal, Plus, UserPlus } from "lucide-react";
 import { useAuth } from "@/components/AuthProvider";
 import { BatchRunner } from "@/components/Runner";
+import { CriteriaForm } from "@/components/CriteriaForm";
+import { LocationPicker } from "@/components/LocationPicker";
 import { LoadingPanel, Skeleton } from "@/components/Loading";
+import { DEFAULT_CRITERIA, INDUSTRY_OPTIONS, criteriaToFocus, type ResearchCriteria } from "@/lib/criteria";
+import { EMPTY_GEO, geoSummary, rememberLocation, type GeoSelection } from "@/lib/geo";
 import { Badge, Banner, Card, Empty, Field } from "@/components/ui";
 import { authedPost, errorMessage } from "@/lib/client";
 import {
@@ -70,12 +74,15 @@ export default function CampaignsPage() {
   const [error, setError] = useState<string | null>(null);
 
   const [instruction, setInstruction] = useState("");
+  const [criteria, setCriteria] = useState<ResearchCriteria>(DEFAULT_CRITERIA);
+  const [geo, setGeo] = useState<GeoSelection>(EMPTY_GEO);
   const [plan, setPlan] = useState<Plan | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
   const [plannerOpen, setPlannerOpen] = useState(false);
   const [selectedId, setSelectedId] = useState("");
+  const fullInstructionRef = useRef("");
 
   const reload = useCallback(async () => {
     setLoading(true);
@@ -157,7 +164,7 @@ export default function CampaignsPage() {
   const selected = enriched.find((c) => c.id === selectedId) ?? enriched[0] ?? null;
 
   const makePlan = async () => {
-    if (instruction.trim().length < 8) return;
+    if (instruction.trim().length < 8 && !criteria.industry) return;
     setBusy("plan");
     setFailure(null);
     setNotice(null);
@@ -172,8 +179,18 @@ export default function CampaignsPage() {
         byStatus[l.status] = (byStatus[l.status] ?? 0) + 1;
         if (l.industry?.trim()) industrySet.add(l.industry.trim());
       }
+      const brief = criteriaToFocus(criteria);
+      const locationBrief = geoSummary(geo);
+      const fullInstruction = [
+        instruction.trim() || `Build the strongest campaign for ${criteria.industry || "my best-fit prospects"}.`,
+        brief ? `STRUCTURED BRIEF\n${brief}` : "",
+        locationBrief ? `Target location: ${locationBrief}` : "",
+      ]
+        .filter(Boolean)
+        .join("\n\n");
+      fullInstructionRef.current = fullInstruction;
       const result = await authedPost<{ plan: Plan }>("/api/ai/plan", {
-        instruction,
+        instruction: fullInstruction,
         settings,
         knowledge,
         availableLeads: {
@@ -184,6 +201,7 @@ export default function CampaignsPage() {
         recentCampaigns: campaigns.slice(0, 8).map((c) => ({ name: c.name, status: c.status })),
         model: settings.model,
       });
+      rememberLocation(geo);
       setPlan(result.plan);
     } catch (err) {
       setFailure(errorMessage(err));
@@ -200,7 +218,7 @@ export default function CampaignsPage() {
       let importedCount = 0;
       const campaign = await createCampaign(user.uid, {
         name: plan.name,
-        instruction,
+        instruction: fullInstructionRef.current || instruction,
         config: {
           ...plan.config,
           summary: plan.summary,
@@ -346,20 +364,32 @@ export default function CampaignsPage() {
         {plannerOpen && (
           <Card
             title="Describe the outcome"
-            sub="Plain English is enough. Gemini turns it into a plan you can edit before anything runs."
+            sub="Pick the brief with fixed options, or say it in plain English. Either way you edit the plan before anything runs."
           >
-            <textarea
-              className="textarea"
-              value={instruction}
-              onChange={(e) => setInstruction(e.target.value)}
-              placeholder="e.g. Use my sheet, research the first 25 churches, and prepare emails about website redesign for the strongest opportunities."
-              rows={3}
-            />
+            <div className="discover-inputs">
+              <LocationPicker value={geo} onChange={setGeo} title="Target location" />
+              <CriteriaForm
+                value={criteria}
+                onChange={setCriteria}
+                uid={user.uid}
+                busy={busy !== null}
+              />
+            </div>
+            <div style={{ marginTop: 12 }}>
+              <textarea
+                className="textarea"
+                value={instruction}
+                onChange={(e) => setInstruction(e.target.value)}
+                placeholder="Optional extra context — e.g. use my sheet, only churches with a Facebook page and no website."
+                rows={3}
+                aria-label="Campaign instruction"
+              />
+            </div>
             <div className="row" style={{ marginTop: 10 }}>
               <button
                 className="btn btn-primary"
                 onClick={() => void makePlan()}
-                disabled={busy !== null || instruction.trim().length < 8}
+                disabled={busy !== null || (instruction.trim().length < 8 && !criteria.industry)}
                 type="button"
               >
                 {busy === "plan" ? "Planning…" : "Build my plan"}
@@ -994,11 +1024,21 @@ function ConfigEditor({
         <input className="input" value={config.objective} onChange={(e) => set("objective", e.target.value)} />
       </Field>
       <Field label="Target industry">
-        <input
-          className="input"
+        <select
+          className="select"
           value={config.target_industry}
           onChange={(e) => set("target_industry", e.target.value)}
-        />
+        >
+          <option value="">Any industry</option>
+          {INDUSTRY_OPTIONS.map((industry) => (
+            <option key={industry} value={industry}>
+              {industry}
+            </option>
+          ))}
+          {config.target_industry && !INDUSTRY_OPTIONS.includes(config.target_industry) ? (
+            <option value={config.target_industry}>{config.target_industry}</option>
+          ) : null}
+        </select>
       </Field>
       <Field label="Services (comma separated)">
         <input

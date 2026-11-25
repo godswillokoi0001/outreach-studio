@@ -1,75 +1,114 @@
 /**
- * Knowrevo symbol — the geometric K from the brand sheet.
+ * Brand components.
  *
- * Three strokes on a 100 × 81 grid: a navy stem, a teal upper arm and a navy
- * lower arch. The mark is drawn wider than tall, so the height follows the
- * width and the shape never distorts.
+ * These render the supplied Knowrevo artwork exactly as delivered — the mark,
+ * the horizontal lockups and the app icons are the original PNG files in
+ * public/brand (resized only, never redrawn or traced).
+ *
+ * Tone picks the artwork for the surface behind it:
+ *   brand → follows the theme (navy mark on light, white mark on dark)
+ *   dark  → always the white + teal mark, for the navy sidebar
  */
-const NAVY = "#081625";
-const TEAL = "#20CCC8";
 
-export function MarkGlyph({ structure }: { structure: string }) {
+const MARK_LIGHT = "/brand/knowrevo-mark.png";
+const MARK_DARK = "/brand/knowrevo-mark-dark.png";
+const LOCKUP_LIGHT = "/brand/knowrevo-logo.png";
+const LOCKUP_DARK = "/brand/knowrevo-logo-dark.png";
+
+export type BrandTone = "brand" | "dark";
+
+/** Both variants are rendered; CSS shows the one that matches the theme. */
+function Swap({
+  light,
+  dark,
+  height,
+  alt,
+  className,
+}: {
+  light: string;
+  dark: string;
+  height: number;
+  alt: string;
+  className: string;
+}) {
   return (
-    <>
-      {/* Stem: rounded shoulder, straight left edge, cut on the same diagonal as the arm. */}
-      <path d="M33 0H19C8.5 0 0 8.5 0 19v25l33-25Z" fill={structure} />
-      {/* Upper arm: teal parallelogram with a soft outer tip. */}
-      <path
-        d="M35.55 23.81Q32.8 25.8 36.2 25.8H59Q61.6 25.8 63.75 24.35L98.67 0.89Q100 0 98.4 0H70.7Q68.5 0 66.72 1.29Z"
-        fill={TEAL}
+    <span className="brand-swap">
+      <img
+        src={light}
+        alt={alt}
+        className={`${className} brand-swap-light`}
+        style={{ height }}
+        decoding="async"
       />
-      {/* Lower arch: left foot, rounded apex, long leg tapering to the right point. */}
-      <path
-        d="M0 56.2Q0 54.7 1.45 54.31L37.14 44.64Q41 43.6 44.39 45.72L98.98 79.86Q100 80.5 98.8 80.5H60.2Q59 80.5 58.16 79.65L43.11 64.43Q41 62.3 38.66 64.17L19.14 79.75Q18.2 80.5 17 80.5H4Q0 80.5 0 76.5Z"
-        fill={structure}
+      <img
+        src={dark}
+        alt={alt}
+        aria-hidden="true"
+        className={`${className} brand-swap-dark`}
+        style={{ height }}
+        decoding="async"
       />
-    </>
+    </span>
   );
 }
 
 export function BrandMark({
-  size = 30,
+  size = 26,
   tone = "brand",
   className,
 }: {
   size?: number;
-  /** brand = navy + teal on light surfaces; dark = white + teal on navy. */
-  tone?: "brand" | "dark";
+  tone?: BrandTone;
   className?: string;
 }) {
-  const structure = tone === "dark" ? "#FFFFFF" : NAVY;
-
+  if (tone === "dark") {
+    return (
+      <img
+        src={MARK_DARK}
+        alt=""
+        aria-hidden="true"
+        className={`brand-glyph${className ? ` ${className}` : ""}`}
+        style={{ height: size, width: "auto" }}
+        decoding="async"
+      />
+    );
+  }
   return (
-    <svg
-      width={size}
-      height={Math.round(size * 81) / 100}
-      viewBox="0 0 100 81"
-      className={className ? `brand-symbol ${className}` : "brand-symbol"}
-      role="img"
-      aria-label="Knowrevo"
-      focusable="false"
-    >
-      <MarkGlyph structure={structure} />
-    </svg>
+    <Swap
+      light={MARK_LIGHT}
+      dark={MARK_DARK}
+      height={size}
+      alt=""
+      className={`brand-glyph${className ? ` ${className}` : ""}`}
+    />
   );
 }
 
 export function BrandLockup({
+  size = 22,
   tone = "brand",
-  size = 30,
   subtitle,
+  className,
 }: {
-  tone?: "brand" | "dark";
   size?: number;
+  tone?: BrandTone;
   subtitle?: string;
+  className?: string;
 }) {
   return (
-    <span className="brand-lockup">
-      <BrandMark size={size} tone={tone} />
-      <span className="brand-lockup-copy">
-        <span className="brand-lockup-name">Knowrevo</span>
-        {subtitle ? <span className="brand-lockup-sub">{subtitle}</span> : null}
-      </span>
+    <span className={`brand-lockup${tone === "dark" ? " brand-lockup-dark" : ""}${className ? ` ${className}` : ""}`}>
+      {tone === "dark" ? (
+        <img
+          src={LOCKUP_DARK}
+          alt="Knowrevo"
+          className="brand-lockup-img"
+          style={{ height: size }}
+          decoding="async"
+        />
+      ) : (
+        <Swap light={LOCKUP_LIGHT} dark={LOCKUP_DARK} height={size} alt="Knowrevo" className="brand-lockup-img" />
+      )}
+      {subtitle ? <span className="brand-lockup-sub">{subtitle}</span> : null}
     </span>
   );
 }

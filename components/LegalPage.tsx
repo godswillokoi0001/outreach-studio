@@ -22,7 +22,7 @@ export function LegalPage({
       <header className="legal-topbar">
         <Link className="legal-brand" href="/">
           <span className="brand-mark" aria-hidden="true">
-            <img src="/brand/knowrevo-icon-t.png" alt="" />
+            <img src="/brand/knowrevo-icon-192.png" alt="" />
           </span>
           <span>Knowrevo</span>
         </Link>

@@ -13,6 +13,7 @@ export async function POST(req: NextRequest) {
       location?: string;
       count?: number;
       focus?: string;
+      knowledge?: string;
       model?: string;
     };
     const count = Math.max(3, Math.min(20, Number(body.count) || 8));
@@ -22,6 +23,7 @@ export async function POST(req: NextRequest) {
         location: String(body.location ?? ""),
         count,
         focus: String(body.focus ?? ""),
+        knowledge: String(body.knowledge ?? ""),
         model: body.model,
       }),
     );

@@ -732,6 +732,13 @@ tbody tr:hover td {
   color: var(--ink);
   font-size: 13px;
   font-weight: 600;
+  /* Only the title (first child) is a block; emphasis inside the copy stays
+     inline so sentences do not break onto three lines. */
+  display: inline;
+}
+.empty > strong:first-child {
+  display: block;
+  margin-bottom: 5px;
 }
 .empty-icon {
   border-radius: 10px;

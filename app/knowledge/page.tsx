@@ -1,9 +1,10 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { FileUp, Loader2, Paperclip } from "lucide-react";
+import { FileUp, Paperclip } from "lucide-react";
 import { useAuth } from "@/components/AuthProvider";
 import { Badge, Banner, Card, Empty, Field, Progress } from "@/components/ui";
+import { BrandLoader } from "@/components/BrandLoader";
 import { authedUpload, errorMessage } from "@/lib/client";
 import {
   addKnowledgeSource,
@@ -294,7 +295,7 @@ Rules: Never discount below $2,000. Always mention the 3-week timeline.`}
               }}
             >
               <span className="upload-icon">
-                {uploading ? <Loader2 size={18} className="spin-icon" /> : <FileUp size={18} />}
+                {uploading ? <BrandLoader variant="inline" size={18} /> : <FileUp size={18} />}
               </span>
               <div className="upload-copy">
                 <strong>{uploading ? `Reading ${uploading}…` : "Drop files here, or choose them"}</strong>

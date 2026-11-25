@@ -226,6 +226,30 @@ Rules:
   });
 }
 
+export interface DiscoveryContact {
+  decision_maker: string;
+  role: string;
+  email: string;
+  phone: string;
+  whatsapp: string;
+  address: string;
+  socials: { platform: string; url: string }[];
+  sources: { field: string; url: string; confidence: "high" | "medium" | "low" }[];
+}
+
+export interface DiscoveryIssue {
+  area: string;
+  problem: string;
+  evidence: string;
+  severity: "high" | "medium" | "low";
+}
+
+export interface DiscoveryHelp {
+  issue: string;
+  service: string;
+  angle: string;
+}
+
 export interface DiscoveryCandidate {
   business: string;
   website: string;
@@ -233,6 +257,9 @@ export interface DiscoveryCandidate {
   industry: string;
   why: string;
   source_url: string;
+  contact: DiscoveryContact;
+  issues: DiscoveryIssue[];
+  how_we_help: DiscoveryHelp[];
 }
 
 export async function discoverProspectsServer(input: {
@@ -240,27 +267,39 @@ export async function discoverProspectsServer(input: {
   location: string;
   count: number;
   focus: string;
+  knowledge?: string;
   model?: string;
 }): Promise<{ candidates: DiscoveryCandidate[]; notes: string; groundingUrls: { uri: string; title: string }[] }> {
-  const system = `You find real businesses that could plausibly need web design, redesign, branding or video services, using Google Search.
+  const system = `You find real businesses that could plausibly need web design, redesign, branding, SEO or video services, using Google Search.
 
 Rules:
 - Only list real, currently operating businesses you found in search results.
 - Every candidate needs a source_url from the search results. If you cannot verify a website, leave website empty rather than guessing.
-- Do not invent contact emails, revenue, staff counts or website problems.
+- NEVER invent an email, phone number, address, person, social profile or website problem. If a detail is not visible in the search results, return an empty string for it (or an empty array). The interface prints "Not found" for empty fields.
+- Every contact detail you do return must appear in "contact.sources" with the URL it came from and a confidence level: high (the business's own site or official profile), medium (a directory or news mention), low (aggregator or unverified).
+- "issues" is a concrete audit: only things you can see or strongly infer from the search results (no website, social-page-only presence, no SSL, no mobile viewport, broken/placeholder content, outdated copyright year, no booking/contact form, few or poor reviews, inactive social profiles, thin content, missing SEO basics). Every issue needs the evidence you saw.
+- "how_we_help" maps each issue to one service the sender actually sells (from the knowledge base when given) with a short tailored angle. Never invent an offer or a price.
 - "why" is one sentence on the plausible digital gap, phrased as something to verify.
-- Return at most ${input.count} candidates.
-- Output strictly valid JSON matching: {"candidates":[{"business":string,"website":string,"location":string,"industry":string,"why":string,"source_url":string}],"notes":string}`;
+- Return at most ${input.count} candidates, each a different business.
+- Output strictly valid JSON:
+{"candidates":[{"business":string,"website":string,"location":string,"industry":string,"why":string,"source_url":string,"contact":{"decision_maker":string,"role":string,"email":string,"phone":string,"whatsapp":string,"address":string,"socials":[{"platform":string,"url":string}],"sources":[{"field":string,"url":string,"confidence":"high"|"medium"|"low"}]},"issues":[{"area":string,"problem":string,"evidence":string,"severity":"high"|"medium"|"low"}],"how_we_help":[{"issue":string,"service":string,"angle":string}]}],"notes":string}`;
 
   const user = `Find ${input.count} realistic prospects.
 Industry/segment: ${input.industry || "any business with a weak or missing website"}
 Location: ${input.location || "Nigeria"}
 Additional focus: ${input.focus || "(none)"}
+${input.knowledge ? `\nBUSINESS KNOWLEDGE BASE (source of truth for services, offers and how we help)\n${input.knowledge.slice(0, 6000)}` : ""}
 
-Return ONLY valid JSON with a "candidates" array and short "notes" about how reliable the results are.`;
+Return ONLY valid JSON with a "candidates" array and short "notes" about how reliable the results are and which fields could not be verified.`;
+
+  const cacheKey = JSON.stringify([input.industry, input.location, input.count, input.focus]);
+  const cached = discoveryCache.get(cacheKey);
+  if (cached && Date.now() - cached.at < DISCOVERY_CACHE_MS) {
+    return cached.value;
+  }
 
   const { data, groundingUrls } = await geminiGroundedJSON<{
-    candidates: DiscoveryCandidate[];
+    candidates: unknown[];
     notes: string;
   }>({
     system,
@@ -268,9 +307,109 @@ Return ONLY valid JSON with a "candidates" array and short "notes" about how rel
     model: input.model,
   });
 
-  return {
-    candidates: Array.isArray(data.candidates) ? data.candidates : [],
+  const seen = new Set<string>();
+  const candidates = (Array.isArray(data.candidates) ? data.candidates : [])
+    .map((raw) => normalizeCandidate(raw))
+    .filter((candidate) => {
+      const key = (candidate.website || candidate.business).toLowerCase().replace(/^https?:\/\//, "").replace(/\/+$/, "");
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return Boolean(candidate.business);
+    })
+    .slice(0, input.count);
+
+  const value = {
+    candidates,
     notes: typeof data.notes === "string" ? data.notes : "",
     groundingUrls,
+  };
+  discoveryCache.set(cacheKey, { at: Date.now(), value });
+  return value;
+}
+
+/** Cached for a few minutes so re-running the same search costs nothing. */
+const discoveryCache = new Map<string, {
+  at: number;
+  value: { candidates: DiscoveryCandidate[]; notes: string; groundingUrls: { uri: string; title: string }[] };
+}>();
+const DISCOVERY_CACHE_MS = 10 * 60 * 1000;
+
+function text(value: unknown, max = 400): string {
+  return typeof value === "string" ? value.trim().slice(0, max) : "";
+}
+
+function confidence(value: unknown): "high" | "medium" | "low" {
+  return value === "high" || value === "medium" || value === "low" ? value : "low";
+}
+
+/** Shapes whatever the model returned into the interface's contract. */
+function normalizeCandidate(raw: unknown): DiscoveryCandidate {
+  const item = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+  const contact = (item.contact && typeof item.contact === "object" ? item.contact : {}) as Record<string, unknown>;
+
+  const socials = Array.isArray(contact.socials)
+    ? contact.socials
+        .map((social) => {
+          const entry = (social && typeof social === "object" ? social : {}) as Record<string, unknown>;
+          return { platform: text(entry.platform, 40), url: text(entry.url, 300) };
+        })
+        .filter((social) => social.url)
+        .slice(0, 8)
+    : [];
+
+  const sources = Array.isArray(contact.sources)
+    ? contact.sources
+        .map((source) => {
+          const entry = (source && typeof source === "object" ? source : {}) as Record<string, unknown>;
+          return { field: text(entry.field, 40), url: text(entry.url, 300), confidence: confidence(entry.confidence) };
+        })
+        .filter((source) => source.url)
+        .slice(0, 12)
+    : [];
+
+  const issues = Array.isArray(item.issues)
+    ? item.issues
+        .map((issue) => {
+          const entry = (issue && typeof issue === "object" ? issue : {}) as Record<string, unknown>;
+          return {
+            area: text(entry.area, 60),
+            problem: text(entry.problem, 300),
+            evidence: text(entry.evidence, 300),
+            severity: confidence(entry.severity),
+          };
+        })
+        .filter((issue) => issue.problem)
+        .slice(0, 8)
+    : [];
+
+  const howWeHelp = Array.isArray(item.how_we_help)
+    ? item.how_we_help
+        .map((help) => {
+          const entry = (help && typeof help === "object" ? help : {}) as Record<string, unknown>;
+          return { issue: text(entry.issue, 200), service: text(entry.service, 120), angle: text(entry.angle, 300) };
+        })
+        .filter((help) => help.service)
+        .slice(0, 8)
+    : [];
+
+  return {
+    business: text(item.business, 200),
+    website: text(item.website, 300),
+    location: text(item.location, 200),
+    industry: text(item.industry, 120),
+    why: text(item.why, 400),
+    source_url: text(item.source_url, 400),
+    contact: {
+      decision_maker: text(contact.decision_maker, 120),
+      role: text(contact.role, 120),
+      email: text(contact.email, 200),
+      phone: text(contact.phone, 60),
+      whatsapp: text(contact.whatsapp, 60),
+      address: text(contact.address, 300),
+      socials,
+      sources,
+    },
+    issues,
+    how_we_help: howWeHelp,
   };
 }

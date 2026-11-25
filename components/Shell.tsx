@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   BarChart3,
+  Bell,
   BookOpen,
   CheckCircle2,
   CheckSquare,
@@ -13,8 +14,9 @@ import {
   Flag,
   LayoutGrid,
   LogOut,
-  Menu,
+  Menu as MenuIcon,
   MessageSquare,
+  MoreHorizontal,
   MousePointer2,
   MousePointerClick,
   PanelLeftClose,
@@ -34,6 +36,9 @@ import { subscribeBadgeCounts, subscribeOpenEvents } from "@/lib/store";
 import { runSendBatch, runSyncBatch } from "@/lib/pipeline-client";
 import { useAuth } from "./AuthProvider";
 import { BrandLockup } from "./BrandMark";
+import { BrandLoader } from "./BrandLoader";
+import { Menu, MenuItem, MenuSeparator } from "./Menu";
+import { ThemeToggle } from "./ThemeToggle";
 import { DashboardChat } from "./DashboardChat";
 import { AgentPresenceProvider } from "./AgentPresence";
 import { TaskDockProvider, useTaskDock } from "./Loading";
@@ -335,16 +340,17 @@ function ShellInner({ children }: { children: ReactNode }) {
         onClick={() => setOpen(false)}
       />
 
-      <div className="main" data-refresh={refreshKey}>
+      <div className="main" data-refresh={refreshKey} data-agent-page>
         <header className="topbar">
           <button
-            className="btn btn-sm menu-btn"
+            className="topbar-burger"
             onClick={() => setOpen((v) => !v)}
             type="button"
-            aria-label="Toggle navigation"
+            aria-label={open ? "Close navigation" : "Open navigation"}
+            aria-expanded={open}
+            title="Navigation"
           >
-            <Menu size={15} />
-            <span>Menu</span>
+            <MenuIcon size={17} />
           </button>
           <div className="topbar-crumb">
             <span className="topbar-crumb-muted">Knowrevo</span>
@@ -353,7 +359,13 @@ function ShellInner({ children }: { children: ReactNode }) {
           </div>
           <div className="topbar-spacer" />
           <div className="topbar-actions">
-            {syncNote && <span className="tiny" style={{ maxWidth: 240 }}>{syncNote}</span>}
+            {syncNote ? (
+              <span className="topbar-note" title={syncNote}>
+                {syncNote}
+              </span>
+            ) : null}
+
+            <div className="topbar-group" aria-label="Workspace actions">
             {workspaceToken ? (
               <span
                 className="badge"
@@ -364,8 +376,8 @@ function ShellInner({ children }: { children: ReactNode }) {
                     : `Connected${workspaceEmail ? ` as ${workspaceEmail}` : ""} for this session`
                 }
               >
-                <CheckCircle2 size={12} />
-                <span className="nowrap">
+                <CheckCircle2 size={12} aria-hidden="true" />
+                <span className="nowrap topbar-collapse">
                   {workspaceEmail ? workspaceEmail.split("@")[0] : "Google"} connected
                 </span>
               </span>
@@ -376,41 +388,125 @@ function ShellInner({ children }: { children: ReactNode }) {
                 type="button"
                 title="Grant Google Sheets and Gmail access"
               >
-                <Plug size={13} />
-                <span>Connect Google</span>
+                <Plug size={13} aria-hidden="true" />
+                <span className="topbar-collapse">Connect Google</span>
               </button>
             )}
-            <span className="topbar-sep" aria-hidden="true" />
-            <button
-              className={`btn btn-sm${chatOpen ? " btn-primary" : ""}`}
-              onClick={() => setChatOpen((v) => !v)}
-              type="button"
-              aria-pressed={chatOpen}
-              aria-label="Operator"
-              title="Operator"
-            >
-              <MousePointer2 size={13} />
-              <span>Operator</span>
-            </button>
-            <button
-              className="btn btn-sm"
-              onClick={() => void runSync()}
-              disabled={syncing}
-              type="button"
-              aria-label={syncing ? "Syncing replies" : "Sync replies"}
-              title="Sync replies from Gmail"
-            >
-              <RefreshCw size={13} className={syncing ? "spin-icon" : undefined} />
-              <span>{syncing ? "Syncing…" : "Sync"}</span>
-            </button>
-            <span className="topbar-sep" aria-hidden="true" />
-            <div className="user-chip" title={user.email ?? undefined}>
-              <span className="user-dot">{displayName.slice(0, 1).toUpperCase()}</span>
-              <span className="nowrap">{displayName}</span>
+              <button
+                className="btn btn-sm"
+                onClick={() => void runSync()}
+                disabled={syncing}
+                type="button"
+                aria-label={syncing ? "Syncing replies" : "Sync replies"}
+                title="Sync replies from Gmail"
+              >
+                {syncing ? <BrandLoader variant="button" size={13} /> : <RefreshCw size={13} aria-hidden="true" />}
+                <span className="topbar-collapse">{syncing ? "Syncing…" : "Sync"}</span>
+              </button>
+              <button
+                className={`btn btn-sm${chatOpen ? " btn-primary" : ""}`}
+                onClick={() => setChatOpen((v) => !v)}
+                type="button"
+                aria-pressed={chatOpen}
+                aria-label="Operator"
+                title="Operator"
+              >
+                <MousePointer2 size={13} aria-hidden="true" />
+                <span className="topbar-collapse">Operator</span>
+              </button>
             </div>
-            <button className="btn btn-sm btn-ghost" onClick={() => void signOut()} type="button" aria-label="Sign out">
-              <LogOut size={13} />
-            </button>
+
+            <span className="topbar-sep" aria-hidden="true" />
+
+            <div className="topbar-group" aria-label="Preferences">
+              <ThemeToggle compact />
+
+              <Menu
+                label={`Notifications${counts.review + counts.replies + counts.followups > 0 ? ` (${counts.review + counts.replies + counts.followups})` : ""}`}
+                trigger={
+                  <>
+                    <Bell size={16} aria-hidden="true" />
+                    {counts.review + counts.replies + counts.followups > 0 ? (
+                      <span className="menu-count">{counts.review + counts.replies + counts.followups}</span>
+                    ) : null}
+                  </>
+                }
+              >
+                {(close) => (
+                  <>
+                    <div className="menu-heading">Needs attention</div>
+                    <MenuItem href="/review" onClick={close} hint={counts.review ? String(counts.review) : "—"}>
+                      <CheckSquare size={14} aria-hidden="true" /> Emails to review
+                    </MenuItem>
+                    <MenuItem href="/conversations" onClick={close} hint={counts.replies ? String(counts.replies) : "—"}>
+                      <MessageSquare size={14} aria-hidden="true" /> Replies
+                    </MenuItem>
+                    <MenuItem href="/followups" onClick={close} hint={counts.followups ? String(counts.followups) : "—"}>
+                      <Clock size={14} aria-hidden="true" /> Follow-ups due
+                    </MenuItem>
+                  </>
+                )}
+              </Menu>
+
+              <Menu label="More actions" trigger={<MoreHorizontal size={17} aria-hidden="true" />}>
+                {(close) => (
+                  <>
+                    <MenuItem href="/integrations" onClick={close}>
+                      <Plug size={14} aria-hidden="true" /> Integrations
+                    </MenuItem>
+                    <MenuItem href="/settings" onClick={close}>
+                      <Settings size={14} aria-hidden="true" /> Settings
+                    </MenuItem>
+                    <MenuSeparator />
+                    <MenuItem
+                      onClick={() => {
+                        close();
+                        void runSync();
+                      }}
+                    >
+                      <RefreshCw size={14} aria-hidden="true" /> Sync replies
+                    </MenuItem>
+                    <MenuItem
+                      onClick={() => {
+                        close();
+                        void reconnectWorkspace();
+                      }}
+                    >
+                      <Plug size={14} aria-hidden="true" />
+                      {workspaceToken ? "Reconnect Google" : "Connect Google"}
+                    </MenuItem>
+                  </>
+                )}
+              </Menu>
+
+              <Menu
+                label="Account"
+                trigger={<span className="user-dot">{displayName.slice(0, 1).toUpperCase()}</span>}
+                panelClassName="menu-panel-account"
+              >
+                {(close) => (
+                  <>
+                    <div className="menu-account">
+                      <strong>{displayName}</strong>
+                      <span>{user.email}</span>
+                    </div>
+                    <MenuSeparator />
+                    <MenuItem href="/settings" onClick={close}>
+                      <Settings size={14} aria-hidden="true" /> Settings
+                    </MenuItem>
+                    <MenuItem
+                      tone="danger"
+                      onClick={() => {
+                        close();
+                        void signOut();
+                      }}
+                    >
+                      <LogOut size={14} aria-hidden="true" /> Sign out
+                    </MenuItem>
+                  </>
+                )}
+              </Menu>
+            </div>
           </div>
         </header>
 

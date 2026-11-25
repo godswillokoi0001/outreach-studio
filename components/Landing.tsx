@@ -9,6 +9,7 @@ import {
   ShieldCheck,
 } from "lucide-react";
 import { BrandLockup, BrandMark } from "./BrandMark";
+import { ThemeToggle } from "./ThemeToggle";
 
 const CAPABILITIES = [
   {
@@ -88,6 +89,7 @@ export function Landing({
           <a href="#security">Security</a>
         </nav>
         <div className="site-nav-actions">
+          <ThemeToggle compact />
           <button type="button" className="btn btn-ghost" onClick={onSignIn}>
             Sign in
           </button>

@@ -15,6 +15,7 @@ import {
   ShieldCheck,
 } from "lucide-react";
 import { BrandLockup } from "./BrandMark";
+import { ThemeToggle } from "./ThemeToggle";
 
 const PROOF_POINTS = [
   {
@@ -67,6 +68,7 @@ export function LoginGate({
     <main className="auth-shell">
       <div className="auth-top">
         <BrandLockup />
+        <ThemeToggle compact />
         {onBack && (
           <button type="button" className="btn btn-ghost auth-back" onClick={onBack}>
             <ArrowLeft size={14} />

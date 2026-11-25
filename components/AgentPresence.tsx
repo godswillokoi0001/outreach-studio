@@ -364,12 +364,12 @@ export function AgentPresenceProvider({ children }: { children: ReactNode }) {
               <defs>
                 <linearGradient id="agent-pointer-fill" x1="1" y1="0" x2="19" y2="26" gradientUnits="userSpaceOnUse">
                   <stop offset="0" stopColor="#ffffff" />
-                  <stop offset="0.55" stopColor="#e8f6ee" />
-                  <stop offset="1" stopColor="#b9dfcc" />
+                  <stop offset="0.55" stopColor="#dff8f7" />
+                  <stop offset="1" stopColor="#9fe8e6" />
                 </linearGradient>
                 <linearGradient id="agent-pointer-stroke" x1="1" y1="1" x2="19" y2="27" gradientUnits="userSpaceOnUse">
-                  <stop offset="0" stopColor="#2b7a5c" />
-                  <stop offset="1" stopColor="#0d3226" />
+                  <stop offset="0" stopColor="#20ccc8" />
+                  <stop offset="1" stopColor="#081625" />
                 </linearGradient>
               </defs>
               <path

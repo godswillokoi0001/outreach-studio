@@ -13,7 +13,7 @@ import {
 } from "@/lib/store";
 import { fmtDate } from "@/lib/format";
 import { DEFAULT_SETTINGS, type Settings, type Suppression } from "@/lib/types";
-import { AiEngineCard } from "@/components/AiEngineCard";
+import { ModelProvidersCard } from "@/components/ModelProvidersCard";
 
 export default function SettingsPage() {
   const { user } = useAuth();
@@ -160,12 +160,7 @@ export default function SettingsPage() {
 
         <div id="ai-engine">
           {!loading && (
-            <AiEngineCard
-              uid={user.uid}
-              settings={form}
-              onChange={(patch) => setForm((prev) => ({ ...prev, ...patch }))}
-              onSaved={(saved) => setForm(saved)}
-            />
+            <ModelProvidersCard uid={user.uid} settings={form} onSaved={(saved) => setForm(saved)} />
           )}
         </div>
 

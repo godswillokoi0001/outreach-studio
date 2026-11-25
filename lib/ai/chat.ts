@@ -259,7 +259,20 @@ function contentsToOpenAI(contents: AgentContent[]): Record<string, unknown>[] {
       .map((p) => p.text ?? "")
       .join("")
       .trim();
-    if (text) messages.push({ role: "user", content: text });
+    const images = parts
+      .map((p) => p.inlineData)
+      .filter((img): img is { mimeType: string; data: string } => Boolean(img && img.data && img.mimeType.startsWith("image/")));
+    if (images.length > 0) {
+      messages.push({
+        role: "user",
+        content: [
+          ...(text ? [{ type: "text", text }] : []),
+          ...images.map((img) => ({ type: "image_url", image_url: { url: `data:${img.mimeType};base64,${img.data}` } })),
+        ],
+      });
+    } else if (text) {
+      messages.push({ role: "user", content: text });
+    }
   }
 
   return messages;
@@ -321,6 +334,11 @@ function contentsToAnthropic(contents: AgentContent[]): { role: "user" | "assist
       .join("")
       .trim();
     if (text) blocks.push({ type: "text", text });
+    for (const img of parts
+      .map((p) => p.inlineData)
+      .filter((img): img is { mimeType: string; data: string } => Boolean(img && img.data && img.mimeType.startsWith("image/")))) {
+      blocks.push({ type: "image", source: { type: "base64", media_type: img.mimeType, data: img.data } });
+    }
     push("user", blocks);
   }
 

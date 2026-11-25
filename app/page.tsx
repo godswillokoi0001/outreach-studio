@@ -2,10 +2,10 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
-import { ArrowRight, ArrowUpRight, Check } from "lucide-react";
+import { ArrowRight, ArrowUpRight, Check, RotateCcw } from "lucide-react";
 import { useAuth } from "@/components/AuthProvider";
 import { Badge, Banner, Card, Empty, Stat } from "@/components/ui";
-import { LoadingPanel } from "@/components/Loading";
+import { BrandLoadingPanel } from "@/components/BrandLoader";
 import { CountUp } from "@/components/motion/CountUp";
 import { errorMessage } from "@/lib/client";
 import { loadDashboardBundle } from "@/lib/store";
@@ -194,7 +194,7 @@ export default function DashboardPage() {
 
       {loading && !data && (
         <div className="stack">
-          <LoadingPanel label="Preparing your workspace" estimateMs={2300} steps={LOAD_STEPS} />
+          <BrandLoadingPanel label="Preparing your workspace" steps={LOAD_STEPS} />
           <div className="skel" style={{ height: 120 }} />
           <div className="grid grid-auto">
             {[0, 1, 2, 3, 4].map((index) => (
@@ -245,50 +245,76 @@ export default function DashboardPage() {
             </div>
           </header>
 
-          <section className="wk-kpis rise rise-1" aria-label="Key numbers">
-            <div className="wk-kpi">
-              <div className="wk-kpi-label">Prospects</div>
-              <div className="wk-kpi-value">
-                <CountUp value={data.leads.total} />
-              </div>
-              <div className="wk-kpi-note">{data.leads.byStatus.new ?? 0} unprocessed</div>
-            </div>
-            <div className="wk-kpi">
-              <div className="wk-kpi-label">Qualified</div>
-              <div className="wk-kpi-value">
-                <CountUp value={data.leads.qualified} />
-              </div>
-              <div className="wk-kpi-note">{data.leads.disqualified} disqualified</div>
-            </div>
-            <div className="wk-kpi" data-accent={derived.pending ? "true" : undefined}>
-              <div className="wk-kpi-label">Awaiting approval</div>
-              <div className="wk-kpi-value">
-                <CountUp value={data.emails.pending} />
-              </div>
-              <div className="wk-kpi-note">{data.emails.generated} drafted</div>
-            </div>
-            <div className="wk-kpi">
-              <div className="wk-kpi-label">Opened</div>
-              <div className="wk-kpi-value">
-                <CountUp value={derived.openedMessages} />
-              </div>
-              <div className="wk-kpi-note">
-                {derived.opensToday > 0
-                  ? `${derived.opensToday} open${derived.opensToday === 1 ? "" : "s"} today`
-                  : `${derived.openRate}% of sends`}
+          <section className="wk-kpis rise rise-1" aria-label="Workspace overview">
+            <div className="wk-kpi-group">
+              <h2 className="wk-kpi-group-title">Pipeline</h2>
+              <div className="wk-kpi-grid">
+                <article className="wk-kpi">
+                  <div className="wk-kpi-label">Prospects</div>
+                  <div className="wk-kpi-value">
+                    <CountUp value={data.leads.total} />
+                  </div>
+                  <div className="wk-kpi-note">{data.leads.byStatus.new ?? 0} unprocessed</div>
+                </article>
+                <article className="wk-kpi">
+                  <div className="wk-kpi-label">Qualified</div>
+                  <div className="wk-kpi-value">
+                    <CountUp value={data.leads.qualified} />
+                  </div>
+                  <div className="wk-kpi-note">{data.leads.disqualified} disqualified</div>
+                </article>
               </div>
             </div>
-            <div className="wk-kpi">
-              <div className="wk-kpi-label">Reply rate</div>
-              <div className="wk-kpi-value">
-                <CountUp
-                  value={derived.replyRate}
-                  suffix="%"
-                  decimals={derived.replyRate % 1 === 0 ? 0 : 1}
-                />
+
+            <div className="wk-kpi-group">
+              <h2 className="wk-kpi-group-title">Outreach</h2>
+              <div className="wk-kpi-grid">
+                <article className="wk-kpi" data-accent={derived.pending ? "true" : undefined}>
+                  <div className="wk-kpi-label">Awaiting approval</div>
+                  <div className="wk-kpi-value">
+                    <CountUp value={data.emails.pending} />
+                  </div>
+                  <div className="wk-kpi-note">{data.emails.generated} drafted</div>
+                </article>
+                <article className="wk-kpi">
+                  <div className="wk-kpi-label">Sent</div>
+                  <div className="wk-kpi-value">
+                    <CountUp value={data.emails.sent} />
+                  </div>
+                  <div className="wk-kpi-note">
+                    {data.emails.failed ? `${data.emails.failed} failed` : "No failures"}
+                  </div>
+                </article>
               </div>
-              <div className="wk-kpi-note">
-                {data.replies.total} of {data.emails.sent} sent
+            </div>
+
+            <div className="wk-kpi-group">
+              <h2 className="wk-kpi-group-title">Performance</h2>
+              <div className="wk-kpi-grid">
+                <article className="wk-kpi">
+                  <div className="wk-kpi-label">Opened</div>
+                  <div className="wk-kpi-value">
+                    <CountUp value={derived.openedMessages} />
+                  </div>
+                  <div className="wk-kpi-note">
+                    {derived.opensToday > 0
+                      ? `${derived.opensToday} open${derived.opensToday === 1 ? "" : "s"} today`
+                      : `${derived.openRate}% of sends`}
+                  </div>
+                </article>
+                <article className="wk-kpi">
+                  <div className="wk-kpi-label">Reply rate</div>
+                  <div className="wk-kpi-value">
+                    <CountUp
+                      value={derived.replyRate}
+                      suffix="%"
+                      decimals={derived.replyRate % 1 === 0 ? 0 : 1}
+                    />
+                  </div>
+                  <div className="wk-kpi-note">
+                    {data.replies.total} of {data.emails.sent} sent
+                  </div>
+                </article>
               </div>
             </div>
           </section>
@@ -486,6 +512,20 @@ export default function DashboardPage() {
               )}
             </Card>
           </div>
+        </div>
+      )}
+
+      {!loading && !data && (
+        <div className="stack" style={{ marginTop: 18 }}>
+          <Empty title="This screen could not load">
+            The workspace data did not arrive. Check your connection and try again — nothing was changed.
+            <div className="row" style={{ marginTop: 12, justifyContent: "center" }}>
+              <button type="button" className="btn btn-sm" onClick={() => window.location.reload()}>
+                <RotateCcw size={13} aria-hidden="true" />
+                Try again
+              </button>
+            </div>
+          </Empty>
         </div>
       )}
     </main>

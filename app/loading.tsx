@@ -1,13 +1,13 @@
-import { LoadingPanel, Skeleton } from "@/components/Loading";
+import { BrandLoadingPanel } from "@/components/BrandLoader";
+import { Skeleton } from "@/components/Loading";
 
 export default function Loading() {
   return (
     <main className="page">
       <div className="stack">
-        <LoadingPanel
+        <BrandLoadingPanel
           label="Opening this page"
           hint="Fetching the latest records from your workspace."
-          estimateMs={1400}
           compact
         />
         <Skeleton height={44} width="42%" radius={10} />

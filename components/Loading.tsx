@@ -11,6 +11,7 @@ import {
   type ReactNode,
 } from "react";
 import { AnimatePresence, motion } from "framer-motion";
+import { BrandLoader } from "./BrandLoader";
 
 /* ------------------------------------------------------------------ *
  * Formatting helpers
@@ -110,7 +111,7 @@ export function LoadingPanel({
       aria-label={label}
     >
       <div className="load-head">
-        <span className="spinner" aria-hidden="true" />
+        <BrandLoader variant="inline" size={22} />
         <div className="load-copy">
           <div className="load-title">{label}</div>
           {hint && <div className="load-hint">{hint}</div>}

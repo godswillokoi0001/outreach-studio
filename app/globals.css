@@ -562,8 +562,8 @@ tr.clickable:hover td { background: #f8faf8; }
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: #6ee7b7;
-  box-shadow: 0 0 0 3px rgba(110, 231, 183, 0.18);
+  background: var(--teal, #20ccc8);
+  box-shadow: 0 0 0 3px rgba(32, 204, 200, 0.18);
   animation: agent-label-dot 1.6s ease-in-out infinite;
 }
 

@@ -24,6 +24,8 @@ export interface AgentFunctionCall {
 
 export interface AgentPart {
   text?: string;
+  /** Base64 media (image or audio) attached to a user turn. */
+  inlineData?: { mimeType: string; data: string };
   thought?: boolean;
   thoughtSignature?: string;
   functionCall?: AgentFunctionCall;
@@ -93,6 +95,14 @@ export function sanitizeAgentContents(contents: unknown, maxTurns = 24): AgentCo
                 : {},
           },
         });
+      } else if (part.inlineData && typeof part.inlineData === "object") {
+        const mimeType = String(part.inlineData.mimeType || "");
+        const data = String(part.inlineData.data || "");
+        const allowed = /^(image\/(png|jpe?g|webp|gif)|audio\/(webm|ogg|mpeg|mp4|wav|mp3|x-m4a))$/i.test(mimeType);
+        // 8 MB of base64 is ~6 MB of media: enough for a photo or a voice note.
+        if (allowed && data.length > 0 && data.length <= 8_000_000) {
+          parts.push({ inlineData: { mimeType, data } });
+        }
       } else if (typeof part.text === "string" || part.thoughtSignature) {
         parts.push({
           ...(typeof part.text === "string" ? { text: part.text } : {}),

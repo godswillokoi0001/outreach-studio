@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useAuth } from "@/components/AuthProvider";
 import { Banner, Card, Empty, Field } from "@/components/ui";
 import { LoadingPanel } from "@/components/Loading";
+import { BrandLoader } from "@/components/BrandLoader";
 import { authedPost, errorMessage } from "@/lib/client";
 import { LEAD_FIELDS } from "@/lib/columns";
 import { importSheetRows, listCampaigns } from "@/lib/store";
@@ -200,7 +201,14 @@ export default function SheetsPage() {
               disabled={!url || busy !== null}
               type="button"
             >
-              {busy === "tabs" ? "Loading…" : "Load worksheets"}
+              {busy === "tabs" ? (
+                <>
+                  <BrandLoader variant="inline" size={12} />
+                  <span>Loading worksheets…</span>
+                </>
+              ) : (
+                "Load worksheets"
+              )}
             </button>
           </div>
           {busy === "tabs" && (

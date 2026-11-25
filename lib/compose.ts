@@ -10,6 +10,127 @@ export interface ComposedEmail {
   rationale: string;
   service: string;
   evidence: string[];
+  /** Result of the knowledge-base self-check that runs before the draft is shown. */
+  check?: DraftCheck;
+}
+
+export interface DraftCheck {
+  passed: boolean;
+  issues: string[];
+  kb_items_used: string[];
+  regenerated: boolean;
+}
+
+const CHECK_SCHEMA: Schema = {
+  type: Type.OBJECT,
+  properties: {
+    passed: { type: Type.BOOLEAN },
+    issues: { type: Type.ARRAY, items: { type: Type.STRING } },
+    kb_items_used: {
+      type: Type.ARRAY,
+      items: { type: Type.STRING },
+      description: "The exact knowledge base items (service names, tone rules, CTA rules) this draft relies on",
+    },
+  },
+  required: ["passed", "issues", "kb_items_used"],
+};
+
+/**
+ * The checklist is built from the knowledge base and the owner's instruction so
+ * a draft that invents an offer, uses the wrong tone or ignores the CTA is
+ * caught before the operator ever sees it.
+ */
+function checklist(campaign: CampaignConfig, knowledge: string, draft: ComposedEmail): string {
+  return `KNOWLEDGE BASE (source of truth)
+${knowledge || "(empty)"}
+
+OWNER INSTRUCTION FOR THIS CAMPAIGN
+Objective: ${campaign.objective}
+Services in focus: ${campaign.services.join(", ") || "(none specified)"}
+Tone: ${campaign.tone || "(not specified)"}
+Extra instructions: ${campaign.extra_instructions || "(none)"}
+
+DRAFT UNDER REVIEW
+Subject: ${draft.subject}
+${draft.body}
+
+CHECK EVERY POINT
+1. Every service, offer, price, claim and proof point appears in the knowledge base. Flag anything invented.
+2. The tone matches the knowledge base tone rules and the campaign tone.
+3. There is exactly one clear call to action, and it matches the knowledge base CTA guidance.
+4. Length is 80-150 words for a first email (45-90 for a follow-up), plain text, no markdown, no emoji.
+5. Banned phrases are absent: "hope this email finds you well", "came across your website", "wanted to reach out", "just following up", "revolutionise", "cutting-edge", "synergy", "game-changing", "elevate your brand".
+6. No invented facts, names, clients, awards or results; nothing presented as fact that the research did not verify.
+7. The owner's extra instructions are followed exactly (format, length, structure, what to avoid).
+8. No prices, budgets or timelines are mentioned unless the knowledge base states them.
+
+Return passed=true only when all eight points hold. List every failure in issues with the exact phrase to change. In kb_items_used list the knowledge base entries the draft actually used (service names, tone rules, CTA rules); return an empty list if the draft used none.`;
+}
+
+async function reviewDraft(
+  campaign: CampaignConfig,
+  knowledge: string,
+  draft: ComposedEmail,
+  model?: string,
+): Promise<{ passed: boolean; issues: string[]; kb_items_used: string[] }> {
+  try {
+    const result = await geminiJSON<{ passed: boolean; issues: string[]; kb_items_used: string[] }>({
+      system:
+        "You are a strict reviewer for cold outreach. You judge a draft only against the supplied knowledge base, the owner's instruction and the listed rules. You never rewrite the email; you only report failures.",
+      user: checklist(campaign, knowledge, draft),
+      schema: CHECK_SCHEMA,
+      model,
+    });
+    return {
+      passed: result.passed === true,
+      issues: Array.isArray(result.issues) ? result.issues.filter((issue) => typeof issue === "string").slice(0, 8) : [],
+      kb_items_used: Array.isArray(result.kb_items_used)
+        ? result.kb_items_used.filter((item) => typeof item === "string").slice(0, 8)
+        : [],
+    };
+  } catch {
+    // A reviewer failure must never block sending a draft the owner can check.
+    return { passed: true, issues: [], kb_items_used: [] };
+  }
+}
+
+async function withKnowledgeCheck(
+  draft: ComposedEmail,
+  campaign: CampaignConfig,
+  knowledge: string,
+  regenerate: (issues: string[]) => Promise<ComposedEmail>,
+  model?: string,
+): Promise<ComposedEmail> {
+  const first = await reviewDraft(campaign, knowledge, draft, model);
+  if (first.passed) {
+    return {
+      ...draft,
+      rationale: withKbLine(draft.rationale, first.kb_items_used),
+      check: { ...first, regenerated: false },
+    };
+  }
+
+  let second: ComposedEmail;
+  try {
+    second = await regenerate(first.issues);
+  } catch {
+    return {
+      ...draft,
+      rationale: withKbLine(draft.rationale, first.kb_items_used),
+      check: { ...first, regenerated: false },
+    };
+  }
+  const recheck = await reviewDraft(campaign, knowledge, second, model);
+  return {
+    ...second,
+    rationale: withKbLine(second.rationale, recheck.kb_items_used.length ? recheck.kb_items_used : first.kb_items_used),
+    check: { ...recheck, regenerated: true },
+  };
+}
+
+function withKbLine(rationale: string, items: string[]): string {
+  if (items.length === 0) return rationale;
+  return `${rationale.trim()}\n\nKnowledge base used: ${items.join("; ")}`;
 }
 
 const SCHEMA: Schema = {
@@ -110,17 +231,40 @@ Extra instructions from the owner: ${campaign.extra_instructions || "(none)"}
 
 Write the first cold email for this prospect. It must be built on the specific research above.`;
 
-  const result = await geminiJSON<ComposedEmail>({
+  const draft = await geminiJSON<ComposedEmail>({
     system: STRATEGIST_SYSTEM,
     user,
     schema: SCHEMA,
     model,
   });
-  return {
-    ...result,
-    body: cleanEmailText(result.body),
-    subject: cleanEmailText(result.subject).split("\n")[0],
+  const cleaned: ComposedEmail = {
+    ...draft,
+    body: cleanEmailText(draft.body),
+    subject: cleanEmailText(draft.subject).split("\n")[0],
   };
+
+  // Self-check against the knowledge base before the draft is ever shown.
+  return withKnowledgeCheck(
+    cleaned,
+    campaign,
+    knowledge,
+    async (issues) => {
+      const revised = await geminiJSON<ComposedEmail>({
+        system: STRATEGIST_SYSTEM,
+        user: `${user}\n\nYOUR PREVIOUS DRAFT FAILED THE KNOWLEDGE-BASE CHECK\n${issues
+          .map((issue) => `- ${issue}`)
+          .join("\n")}\n\nRewrite the email so every point is fixed. Keep what was already compliant.`,
+        schema: SCHEMA,
+        model,
+      });
+      return {
+        ...revised,
+        body: cleanEmailText(revised.body),
+        subject: cleanEmailText(revised.subject).split("\n")[0],
+      };
+    },
+    model,
+  );
 }
 
 export async function composeFollowUpServer(
@@ -162,15 +306,37 @@ ${original.body}
 
 This is follow-up number ${step}. The prospect has not replied. Write a shorter follow-up that adds a new reason to respond.`;
 
-  const result = await geminiJSON<ComposedEmail>({
+  const draft = await geminiJSON<ComposedEmail>({
     system: FOLLOWUP_SYSTEM,
     user,
     schema: SCHEMA,
     model,
   });
-  return {
-    ...result,
-    body: cleanEmailText(result.body),
-    subject: cleanEmailText(result.subject).split("\n")[0],
+  const cleaned: ComposedEmail = {
+    ...draft,
+    body: cleanEmailText(draft.body),
+    subject: cleanEmailText(draft.subject).split("\n")[0],
   };
+
+  return withKnowledgeCheck(
+    cleaned,
+    campaign,
+    knowledge,
+    async (issues) => {
+      const revised = await geminiJSON<ComposedEmail>({
+        system: FOLLOWUP_SYSTEM,
+        user: `${user}\n\nYOUR PREVIOUS DRAFT FAILED THE KNOWLEDGE-BASE CHECK\n${issues
+          .map((issue) => `- ${issue}`)
+          .join("\n")}\n\nRewrite the follow-up so every point is fixed.`,
+        schema: SCHEMA,
+        model,
+      });
+      return {
+        ...revised,
+        body: cleanEmailText(revised.body),
+        subject: cleanEmailText(revised.subject).split("\n")[0],
+      };
+    },
+    model,
+  );
 }

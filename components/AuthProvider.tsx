@@ -18,6 +18,7 @@ import {
   workspaceStatus,
 } from "@/lib/workspace";
 import { clearWorkspaceToken, writeWorkspaceToken } from "@/lib/workspace-token";
+import { BrandLoader } from "./BrandLoader";
 import { BrandLockup } from "./BrandMark";
 import { PreAuth } from "./PreAuth";
 import { Shell } from "./Shell";
@@ -211,7 +212,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         <div className="auth-loading">
           <BrandLockup subtitle="Checking your workspace session…" />
           <div className="progress" style={{ justifyContent: "center", marginTop: 14 }}>
-            <span className="spinner" />
+            <BrandLoader variant="thinking" size={20} />
             <span>Loading workspace…</span>
           </div>
         </div>
