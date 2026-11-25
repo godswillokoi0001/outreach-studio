@@ -11,7 +11,7 @@ import {
   listCampaigns,
   listLeads,
   updateLeadFields,
-} from "@/lib/firestore-store";
+} from "@/lib/store";
 import { fmtDate, label, priorityTone, scoreClass, statusTone } from "@/lib/format";
 import type { Campaign, Lead, LeadStatus } from "@/lib/types";
 

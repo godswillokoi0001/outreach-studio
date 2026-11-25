@@ -11,7 +11,7 @@ import {
   findFollowupCandidatesFromData,
   isFetchableUrl,
   parseSheetUrl,
-  sanitizeFirestoreId,
+  sanitizeId,
   validateEmail,
 } from "./outreach-utils";
 import {
@@ -49,8 +49,8 @@ test("normalizeEmail and normalizeWebsite handle common formatting variants", ()
   assert.equal(normalizeWebsite("n/a"), null);
 });
 
-test("sanitizeFirestoreId keeps valid Firestore document IDs within bounds", () => {
-  const id = sanitizeFirestoreId("user+test@example.com", "sup");
+test("sanitizeId keeps valid document IDs within bounds", () => {
+  const id = sanitizeId("user+test@example.com", "sup");
   assert.match(id, /^sup_[a-z0-9_-]+$/);
   assert.ok(id.length <= 128);
 });

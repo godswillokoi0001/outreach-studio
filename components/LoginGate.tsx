@@ -40,7 +40,7 @@ const PROOF_POINTS = [
 ];
 
 const TRUST = [
-  { icon: ShieldCheck, text: "Each account is isolated with Firestore row-level rules." },
+  { icon: ShieldCheck, text: "Each account is isolated on the server — only you can see your data." },
   { icon: Lock, text: "Google tokens stay in memory, never in browser storage." },
   { icon: CheckCircle2, text: "Nothing sends until you approve it." },
 ];
@@ -173,24 +173,25 @@ export function LoginGate({
                     <ol className="setup-steps">
                       <li>
                         Open{" "}
-                        <a
-                          href="https://console.firebase.google.com/project/gen-lang-client-0846151955/authentication/settings"
-                          target="_blank"
-                          rel="noreferrer"
-                        >
-                          Firebase Console → Authentication → Settings
+                        <a href="https://supabase.com/dashboard" target="_blank" rel="noreferrer">
+                          Supabase → Authentication → URL Configuration
                         </a>
                         .
                       </li>
                       <li>
-                        Under <strong>Authorized domains</strong>, press <strong>Add domain</strong> and add{" "}
-                        <code>{typeof window !== "undefined" ? window.location.hostname : "localhost"}</code> (and{" "}
-                        <code>localhost</code> if they differ). Save.
+                        Set <strong>Site URL</strong> to this app&apos;s address and add the callback
+                        URL{" "}
+                        <code>
+                          {typeof window !== "undefined"
+                            ? `${window.location.origin}/auth/callback`
+                            : "http://localhost:3100/auth/callback"}
+                        </code>{" "}
+                        to the redirect allow list.
                       </li>
                       <li>Reload this page completely, then press Continue with Google again.</li>
                     </ol>
                     <span className="tiny" style={{ display: "block", marginTop: 8 }}>
-                      This is a one-time step per Firebase project. It does not affect your data.
+                      This is a one-time step per Supabase project. It does not affect your data.
                     </span>
                   </>
                 )}

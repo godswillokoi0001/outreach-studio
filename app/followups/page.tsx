@@ -6,7 +6,7 @@ import { useAuth } from "@/components/AuthProvider";
 import { BatchRunner } from "@/components/Runner";
 import { Badge, Banner, Card, Empty, Progress, Stat } from "@/components/ui";
 import { errorMessage } from "@/lib/client";
-import { loadFollowupsBundle } from "@/lib/firestore-store";
+import { loadFollowupsBundle } from "@/lib/store";
 import { fmtDate, label, statusTone } from "@/lib/format";
 
 type FollowupsData = Awaited<ReturnType<typeof loadFollowupsBundle>>;

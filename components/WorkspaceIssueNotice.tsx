@@ -1,7 +1,7 @@
 "use client";
 
 import { ArrowUpRight } from "lucide-react";
-import firebaseConfig from "@/firebase-applet-config.json";
+
 import { useAuth } from "./AuthProvider";
 import { Banner } from "./ui";
 
@@ -14,9 +14,8 @@ export function WorkspaceIssueNotice() {
   const { user, workspaceIssue, clearWorkspaceIssue } = useAuth();
   if (!workspaceIssue) return null;
 
-  const project = firebaseConfig.projectId;
-  const audienceUrl = `https://console.cloud.google.com/auth/audience?project=${project}`;
-  const apisUrl = `https://console.cloud.google.com/apis/dashboard?project=${project}`;
+  const audienceUrl = `https://console.cloud.google.com/auth/audience`;
+  const apisUrl = `https://console.cloud.google.com/apis/dashboard`;
   const email = user.email ?? "your Google account";
   const blocked = workspaceIssue.kind === "verification";
 
@@ -56,7 +55,7 @@ export function WorkspaceIssueNotice() {
                   APIs &amp; Services
                 </a>
                 , confirm <strong>Gmail API</strong> and <strong>Google Sheets API</strong> are enabled for
-                project <code>{project}</code>.
+                the Google Cloud project that owns your OAuth client.
               </li>
               <li>Come back here and press “Connect Google” again.</li>
             </ol>

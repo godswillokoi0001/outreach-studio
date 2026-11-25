@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useAuth } from "@/components/AuthProvider";
 import { Badge, Banner, Card, Empty, Modal, Pager, Progress } from "@/components/ui";
 import { errorMessage } from "@/lib/client";
-import { listLeads, listMessages, listOpenEvents } from "@/lib/firestore-store";
+import { listLeads, listMessages, listOpenEvents } from "@/lib/store";
 import { fmtDate, label, statusTone } from "@/lib/format";
 import type { EmailOpen, Lead, Message } from "@/lib/types";
 

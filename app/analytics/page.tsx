@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { useAuth } from "@/components/AuthProvider";
 import { Badge, Banner, Card, Empty, Progress, Stat } from "@/components/ui";
 import { authedPost, errorMessage } from "@/lib/client";
-import { getSettings, loadAnalyticsBundle } from "@/lib/firestore-store";
+import { getSettings, loadAnalyticsBundle } from "@/lib/store";
 import { label } from "@/lib/format";
 import type { PerformanceInsight } from "@/lib/intelligence";
 

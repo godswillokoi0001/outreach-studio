@@ -11,10 +11,10 @@ import type {
 } from "./types";
 
 // ---------------------------------------------------------------------------
-// ID & String Sanitization (synchronized with firestore.rules & blueprint)
+// ID & String Sanitization (stable ids for every row)
 // ---------------------------------------------------------------------------
 
-export function sanitizeFirestoreId(raw: string, prefix = "doc"): string {
+export function sanitizeId(raw: string, prefix = "doc"): string {
   const cleaned = raw
     .trim()
     .toLowerCase()

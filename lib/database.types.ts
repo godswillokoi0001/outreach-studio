@@ -1,6 +1,6 @@
-// Supabase Database type for the `settings` table. Settings are the app's
-// Supabase-backed document (Firebase handles auth only); other collections are
-// still on Firestore.
+// Supabase types for every table the app uses. Only `settings` is strongly
+// typed; the document tables keep their rows loosely typed because the data
+// layer converts camelCase document fields to snake_case columns.
 
 type SettingsRow = {
   id: string;
@@ -30,6 +30,9 @@ type SettingsRow = {
   updated_at: string;
 };
 
+type Row = Record<string, unknown>;
+type LooseTable = { Row: Row; Insert: Row; Update: Row };
+
 export type Database = {
   public: {
     tables: {
@@ -38,9 +41,20 @@ export type Database = {
         Insert: Partial<SettingsRow> & { id: string };
         Update: Partial<SettingsRow>;
       };
+      account_links: LooseTable;
+      campaigns: LooseTable;
+      leads: LooseTable;
+      messages: LooseTable;
+      replies: LooseTable;
+      suppressions: LooseTable;
+      send_logs: LooseTable;
+      audit_logs: LooseTable;
+      lead_events: LooseTable;
+      knowledge: LooseTable;
+      knowledge_sources: LooseTable;
+      email_opens: LooseTable;
     };
     views: Record<string, unknown>;
     functions: Record<string, unknown>;
-    profiles: Record<string, unknown>;
   };
 };

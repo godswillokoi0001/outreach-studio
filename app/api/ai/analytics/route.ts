@@ -1,12 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { handleApiError } from "@/lib/api-helpers";
 import { resolveAiConfigForRequest, runWithAiConfig } from "@/lib/ai/context";
-import { verifyFirebaseRequest } from "@/lib/firebase-server-auth";
+import { verifyRequest } from "@/lib/server-auth";
 import { analysePerformanceServer } from "@/lib/intelligence";
 
 export async function POST(req: NextRequest) {
   try {
-    await verifyFirebaseRequest(req);
+    await verifyRequest(req);
     const aiConfig = await resolveAiConfigForRequest(req);
     const body = (await req.json()) as { metrics?: unknown; model?: string };
     if (!body.metrics) {

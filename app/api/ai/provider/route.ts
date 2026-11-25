@@ -4,14 +4,14 @@ import { isSafeProviderUrl } from "@/lib/ai/context";
 import { getProvider, guessProviderId, isProviderId, pickRecommendedModel, publicProviderList } from "@/lib/ai/registry";
 import type { AiConfig, AiProviderId } from "@/lib/ai/types";
 import { handleApiError } from "@/lib/api-helpers";
-import { verifyFirebaseRequest } from "@/lib/firebase-server-auth";
+import { verifyRequest } from "@/lib/server-auth";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
 export async function GET(req: NextRequest) {
   try {
-    await verifyFirebaseRequest(req);
+    await verifyRequest(req);
     return NextResponse.json({ providers: publicProviderList() }, { headers: { "Cache-Control": "no-store" } });
   } catch (err) {
     return handleApiError(err);
@@ -24,7 +24,7 @@ export async function GET(req: NextRequest) {
  */
 export async function POST(req: NextRequest) {
   try {
-    await verifyFirebaseRequest(req);
+    await verifyRequest(req);
     const body = (await req.json().catch(() => ({}))) as {
       provider?: string;
       apiKey?: string;

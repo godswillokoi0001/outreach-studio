@@ -19,7 +19,7 @@ import {
   listMessages,
   listReplies,
   updateCampaignAction,
-} from "@/lib/firestore-store";
+} from "@/lib/store";
 import { fmtDate, label, statusTone } from "@/lib/format";
 import { buildLiveKnowledgeDigest } from "@/lib/pipeline-client";
 import type { Campaign, CampaignConfig, Lead, Message, Reply } from "@/lib/types";

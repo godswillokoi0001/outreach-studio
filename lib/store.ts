@@ -1,6 +1,5 @@
 "use client";
 
-import type { User } from "firebase/auth";
 import {
   collection,
   deleteDoc,
@@ -15,8 +14,11 @@ import {
   updateDoc,
   where,
   writeBatch,
-} from "firebase/firestore";
-import { db, handleFirestoreError, OperationType } from "./firebase";
+  db,
+  handleDataError,
+  OperationType,
+} from "./db-client";
+
 import {
   extractEmailsFromRow,
   mapHeaders,
@@ -33,7 +35,7 @@ import {
   defaultCampaignConfig,
   findFollowupCandidatesFromData,
   getLocalSendParts,
-  sanitizeFirestoreId,
+  sanitizeId,
 } from "./outreach-utils";
 import {
   DEFAULT_SETTINGS,
@@ -128,77 +130,6 @@ function normalizeSettingsPayload(uid: string, input: Partial<Settings>, base: S
   };
 }
 
-// ---------------------------------------------------------------------------
-// Workspace Bootstrap
-// ---------------------------------------------------------------------------
-
-export async function ensureUserWorkspace(user: User): Promise<void> {
-  const uid = user.uid;
-  const userPath = `users/${uid}`;
-  const userRef = doc(db, "users", uid);
-  try {
-    const snap = await getDoc(userRef);
-    if (!snap.exists()) {
-      await setDoc(userRef, {
-        uid,
-        email: clampReqStr(user.email, 320, "user@example.com"),
-        displayName: clampReqStr(user.displayName, 160, ""),
-        photoURL: clampStr(user.photoURL, 1000),
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
-    } else {
-      await updateDoc(userRef, {
-        email: clampReqStr(user.email, 320, "user@example.com"),
-        displayName: clampReqStr(user.displayName, 160, ""),
-        photoURL: clampStr(user.photoURL, 1000),
-        updatedAt: serverTimestamp(),
-      });
-    }
-  } catch (err) {
-    handleFirestoreError(err, OperationType.WRITE, userPath);
-  }
-
-  const settingsRef = doc(db, "users", uid, "settings", "default");
-  try {
-    const sSnap = await getDoc(settingsRef);
-    if (!sSnap.exists()) {
-      const payload = normalizeSettingsPayload(uid, {
-        sender_name: user.displayName ?? "",
-        sender_email: user.email ?? "",
-      });
-      await setDoc(settingsRef, {
-        ...payload,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
-    }
-  } catch (err) {
-    // Settings live in Supabase now; a Firestore rules rejection here must not
-    // block sign-in.
-    console.warn("[settings] skipped Firestore bootstrap:", err instanceof Error ? err.message : err);
-  }
-
-  const masterPath = `users/${uid}/knowledge/master`;
-  const masterRef = doc(db, "users", uid, "knowledge", "master");
-  try {
-    const mSnap = await getDoc(masterRef);
-    if (!mSnap.exists()) {
-      await setDoc(masterRef, {
-        ownerId: uid,
-        category: "master",
-        title: "Master knowledge",
-        content: "",
-        sort: 0,
-        is_master: true,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
-    }
-  } catch (err) {
-    handleFirestoreError(err, OperationType.WRITE, masterPath);
-  }
-}
 
 // ---------------------------------------------------------------------------
 // Settings
@@ -231,30 +162,18 @@ function toSettings(data: Record<string, unknown>): Settings {
     };
 }
 
-/**
- * Settings live in Supabase now (Firebase is auth only), so they keep saving
- * when Firestore rules reject writes. Firestore is read only as a legacy
- * fallback for accounts that have not saved since the migration.
- */
 export async function getSettings(uid: string): Promise<Settings> {
+  void uid;
   const { fetchSettingsDocument } = await import("./supabase");
   const remote = await fetchSettingsDocument();
-  if (remote.ok) {
-    if (remote.settings) return toSettings(remote.settings as unknown as Record<string, unknown>);
-  } else if (!remote.unconfigured) {
-    // Never fall through to defaults here: an unreadable settings row used to
-    // look exactly like a missing AI key and silently reset the whole profile.
+  if (!remote.ok) {
+    // Never fall back to defaults: an unreadable settings row used to look
+    // exactly like a missing AI key and silently reset the whole profile.
     throw new Error(remote.message);
   }
-
-  const path = `users/${uid}/settings/default`;
-  try {
-    const snap = await getDoc(doc(db, "users", uid, "settings", "default"));
-    if (!snap.exists()) return { ...DEFAULT_SETTINGS };
-    return toSettings(snap.data() as Record<string, unknown>);
-  } catch (err) {
-    handleFirestoreError(err, OperationType.GET, path);
-  }
+  return remote.settings
+    ? toSettings(remote.settings as unknown as Record<string, unknown>)
+    : { ...DEFAULT_SETTINGS };
 }
 
 export async function saveSettings(uid: string, patch: Partial<Settings>): Promise<Settings> {
@@ -262,29 +181,10 @@ export async function saveSettings(uid: string, patch: Partial<Settings>): Promi
   const payload = normalizeSettingsPayload(uid, patch, current);
   const { saveSettingsDocument } = await import("./supabase");
   const remote = await saveSettingsDocument(payload);
-  if (remote.ok) {
-    return remote.settings
-      ? toSettings(remote.settings as unknown as Record<string, unknown>)
-      : toSettings(payload as unknown as Record<string, unknown>);
-  }
-  if (!remote.unconfigured) throw new Error(remote.message);
-
-  // Legacy fallback for deployments without Supabase configured.
-  const path = `users/${uid}/settings/default`;
-  const ref = doc(db, "users", uid, "settings", "default");
-  try {
-    const existingSnap = await getDoc(ref);
-    if (!existingSnap.exists()) {
-      await setDoc(ref, { ...payload, createdAt: serverTimestamp(), updatedAt: serverTimestamp() });
-    } else {
-      const { ownerId: _ownerId, ...mutable } = payload;
-      void _ownerId;
-      await updateDoc(ref, { ...mutable, updatedAt: serverTimestamp() });
-    }
-    return getSettings(uid);
-  } catch (err) {
-    handleFirestoreError(err, OperationType.WRITE, path);
-  }
+  if (!remote.ok) throw new Error(remote.message);
+  return remote.settings
+    ? toSettings(remote.settings as unknown as Record<string, unknown>)
+    : toSettings(payload as unknown as Record<string, unknown>);
 }
 
 // ---------------------------------------------------------------------------
@@ -303,12 +203,12 @@ export async function getKnowledgeBundle(uid: string): Promise<{
   try {
     kSnap = await getDocs(query(collection(db, kPath), where("ownerId", "==", uid)));
   } catch (err) {
-    handleFirestoreError(err, OperationType.LIST, kPath);
+    handleDataError(err, OperationType.LIST, kPath);
   }
   try {
     sSnap = await getDocs(query(collection(db, sPath), where("ownerId", "==", uid)));
   } catch (err) {
-    handleFirestoreError(err, OperationType.LIST, sPath);
+    handleDataError(err, OperationType.LIST, sPath);
   }
 
   let master = "";
@@ -353,33 +253,36 @@ export async function getKnowledgeBundle(uid: string): Promise<{
 }
 
 export async function saveMasterKnowledge(uid: string, content: string): Promise<void> {
-  const path = `users/${uid}/knowledge/master`;
-  const ref = doc(db, "users", uid, "knowledge", "master");
+  const path = `users/${uid}/knowledge`;
   try {
-    const snap = await getDoc(ref);
     const trimmed = String(content ?? "").slice(0, 700_000);
-    if (!snap.exists()) {
-      await setDoc(ref, {
-        ownerId: uid,
-        category: "master",
-        title: "Master knowledge",
-        content: trimmed,
-        sort: 0,
-        is_master: true,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
-    } else {
-      await updateDoc(ref, {
+    const snap = await getDocs(query(collection(db, path), where("ownerId", "==", uid)));
+    const existing = snap.docs.find((d) => d.id === "master" || d.data().is_master === true);
+
+    if (existing) {
+      await updateDoc(existing.ref, {
         category: "master",
         title: "Master knowledge",
         content: trimmed,
         sort: 0,
         updatedAt: serverTimestamp(),
       });
+      return;
     }
+
+    // The master row id is unique across owners, so a new workspace gets its own.
+    await setDoc(doc(db, "users", uid, "knowledge", `master_${uid}`), {
+      ownerId: uid,
+      category: "master",
+      title: "Master knowledge",
+      content: trimmed,
+      sort: 0,
+      is_master: true,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
   } catch (err) {
-    handleFirestoreError(err, OperationType.WRITE, path);
+    handleDataError(err, OperationType.WRITE, path);
   }
 }
 
@@ -387,7 +290,7 @@ export async function upsertKnowledgeEntry(
   uid: string,
   input: { id?: string; title: string; content: string; category?: string; sort?: number },
 ): Promise<string> {
-  const id = input.id ? sanitizeFirestoreId(input.id, "k") : randomId("k");
+  const id = input.id ? sanitizeId(input.id, "k") : randomId("k");
   const path = `users/${uid}/knowledge/${id}`;
   const ref = doc(db, "users", uid, "knowledge", id);
   try {
@@ -412,7 +315,7 @@ export async function upsertKnowledgeEntry(
     }
     return id;
   } catch (err) {
-    handleFirestoreError(err, OperationType.WRITE, path);
+    handleDataError(err, OperationType.WRITE, path);
   }
 }
 
@@ -422,7 +325,7 @@ export async function deleteKnowledgeEntry(uid: string, id: string): Promise<voi
   try {
     await deleteDoc(doc(db, "users", uid, "knowledge", id));
   } catch (err) {
-    handleFirestoreError(err, OperationType.DELETE, path);
+    handleDataError(err, OperationType.DELETE, path);
   }
 }
 
@@ -444,7 +347,7 @@ export async function addKnowledgeSource(
     });
     return id;
   } catch (err) {
-    handleFirestoreError(err, OperationType.CREATE, path);
+    handleDataError(err, OperationType.CREATE, path);
   }
 }
 
@@ -453,7 +356,7 @@ export async function deleteKnowledgeSource(uid: string, id: string): Promise<vo
   try {
     await deleteDoc(doc(db, "users", uid, "knowledgeSources", id));
   } catch (err) {
-    handleFirestoreError(err, OperationType.DELETE, path);
+    handleDataError(err, OperationType.DELETE, path);
   }
 }
 
@@ -510,7 +413,7 @@ export async function writeAuditLog(
       createdAt: serverTimestamp(),
     });
   } catch (err) {
-    handleFirestoreError(err, OperationType.CREATE, path);
+    handleDataError(err, OperationType.CREATE, path);
   }
 }
 
@@ -531,7 +434,7 @@ export async function writeLeadEvent(
       createdAt: serverTimestamp(),
     });
   } catch (err) {
-    handleFirestoreError(err, OperationType.CREATE, path);
+    handleDataError(err, OperationType.CREATE, path);
   }
 }
 
@@ -554,7 +457,7 @@ export async function listAuditLogs(uid: string): Promise<AuditLog[]> {
       .sort((a, b) => b.created_at.localeCompare(a.created_at))
       .slice(0, 40);
   } catch (err) {
-    handleFirestoreError(err, OperationType.LIST, path);
+    handleDataError(err, OperationType.LIST, path);
   }
 }
 
@@ -585,7 +488,7 @@ export async function listCampaigns(uid: string): Promise<Campaign[]> {
       .map((d) => mapCampaign(d.id, d.data()))
       .sort((a, b) => b.created_at.localeCompare(a.created_at));
   } catch (err) {
-    handleFirestoreError(err, OperationType.LIST, path);
+    handleDataError(err, OperationType.LIST, path);
   }
 }
 
@@ -630,7 +533,7 @@ export async function createCampaign(
       updated_at: nowIso,
     };
   } catch (err) {
-    handleFirestoreError(err, OperationType.CREATE, path);
+    handleDataError(err, OperationType.CREATE, path);
   }
 }
 
@@ -658,7 +561,7 @@ export async function updateCampaignAction(
     }
     await writeAuditLog(uid, `campaign_${action}`, "campaign", id);
   } catch (err) {
-    handleFirestoreError(err, OperationType.UPDATE, path);
+    handleDataError(err, OperationType.UPDATE, path);
   }
 }
 
@@ -672,7 +575,7 @@ export async function deleteCampaign(uid: string, id: string): Promise<void> {
     await deleteDoc(doc(db, "users", uid, "campaigns", id));
     await writeAuditLog(uid, "campaign_deleted", "campaign", id);
   } catch (err) {
-    handleFirestoreError(err, OperationType.DELETE, path);
+    handleDataError(err, OperationType.DELETE, path);
   }
 }
 
@@ -721,7 +624,7 @@ export async function listLeads(uid: string): Promise<Lead[]> {
       .map((d) => mapLead(d.id, d.data()))
       .sort((a, b) => b.updated_at.localeCompare(a.updated_at));
   } catch (err) {
-    handleFirestoreError(err, OperationType.LIST, path);
+    handleDataError(err, OperationType.LIST, path);
   }
 }
 
@@ -752,7 +655,7 @@ export async function createLead(
   try {
     await setDoc(doc(db, "users", uid, "leads", id), {
       ownerId: uid,
-      campaign_id: input.campaignId ? sanitizeFirestoreId(input.campaignId, "camp") : null,
+      campaign_id: input.campaignId ? sanitizeId(input.campaignId, "camp") : null,
       business: clampStr(input.business, 240),
       contact_name: clampStr(input.contact_name, 160),
       role: clampStr(input.role, 160),
@@ -782,7 +685,7 @@ export async function createLead(
     await writeLeadEvent(uid, id, "lead_created", { source: input.source ?? "manual" });
     return { id, duplicate: false };
   } catch (err) {
-    handleFirestoreError(err, OperationType.CREATE, path);
+    handleDataError(err, OperationType.CREATE, path);
   }
 }
 
@@ -841,7 +744,7 @@ export async function importSheetRows(
             updatedAt: serverTimestamp(),
           });
         } catch (err) {
-          handleFirestoreError(err, OperationType.UPDATE, path);
+          handleDataError(err, OperationType.UPDATE, path);
         }
       }
       continue;
@@ -892,7 +795,7 @@ export async function importSheetRows(
       }
       created += 1;
     } catch (err) {
-      handleFirestoreError(err, OperationType.CREATE, path);
+      handleDataError(err, OperationType.CREATE, path);
     }
   }
 
@@ -934,7 +837,7 @@ export async function assignLeadsToCampaign(
         updatedAt: serverTimestamp(),
       });
     } catch (err) {
-      handleFirestoreError(err, OperationType.UPDATE, path);
+      handleDataError(err, OperationType.UPDATE, path);
     }
   }
   return matching.length;
@@ -1013,7 +916,7 @@ export async function updateLeadFields(
       await updateDoc(ref, updatePayload);
     }
   } catch (err) {
-    handleFirestoreError(err, OperationType.UPDATE, path);
+    handleDataError(err, OperationType.UPDATE, path);
   }
 }
 
@@ -1039,7 +942,7 @@ export async function deleteLeadCascade(uid: string, leadId: string): Promise<vo
     await batch.commit();
     await writeAuditLog(uid, "lead_deleted", "lead", leadId);
   } catch (err) {
-    handleFirestoreError(err, OperationType.DELETE, path);
+    handleDataError(err, OperationType.DELETE, path);
   }
 }
 
@@ -1081,7 +984,7 @@ export async function listMessages(uid: string): Promise<Message[]> {
       .map((d) => mapMessage(d.id, d.data()))
       .sort((a, b) => b.created_at.localeCompare(a.created_at));
   } catch (err) {
-    handleFirestoreError(err, OperationType.LIST, path);
+    handleDataError(err, OperationType.LIST, path);
   }
 }
 
@@ -1127,7 +1030,7 @@ export async function createMessage(
     });
     return id;
   } catch (err) {
-    handleFirestoreError(err, OperationType.CREATE, path);
+    handleDataError(err, OperationType.CREATE, path);
   }
 }
 
@@ -1170,7 +1073,7 @@ export async function recordOutgoingReply(
     });
     return id;
   } catch (err) {
-    handleFirestoreError(err, OperationType.CREATE, path);
+    handleDataError(err, OperationType.CREATE, path);
   }
 }
 
@@ -1189,7 +1092,7 @@ export async function updateMessageContent(
     if (patch.service !== undefined) payload.service = clampStr(patch.service, 200);
     await updateDoc(doc(db, "users", uid, "messages", id), payload);
   } catch (err) {
-    handleFirestoreError(err, OperationType.UPDATE, path);
+    handleDataError(err, OperationType.UPDATE, path);
   }
 }
 
@@ -1209,7 +1112,7 @@ export async function updateMessageStatus(
     if (extra?.error !== undefined) payload.error = clampStr(extra.error, 1000);
     await updateDoc(doc(db, "users", uid, "messages", id), payload);
   } catch (err) {
-    handleFirestoreError(err, OperationType.UPDATE, path);
+    handleDataError(err, OperationType.UPDATE, path);
   }
 }
 
@@ -1223,7 +1126,7 @@ export async function markMessageSending(uid: string, id: string, rfcMessageId: 
       updatedAt: serverTimestamp(),
     });
   } catch (err) {
-    handleFirestoreError(err, OperationType.UPDATE, path);
+    handleDataError(err, OperationType.UPDATE, path);
   }
 }
 
@@ -1236,7 +1139,7 @@ export async function markMessageFailed(uid: string, id: string, error: string):
       updatedAt: serverTimestamp(),
     });
   } catch (err) {
-    handleFirestoreError(err, OperationType.UPDATE, path);
+    handleDataError(err, OperationType.UPDATE, path);
   }
 }
 
@@ -1259,7 +1162,7 @@ export async function recordSendSuccess(
       updatedAt: serverTimestamp(),
     });
   } catch (err) {
-    handleFirestoreError(err, OperationType.UPDATE, msgPath);
+    handleDataError(err, OperationType.UPDATE, msgPath);
   }
 
   await updateLeadFields(uid, lead.id, {
@@ -1279,7 +1182,7 @@ export async function recordSendSuccess(
       createdAt: serverTimestamp(),
     });
   } catch (err) {
-    handleFirestoreError(err, OperationType.CREATE, logPath);
+    handleDataError(err, OperationType.CREATE, logPath);
   }
 
   await writeLeadEvent(uid, lead.id, "email_sent", {
@@ -1337,7 +1240,7 @@ export async function listReplies(uid: string): Promise<Reply[]> {
       .map((d) => mapReply(d.id, d.data()))
       .sort((a, b) => b.created_at.localeCompare(a.created_at));
   } catch (err) {
-    handleFirestoreError(err, OperationType.LIST, path);
+    handleDataError(err, OperationType.LIST, path);
   }
 }
 
@@ -1358,7 +1261,7 @@ export async function recordReply(
     draft_reply: string | null;
   },
 ): Promise<string> {
-  const id = sanitizeFirestoreId(input.gmail_id, "rep");
+  const id = sanitizeId(input.gmail_id, "rep");
   const path = `users/${uid}/replies/${id}`;
   const ref = doc(db, "users", uid, "replies", id);
   try {
@@ -1384,7 +1287,7 @@ export async function recordReply(
     });
     return id;
   } catch (err) {
-    handleFirestoreError(err, OperationType.CREATE, path);
+    handleDataError(err, OperationType.CREATE, path);
   }
 }
 
@@ -1396,7 +1299,7 @@ export async function updateReplyHandled(uid: string, id: string, handled: boole
       updatedAt: serverTimestamp(),
     });
   } catch (err) {
-    handleFirestoreError(err, OperationType.UPDATE, path);
+    handleDataError(err, OperationType.UPDATE, path);
   }
 }
 
@@ -1417,14 +1320,14 @@ export async function listSuppressions(uid: string): Promise<Suppression[]> {
       })
       .sort((a, b) => b.created_at.localeCompare(a.created_at));
   } catch (err) {
-    handleFirestoreError(err, OperationType.LIST, path);
+    handleDataError(err, OperationType.LIST, path);
   }
 }
 
 export async function addSuppression(uid: string, email: string, reason: string): Promise<void> {
   const normalized = email.trim().toLowerCase();
   if (!normalized || normalized.length < 3) throw new Error("Enter a valid email address.");
-  const id = sanitizeFirestoreId(normalized, "sup");
+  const id = sanitizeId(normalized, "sup");
   const path = `users/${uid}/suppressions/${id}`;
   const ref = doc(db, "users", uid, "suppressions", id);
   try {
@@ -1444,17 +1347,17 @@ export async function addSuppression(uid: string, email: string, reason: string)
       });
     }
   } catch (err) {
-    handleFirestoreError(err, OperationType.WRITE, path);
+    handleDataError(err, OperationType.WRITE, path);
   }
 }
 
 export async function removeSuppression(uid: string, email: string): Promise<void> {
-  const id = sanitizeFirestoreId(email.trim().toLowerCase(), "sup");
+  const id = sanitizeId(email.trim().toLowerCase(), "sup");
   const path = `users/${uid}/suppressions/${id}`;
   try {
     await deleteDoc(doc(db, "users", uid, "suppressions", id));
   } catch (err) {
-    handleFirestoreError(err, OperationType.DELETE, path);
+    handleDataError(err, OperationType.DELETE, path);
   }
 }
 
@@ -1476,7 +1379,7 @@ export async function listSendLogs(uid: string): Promise<SendLog[]> {
       })
       .sort((a, b) => b.created_at.localeCompare(a.created_at));
   } catch (err) {
-    handleFirestoreError(err, OperationType.LIST, path);
+    handleDataError(err, OperationType.LIST, path);
   }
 }
 
@@ -1528,7 +1431,7 @@ export async function listOpenEvents(uid: string): Promise<EmailOpen[]> {
     // A missing `tracking` rule or a brand-new account should not break the
     // dashboard, so treat read failures as "no opens recorded yet".
     if (err instanceof Error && /permission|insufficient/i.test(err.message)) return [];
-    handleFirestoreError(err, OperationType.LIST, path);
+    handleDataError(err, OperationType.LIST, path);
   }
 }
 
@@ -1544,7 +1447,7 @@ export function subscribeOpenEvents(
         onChange([]);
         return;
       }
-      handleFirestoreError(err, OperationType.LIST, "tracking");
+      handleDataError(err, OperationType.LIST, "tracking");
     },
   );
 }
@@ -1661,7 +1564,7 @@ export function subscribeBadgeCounts(
       latestMessages = snap.docs.map((d) => mapMessage(d.id, d.data()));
       emit();
     },
-    (err) => handleFirestoreError(err, OperationType.LIST, `users/${uid}/messages`),
+    (err) => handleDataError(err, OperationType.LIST, `users/${uid}/messages`),
   );
 
   const unsubReplies = onSnapshot(
@@ -1670,7 +1573,7 @@ export function subscribeBadgeCounts(
       latestReplies = snap.docs.map((d) => mapReply(d.id, d.data()));
       emit();
     },
-    (err) => handleFirestoreError(err, OperationType.LIST, `users/${uid}/replies`),
+    (err) => handleDataError(err, OperationType.LIST, `users/${uid}/replies`),
   );
 
   const unsubLeads = onSnapshot(
@@ -1679,7 +1582,7 @@ export function subscribeBadgeCounts(
       latestLeads = snap.docs.map((d) => mapLead(d.id, d.data()));
       emit();
     },
-    (err) => handleFirestoreError(err, OperationType.LIST, `users/${uid}/leads`),
+    (err) => handleDataError(err, OperationType.LIST, `users/${uid}/leads`),
   );
 
   const unsubCamps = onSnapshot(
@@ -1688,7 +1591,7 @@ export function subscribeBadgeCounts(
       latestCampaigns = snap.docs.map((d) => mapCampaign(d.id, d.data()));
       emit();
     },
-    (err) => handleFirestoreError(err, OperationType.LIST, `users/${uid}/campaigns`),
+    (err) => handleDataError(err, OperationType.LIST, `users/${uid}/campaigns`),
   );
 
   return () => {

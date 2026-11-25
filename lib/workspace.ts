@@ -1,6 +1,6 @@
 "use client";
 
-import { getFirebaseIdToken } from "./firebase";
+import { getAccessToken } from "./auth";
 import { clearWorkspaceToken, readWorkspaceToken, writeWorkspaceToken } from "./workspace-token";
 
 export interface WorkspaceStatus {
@@ -14,11 +14,13 @@ export interface WorkspaceStatus {
 const EMPTY_STATUS: WorkspaceStatus = { configured: false, connected: false, email: null };
 
 async function post<T>(path: string, method: "POST" | "DELETE" = "POST"): Promise<T> {
-  const idToken = await getFirebaseIdToken();
-  if (!idToken) throw new Error("Sign in with Google first.");
+  const sessionToken = await getAccessToken();
+  if (!sessionToken) throw new Error("Sign in with Google first.");
   const res = await fetch(path, {
     method,
-    headers: { "X-Firebase-Token": idToken, Authorization: `Bearer ${idToken}` },
+    headers: { Authorization: `Bearer ${sessionToken}` },
+    cache: "no-store",
+    credentials: "same-origin",
   });
   const text = await res.text();
   const data = text ? JSON.parse(text) : {};
@@ -71,15 +73,14 @@ export async function workspaceStatus(): Promise<WorkspaceStatus> {
 
 /**
  * Full-page redirect into Google's consent screen through the app's own OAuth
- * client. Returns false when the server has no client configured, so the caller
- * can fall back to the Firebase popup instead.
+ * client. Returns false when the server has no client configured.
  */
 export async function startGoogleConnection(): Promise<boolean> {
-  const idToken = await getFirebaseIdToken();
-  if (!idToken) throw new Error("Sign in with Google first.");
+  const sessionToken = await getAccessToken();
+  if (!sessionToken) throw new Error("Sign in with Google first.");
   const res = await fetch("/api/google/connect", {
     method: "POST",
-    headers: { "X-Firebase-Token": idToken, Authorization: `Bearer ${idToken}` },
+    headers: { Authorization: `Bearer ${sessionToken}` },
     cache: "no-store",
     credentials: "same-origin",
   });

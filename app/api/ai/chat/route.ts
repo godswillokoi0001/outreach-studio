@@ -3,7 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { AGENT_TOOLS, sanitizeAgentContents } from "@/lib/agent-tools";
 import { handleApiError } from "@/lib/api-helpers";
 import { resolveAiConfigForRequest, runWithAiConfig } from "@/lib/ai/context";
-import { verifyFirebaseRequest } from "@/lib/firebase-server-auth";
+import { verifyRequest } from "@/lib/server-auth";
 import { geminiAgentTurn } from "@/lib/gemini";
 
 export const dynamic = "force-dynamic";
@@ -40,7 +40,7 @@ OPERATING RULES
 
 export async function POST(req: NextRequest) {
   try {
-    const authUser = await verifyFirebaseRequest(req);
+    const authUser = await verifyRequest(req);
     const aiConfig = await resolveAiConfigForRequest(req);
     const body = (await req.json()) as {
       contents?: Content[];

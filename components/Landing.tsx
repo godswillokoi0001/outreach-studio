@@ -411,7 +411,7 @@ export function Landing({
             <span className="landing-kicker">Private by default</span>
             <h2>Your Gmail. Your knowledge. Your workspace.</h2>
             <p>
-              Each account is isolated in Cloud Firestore with row-level rules. Tokens never touch local storage, and
+              Each account is isolated on the server — only you can see your data. Tokens never touch local storage, and
               nothing leaves your outbox until you approve it.
             </p>
             <ul className="landing-checks">

@@ -1,14 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
-import firebaseConfig from "../../../../firebase-applet-config.json";
+import { supabaseServer } from "@/lib/supabase-server";
 
 /**
  * 1x1 open-tracking pixel.
  *
  * Sent inside the HTML part of every outreach email. Mail clients that load
- * remote images hit this route, which appends an immutable event document to
- * the owner-scoped `tracking` collection over the Firestore REST API (the pixel
- * itself is public and has no Firebase session, so Security Rules only permit
- * constrained creates and owner-scoped reads).
+ * remote images hit this route, which appends an immutable open event to the
+ * `email_opens` table with the service role (the pixel is public and has no
+ * session, so only this constrained insert is allowed).
  */
 
 const PIXEL = Buffer.from(
@@ -40,31 +39,21 @@ async function recordOpen(input: {
   leadId: string | null;
   userAgent: string | null;
 }): Promise<void> {
-  const project = firebaseConfig.projectId;
-  const database = firebaseConfig.firestoreDatabaseId || "(default)";
-  const url =
-    `https://firestore.googleapis.com/v1/projects/${encodeURIComponent(project)}` +
-    `/databases/${encodeURIComponent(database)}/documents/tracking` +
-    `?key=${encodeURIComponent(firebaseConfig.apiKey)}&documentId=${eventId()}`;
-
-  const fields: Record<string, unknown> = {
-    ownerId: { stringValue: input.ownerId },
-    message_id: { stringValue: input.messageId },
-    opened_at: { stringValue: new Date().toISOString() },
-  };
-  if (input.leadId) fields.lead_id = { stringValue: input.leadId };
-  if (input.userAgent) fields.user_agent = { stringValue: input.userAgent.slice(0, 400) };
-
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ fields }),
-    cache: "no-store",
-  });
-  if (!res.ok) {
-    const text = await res.text();
-    console.warn("[track/open] Firestore write failed", res.status, text.slice(0, 300));
+  if (!supabaseServer) {
+    console.warn("[track/open] Supabase is not configured; open not recorded");
+    return;
   }
+
+  const { error } = await supabaseServer.from("email_opens").insert({
+    id: eventId(),
+    owner_id: input.ownerId,
+    message_id: input.messageId,
+    lead_id: input.leadId,
+    opened_at: new Date().toISOString(),
+    user_agent: input.userAgent ? input.userAgent.slice(0, 400) : null,
+  } as never);
+
+  if (error) console.warn("[track/open] insert failed:", error.message);
 }
 
 export async function GET(req: NextRequest) {

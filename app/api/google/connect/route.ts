@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { handleApiError } from "@/lib/api-helpers";
-import { verifyFirebaseRequest } from "@/lib/firebase-server-auth";
+import { verifyRequest } from "@/lib/server-auth";
 import {
   STATE_COOKIE,
   consentUrl,
@@ -17,7 +17,7 @@ import { randomId } from "@/lib/crypto";
  */
 export async function POST(req: NextRequest) {
   try {
-    const user = await verifyFirebaseRequest(req);
+    const user = await verifyRequest(req);
     if (!oauthConfigured()) {
       return NextResponse.json(
         {
@@ -31,7 +31,7 @@ export async function POST(req: NextRequest) {
     const client = oauthClient()!;
     const redirectUri = redirectUriFor(req);
     const nonce = randomId("oauth");
-    const state = await sealRecord({ uid: user.uid, email: user.email, nonce, redirectUri, at: Date.now() });
+    const state = await sealRecord({ uid: user.id, email: user.email, nonce, redirectUri, at: Date.now() });
 
     const res = NextResponse.json({ url: consentUrl(client, redirectUri, state), configured: true });
     res.cookies.set({

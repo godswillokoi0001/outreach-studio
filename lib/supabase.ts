@@ -1,6 +1,6 @@
 "use client";
 
-import { getFirebaseIdToken } from "./firebase";
+import { getAccessToken } from "./auth";
 import type { Settings } from "./types";
 
 type PushDeviceRegistration = { uid: string; token: string; platform: string; created_at: string };
@@ -25,7 +25,7 @@ async function request(method: "GET" | "PUT", body?: unknown): Promise<SettingsR
     return { ok: false, unconfigured: false, message: "Settings are only available in the browser." };
   }
 
-  const token = await getFirebaseIdToken();
+  const token = await getAccessToken();
   if (!token) {
     return {
       ok: false,
@@ -40,7 +40,7 @@ async function request(method: "GET" | "PUT", body?: unknown): Promise<SettingsR
       method,
       headers: {
         Accept: "application/json",
-        "X-Firebase-Token": token,
+        "Authorization": `Bearer ${token}`,
         ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
       },
       body: body !== undefined ? JSON.stringify(body) : undefined,

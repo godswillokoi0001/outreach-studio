@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { handleApiError } from "@/lib/api-helpers";
-import { verifyFirebaseRequest } from "@/lib/firebase-server-auth";
+import { verifyRequest } from "@/lib/server-auth";
 import { isFetchableUrl } from "@/lib/outreach-utils";
 
 function stripHtml(html: string): string {
@@ -18,7 +18,7 @@ function stripHtml(html: string): string {
 
 export async function POST(req: NextRequest) {
   try {
-    await verifyFirebaseRequest(req);
+    await verifyRequest(req);
     const body = (await req.json()) as { urls?: { id: string; url: string }[] };
     const urls = Array.isArray(body.urls) ? body.urls.slice(0, 8) : [];
     const results: Record<string, string> = {};

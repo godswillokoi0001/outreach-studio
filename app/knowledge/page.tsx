@@ -12,7 +12,7 @@ import {
   getKnowledgeBundle,
   saveMasterKnowledge,
   upsertKnowledgeEntry,
-} from "@/lib/firestore-store";
+} from "@/lib/store";
 import type { KnowledgeEntry, KnowledgeSource } from "@/lib/types";
 
 interface KnowledgePayload {

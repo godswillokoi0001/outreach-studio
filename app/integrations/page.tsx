@@ -18,7 +18,7 @@ import { useAuth } from "@/components/AuthProvider";
 import { Badge, Banner, Card } from "@/components/ui";
 import { getProvider } from "@/lib/ai/registry";
 import { authedPost, errorMessage } from "@/lib/client";
-import { getSettings } from "@/lib/firestore-store";
+import { getSettings } from "@/lib/store";
 import type { Settings } from "@/lib/types";
 import { disconnectWorkspace, workspaceStatus, type WorkspaceStatus } from "@/lib/workspace";
 
@@ -129,7 +129,7 @@ export default function IntegrationsPage() {
         <div>
           <h1 className="page-title">Integrations</h1>
           <p className="page-sub">
-            Three connections run this app: Firebase (your private data), Google Workspace (Sheets and Gmail) and
+            Three connections run this app: Supabase (your private data), Google Workspace (Sheets and Gmail) and
             the AI provider you connect (Gemini, OpenAI, Claude or any compatible API).
           </p>
         </div>
@@ -141,8 +141,8 @@ export default function IntegrationsPage() {
         )}
 
         <Card
-          title="Firebase — authentication and Firestore"
-          sub="Every campaign, lead, research finding, draft, reply and knowledge note lives under your user record."
+          title="Supabase — accounts and workspace data"
+          sub="Every campaign, lead, research finding, draft, reply and knowledge note is stored in your workspace."
           actions={<Badge tone="ok">Connected</Badge>}
         >
           <div className="row" style={{ gap: 12, marginBottom: 10 }}>
@@ -153,8 +153,8 @@ export default function IntegrationsPage() {
             </div>
           </div>
           <p className="tiny" style={{ margin: 0 }}>
-            Access is enforced by Firestore security rules: a signed-in, verified user can only read and write their
-            own documents, and the default rule denies everything else.
+            Access is enforced on the server: every request is authenticated, and a signed-in user can only read
+            and write their own rows.
           </p>
         </Card>
 

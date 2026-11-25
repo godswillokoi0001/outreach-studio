@@ -1,6 +1,6 @@
 "use client";
 
-import { getFirebaseIdToken } from "./firebase";
+import { getAccessToken } from "./auth";
 import { ensureWorkspaceToken, readWorkspaceToken } from "./workspace";
 import { extractErrorMessageFromJson } from "./gemini-utils";
 import { aiConfigHeader, ensureAiConfigLoaded } from "./ai-client";
@@ -10,15 +10,15 @@ export async function authedPost<T>(
   body?: unknown,
   options?: { requireWorkspace?: boolean; retryTransient?: boolean },
 ): Promise<T> {
-  const firebaseToken = await getFirebaseIdToken();
-  if (!firebaseToken) {
+  const sessionToken = await getAccessToken();
+  if (!sessionToken) {
     throw new Error("Sign in with Google to continue.");
   }
 
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     Accept: "application/json",
-    "X-Firebase-Token": firebaseToken,
+    Authorization: `Bearer ${sessionToken}`,
   };
 
   // AI routes run against whichever provider/model the user connected in
@@ -37,9 +37,7 @@ export async function authedPost<T>(
         "Google Workspace is not connected. Click 'Connect Google' in the top bar to grant Sheets and Gmail access.",
       );
     }
-    headers.Authorization = `Bearer ${workspaceToken}`;
-  } else {
-    headers.Authorization = `Bearer ${firebaseToken}`;
+    headers["X-Google-Token"] = workspaceToken;
   }
 
   // AI routes are safe to replay, so they back off and retry instead of
@@ -125,11 +123,11 @@ export async function authedPost<T>(
 }
 
 export async function authedUpload<T>(path: string, form: FormData): Promise<T> {
-  const firebaseToken = await getFirebaseIdToken();
-  if (!firebaseToken) throw new Error("Sign in with Google to continue.");
+  const sessionToken = await getAccessToken();
+  if (!sessionToken) throw new Error("Sign in with Google to continue.");
   const res = await fetch(path, {
     method: "POST",
-    headers: { "X-Firebase-Token": firebaseToken, Accept: "application/json" },
+    headers: { Authorization: `Bearer ${sessionToken}`, Accept: "application/json" },
     body: form,
     cache: "no-store",
     credentials: "same-origin",

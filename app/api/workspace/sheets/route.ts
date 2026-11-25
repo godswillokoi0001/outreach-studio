@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { extractWorkspaceToken, handleApiError } from "@/lib/api-helpers";
 import { mapHeaders } from "@/lib/columns";
-import { verifyFirebaseRequest } from "@/lib/firebase-server-auth";
+import { verifyRequest } from "@/lib/server-auth";
 import { columnLetter, parseSheetUrl } from "@/lib/outreach-utils";
 
 const SHEETS_API = "https://sheets.googleapis.com/v4/spreadsheets";
@@ -38,7 +38,7 @@ function quoteTab(tab: string): string {
 
 export async function POST(req: NextRequest) {
   try {
-    await verifyFirebaseRequest(req);
+    await verifyRequest(req);
     const token = extractWorkspaceToken(req);
     const body = (await req.json()) as {
       action: "tabs" | "preview" | "values" | "writeback";

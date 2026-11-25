@@ -22,7 +22,7 @@ import {
   updateLeadFields,
   writeAuditLog,
   writeLeadEvent,
-} from "./firestore-store";
+} from "./store";
 import { checkSendWindow, createRfcMessageId, findFollowupCandidatesFromData } from "./outreach-utils";
 import type { ComposedEmail } from "./compose";
 import type { ReplyAnalysis } from "./intelligence";

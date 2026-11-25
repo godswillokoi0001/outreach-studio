@@ -29,7 +29,7 @@ const sections = [
     id: "storage-and-providers",
     title: "Storage, security, and service providers",
     paragraphs: [
-      "Workspace records are stored in Firebase/Cloud Firestore, and account settings are stored in Supabase. The service uses Vercel for hosting and Google APIs for Google-connected features. These providers process information as needed to provide their services and may store it in locations outside your country.",
+      "Workspace records and account settings are stored in Supabase. The service uses Vercel for hosting and Google APIs for Google-connected features. These providers process information as needed to provide their services and may store it in locations outside your country.",
       "Google connection credentials are handled by the service to maintain the connection; persistent refresh-token data is encrypted before it is stored in a secure, HTTP-only cookie. We use access controls and other safeguards designed to protect information, but no method of storage or transmission can be guaranteed completely secure.",
     ],
   },

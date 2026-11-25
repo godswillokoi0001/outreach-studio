@@ -16,7 +16,7 @@ import { Badge, Banner, Card, Empty, Stat } from "@/components/ui";
 import { LoadingPanel } from "@/components/Loading";
 import { CountUp } from "@/components/motion/CountUp";
 import { errorMessage } from "@/lib/client";
-import { loadDashboardBundle } from "@/lib/firestore-store";
+import { loadDashboardBundle } from "@/lib/store";
 import { label, statusTone } from "@/lib/format";
 
 type DashboardData = Awaited<ReturnType<typeof loadDashboardBundle>>;

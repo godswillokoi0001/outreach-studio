@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { extractWorkspaceToken, handleApiError } from "@/lib/api-helpers";
 import { fromB64url } from "@/lib/crypto";
-import { verifyFirebaseRequest } from "@/lib/firebase-server-auth";
+import { verifyRequest } from "@/lib/server-auth";
 import { buildOpenPixelUrl, buildRawEmail, encodeBase64Url, type RawEmailInput } from "@/lib/outreach-utils";
 
 const GMAIL_API = "https://gmail.googleapis.com/gmail/v1/users/me";
@@ -87,7 +87,7 @@ function decodeMessage(msg: GmailMessagePayload) {
 
 export async function POST(req: NextRequest) {
   try {
-    const user = await verifyFirebaseRequest(req);
+    const user = await verifyRequest(req);
     const token = extractWorkspaceToken(req);
     const body = (await req.json()) as {
       action: "profile" | "send" | "list" | "get" | "findSentByRfc";
@@ -115,7 +115,7 @@ export async function POST(req: NextRequest) {
       const pixelUrl =
         tracking?.enabled !== false && tracking?.messageId
           ? buildOpenPixelUrl(publicOrigin, {
-              ownerId: user.uid,
+              ownerId: user.ownerId,
               messageId: tracking.messageId,
               leadId: tracking.leadId ?? null,
             })

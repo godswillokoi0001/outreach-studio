@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { inflateRawSync, inflateSync } from "node:zlib";
 import { handleApiError } from "@/lib/api-helpers";
-import { verifyFirebaseRequest } from "@/lib/firebase-server-auth";
+import { verifyRequest } from "@/lib/server-auth";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -156,7 +156,7 @@ function stripHtml(html: string): string {
 
 export async function POST(req: NextRequest) {
   try {
-    await verifyFirebaseRequest(req);
+    await verifyRequest(req);
     const form = await req.formData();
     const file = form.get("file");
     if (!(file instanceof File)) {

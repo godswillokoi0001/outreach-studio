@@ -13,7 +13,7 @@ import {
   recordOutgoingReply,
   updateLeadFields,
   updateReplyHandled,
-} from "@/lib/firestore-store";
+} from "@/lib/store";
 import { createRfcMessageId } from "@/lib/outreach-utils";
 import { fmtDate } from "@/lib/format";
 import type { Lead, Message, Reply } from "@/lib/types";

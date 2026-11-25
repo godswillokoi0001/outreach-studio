@@ -1,13 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
-import { AuthError } from "./firebase-server-auth";
+import { AuthError } from "./server-auth";
 import { GeminiApiError, parseGeminiError } from "./gemini-utils";
 import { AiProviderError } from "./ai/types";
 
+/**
+ * The session travels in `Authorization` (Supabase access token); the Google
+ * Workspace access token travels in `X-Google-Token`, so the two never collide.
+ */
 export function extractWorkspaceToken(req: NextRequest): string {
-  const auth = req.headers.get("Authorization")?.trim() ?? "";
-  const token = auth.startsWith("Bearer ") ? auth.slice(7).trim() : "";
-  const fbToken = req.headers.get("X-Firebase-Token")?.trim() ?? "";
-  if (!token || (fbToken && token === fbToken)) {
+  const token = req.headers.get("X-Google-Token")?.trim() ?? "";
+  if (!token) {
     throw new AuthError(
       "Google Workspace access token missing. Click 'Reconnect Gmail & Sheets' in the top bar.",
       401,

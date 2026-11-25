@@ -29,7 +29,7 @@ import {
 import { AnimatePresence, motion } from "framer-motion";
 import { initAiConfig } from "@/lib/ai-client";
 import { errorMessage } from "@/lib/client";
-import { subscribeBadgeCounts, subscribeOpenEvents } from "@/lib/firestore-store";
+import { subscribeBadgeCounts, subscribeOpenEvents } from "@/lib/store";
 import { runSendBatch, runSyncBatch } from "@/lib/pipeline-client";
 import { useAuth } from "./AuthProvider";
 import { DashboardChat } from "./DashboardChat";

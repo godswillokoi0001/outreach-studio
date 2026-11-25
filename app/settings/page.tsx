@@ -10,7 +10,7 @@ import {
   listSuppressions,
   removeSuppression,
   saveSettings,
-} from "@/lib/firestore-store";
+} from "@/lib/store";
 import { fmtDate } from "@/lib/format";
 import { DEFAULT_SETTINGS, type Settings, type Suppression } from "@/lib/types";
 import { AiEngineCard } from "@/components/AiEngineCard";
@@ -37,7 +37,7 @@ export default function SettingsPage() {
       }
       if (active) setLoading(false);
 
-      // The suppression list is optional: a Firestore hiccup must not hide the
+      // The suppression list is optional: a database hiccup must not hide the
       // settings that did load.
       try {
         const sup = await listSuppressions(user.uid);
@@ -335,7 +335,7 @@ export default function SettingsPage() {
 
         <Card
           title="Data"
-          sub="Settings and your AI key live in your database (Supabase) behind your Google sign-in. Pipeline records stay in Firestore under the same account."
+          sub="Settings and your AI key live in your database (Supabase) behind your Google sign-in. Pipeline records live in Supabase under the same account."
         >
           <ul className="tiny" style={{ paddingLeft: 16 }}>
             <li>Delete a prospect and its emails from the Leads page; the deletion is recorded in the audit log.</li>

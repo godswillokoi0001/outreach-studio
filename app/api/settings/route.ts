@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getSupabaseSettingsServer, saveSupabaseSettingsServer } from "@/lib/supabase-server";
 import type { Settings } from "@/lib/types";
 import { handleApiError } from "@/lib/api-helpers";
-import { verifyFirebaseRequest } from "@/lib/firebase-server-auth";
+import { verifyRequest } from "@/lib/server-auth";
 
 /**
  * Settings REST boundary.
@@ -14,7 +14,7 @@ import { verifyFirebaseRequest } from "@/lib/firebase-server-auth";
  * - The whole document is persisted (identity, limits, AI engine), not just the
  *   AI fields: anything dropped here silently reverts to defaults on reload.
  * - Leads, Campaigns, Messages, Replies, Suppressions, SendLogs, AuditLogs and
- *   Knowledge stay on Firestore.
+ *   Knowledge live in the document tables behind /api/data.
  */
 export const dynamic = "force-dynamic";
 export const maxDuration = 30;
@@ -89,7 +89,7 @@ function supabaseConfigured(): boolean {
 
 export async function GET(req: NextRequest) {
   try {
-    await verifyFirebaseRequest(req);
+    await verifyRequest(req);
 
     if (!supabaseConfigured()) {
       return NextResponse.json(
@@ -107,7 +107,7 @@ export async function GET(req: NextRequest) {
 
 export async function PUT(req: NextRequest) {
   try {
-    await verifyFirebaseRequest(req);
+    await verifyRequest(req);
 
     if (!supabaseConfigured()) {
       return NextResponse.json(

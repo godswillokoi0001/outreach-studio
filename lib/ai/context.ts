@@ -6,8 +6,8 @@ import { getProvider, isProviderId, pickRecommendedModel, providerBaseUrl } from
 import type { AiConfig } from "./types";
 
 /**
- * Per-request AI configuration. The browser stores the user's key in their own
- * Firestore record and sends it with each AI call, so the server stays
+ * Per-request AI configuration. The browser reads the user's key from the
+ * private settings row and sends it with each AI call, so the server stays
  * stateless and never needs a service account.
  */
 const storage = new AsyncLocalStorage<AiConfig>();

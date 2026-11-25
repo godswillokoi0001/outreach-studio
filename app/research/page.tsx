@@ -7,7 +7,7 @@ import { BatchRunner } from "@/components/Runner";
 import { LoadingPanel } from "@/components/Loading";
 import { Badge, Banner, Card, Empty, Field } from "@/components/ui";
 import { authedPost, errorMessage } from "@/lib/client";
-import { createLead, getSettings, listCampaigns, listLeads } from "@/lib/firestore-store";
+import { createLead, getSettings, listCampaigns, listLeads } from "@/lib/store";
 import { label, statusTone } from "@/lib/format";
 import type { Campaign, Lead } from "@/lib/types";
 

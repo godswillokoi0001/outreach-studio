@@ -7,7 +7,7 @@ import { Banner, Card, Empty, Field } from "@/components/ui";
 import { LoadingPanel } from "@/components/Loading";
 import { authedPost, errorMessage } from "@/lib/client";
 import { LEAD_FIELDS } from "@/lib/columns";
-import { importSheetRows, listCampaigns } from "@/lib/firestore-store";
+import { importSheetRows, listCampaigns } from "@/lib/store";
 import { writebackCampaignStatuses } from "@/lib/pipeline-client";
 import type { Campaign } from "@/lib/types";
 
@@ -303,7 +303,7 @@ export default function SheetsPage() {
                   <div style={{ marginBottom: 14 }}>
                     <LoadingPanel
                       label={`Importing ${limit} prospects`}
-                      hint="Saving to Firestore and skipping duplicate email addresses…"
+                      hint="Saving and skipping duplicate email addresses…"
                       estimateMs={Math.min(60_000, 1_500 + limit * 120)}
                       compact
                     />

@@ -121,7 +121,7 @@ export const AGENT_TOOLS: FunctionDeclaration[] = [
   },
   {
     name: "list_leads",
-    description: "Search or list prospects/leads in Firestore with their IDs, statuses, scores, emails, and campaign IDs.",
+    description: "Search or list prospects/leads in the workspace with their IDs, statuses, scores, emails, and campaign IDs.",
     parameters: {
       type: Type.OBJECT,
       properties: {
@@ -140,7 +140,7 @@ export const AGENT_TOOLS: FunctionDeclaration[] = [
   },
   {
     name: "add_lead",
-    description: "Add a new prospect/lead manually to Firestore, optionally assigning them to a campaign.",
+    description: "Add a new prospect/lead manually to the workspace, optionally assigning them to a campaign.",
     parameters: {
       type: Type.OBJECT,
       properties: {
@@ -272,7 +272,7 @@ export const AGENT_TOOLS: FunctionDeclaration[] = [
   {
     name: "plan_and_create_campaign",
     description:
-      "Turn a plain-English goal into a structured outreach campaign using Gemini, create it in Firestore, and import its sheet or assign matching unprocessed leads.",
+      "Turn a plain-English goal into a structured outreach campaign using Gemini, create it in the workspace, and import its sheet or assign matching unprocessed leads.",
     parameters: {
       type: Type.OBJECT,
       properties: {

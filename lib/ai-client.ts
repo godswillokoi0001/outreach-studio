@@ -1,14 +1,12 @@
 "use client";
 
-import { getSettings } from "./firestore-store";
+import { getSettings } from "./store";
 import type { AiConfig, AiProviderId } from "./ai/types";
 import type { Settings } from "./types";
 
 /**
- * The browser owns the user's AI key. It is stored in the user's private
- * Firestore settings record and mirrored to Supabase for the migration, so the
- * config loader reads Firestore and falls back to the Supabase row (which is
- * only exposed through the authenticated /api/settings route).
+ * The browser owns the user's AI key. It is stored in the private settings row
+ * and only exposed through the authenticated /api/settings route.
  *
  * Nothing is written to localStorage.
  */

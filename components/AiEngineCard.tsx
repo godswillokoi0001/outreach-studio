@@ -17,7 +17,7 @@ import { AI_PROVIDERS, getProvider, guessProviderId } from "@/lib/ai/registry";
 import type { AiModelOption, AiProviderId } from "@/lib/ai/types";
 import { aiConfigFromSettings, setActiveAiConfig } from "@/lib/ai-client";
 import { authedPost, errorMessage } from "@/lib/client";
-import { saveSettings } from "@/lib/firestore-store";
+import { saveSettings } from "@/lib/store";
 import type { Settings } from "@/lib/types";
 import { Badge, Banner, Card, Field } from "./ui";
 

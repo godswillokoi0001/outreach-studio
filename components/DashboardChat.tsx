@@ -44,8 +44,8 @@ import {
 } from "@/lib/agent-meta";
 import { authedPost, errorMessage } from "@/lib/client";
 import { withRetry } from "@/lib/retry";
-import { getWorkspaceAccessToken } from "@/lib/firebase";
-import { getSettings } from "@/lib/firestore-store";
+import { readWorkspaceToken as getWorkspaceAccessToken } from "@/lib/workspace-token";
+import { getSettings } from "@/lib/store";
 import { useAuth } from "./AuthProvider";
 import { useAgentPresence } from "./AgentPresence";
 

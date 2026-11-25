@@ -2,21 +2,22 @@
 
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from "react";
 import { usePathname } from "next/navigation";
-import type { User } from "firebase/auth";
+import type { Session } from "@supabase/supabase-js";
 import {
-  connectWorkspacePopup,
-  logout,
+  fetchCurrentUser,
   signInWithGoogle,
+  signOut as signOutSupabase,
   subscribeAuthState,
-  testFirestoreConnection,
-} from "@/lib/firebase";
-import { ensureUserWorkspace } from "@/lib/firestore-store";
+  supabaseBrowser,
+  type AppUser,
+} from "@/lib/auth";
 import {
   ensureWorkspaceToken,
   readWorkspaceToken,
   startGoogleConnection,
   workspaceStatus,
 } from "@/lib/workspace";
+import { clearWorkspaceToken, writeWorkspaceToken } from "@/lib/workspace-token";
 import { PreAuth } from "./PreAuth";
 import { Shell } from "./Shell";
 
@@ -27,7 +28,7 @@ export interface WorkspaceIssue {
 }
 
 interface AuthContextValue {
-  user: User;
+  user: AppUser;
   workspaceToken: string | null;
   workspaceEmail: string | null;
   /** True when the server has a stored refresh token, so Gmail/Sheets survive reloads. */
@@ -50,23 +51,17 @@ export function useAuth(): AuthContextValue {
 
 function friendlyAuthError(err: unknown): string {
   const raw = err instanceof Error ? err.message : String(err);
-  if (raw.includes("auth/unauthorized-domain")) {
-    return "This domain is not authorised in Firebase yet. In Firebase Console → Authentication → Settings → Authorized domains, add localhost (and 127.0.0.1), then try again.";
+  if (/redirect_uri_mismatch|invalid redirect|redirect.*not allowed/i.test(raw)) {
+    return "Google sign-in returned to an address Supabase has not authorised. In Supabase → Authentication → URL Configuration, set the Site URL to this app's URL and add it to the redirect allow list, then try again.";
   }
-  if (raw.includes("auth/popup-closed-by-user") || raw.includes("auth/cancelled-popup-request")) {
-    return "Google sign-in was cancelled. Try again when you are ready.";
+  if (/provider is not enabled|unsupported provider/i.test(raw)) {
+    return "Google sign-in is disabled for this Supabase project. Enable the Google provider in Supabase → Authentication → Providers.";
   }
-  if (raw.includes("auth/popup-blocked")) {
-    return "Your browser blocked the sign-in popup. Allow popups for localhost and try again.";
+  if (/invalid or expired session|jwt|unauthorized/i.test(raw)) {
+    return "Your session expired. Sign in with Google again.";
   }
-  if (raw.includes("auth/operation-not-allowed")) {
-    return "Google sign-in is disabled for this Firebase project. Enable the Google provider in Firebase Console → Authentication → Sign-in method.";
-  }
-  if (raw.includes("auth/invalid-api-key") || raw.includes("auth/configuration-not-found")) {
-    return "The Firebase project configuration is not valid. Check firebase-applet-config.json and that the project still exists.";
-  }
-  if (raw.includes("permission-denied") || raw.includes("Missing or insufficient permissions")) {
-    return "Firestore denied the request. Deploy firestore.rules to the Firebase project (or check that your account's email is verified).";
+  if (/missing supabase|not configured/i.test(raw)) {
+    return "Supabase is not configured. Add NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY to the environment.";
   }
   if (/has not completed the Google verification|Access blocked|access_denied/i.test(raw)) {
     return "Google blocked this request because the app is not verified. Sign-in works without it; Gmail and Sheets need your Google account added as a test user in Google Cloud Console → OAuth consent screen → Test users, until the app is verified.";
@@ -88,7 +83,7 @@ function classifyWorkspaceError(err: unknown): WorkspaceIssue {
 export function AuthProvider({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const isPublicLegalPage = pathname === "/privacy-policy" || pathname === "/terms";
-  const [user, setUser] = useState<User | null>(null);
+  const [user, setUser] = useState<AppUser | null>(null);
   const [workspaceToken, setWorkspaceToken] = useState<string | null>(null);
   const [workspaceEmail, setWorkspaceEmail] = useState<string | null>(null);
   const [workspacePersistent, setWorkspacePersistent] = useState(false);
@@ -107,61 +102,80 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => {
-    void testFirestoreConnection();
-    const unsubscribe = subscribeAuthState(async (nextUser) => {
-      if (!nextUser) {
+    let active = true;
+
+    const applySession = async (session: Session | null) => {
+      if (!active) return;
+
+      if (!session?.access_token) {
+        clearWorkspaceToken();
         setUser(null);
         setWorkspaceToken(null);
         setWorkspaceEmail(null);
+        setWorkspacePersistent(false);
         setLoading(false);
         return;
       }
-      if (!nextUser.email || !nextUser.emailVerified) {
-        setAuthError("A verified Google account is required. Verify your email, then sign in again.");
-        await logout();
-        setUser(null);
-        setLoading(false);
-        return;
-      }
+
       try {
-        await ensureUserWorkspace(nextUser);
+        const current = await fetchCurrentUser();
+        if (!active) return;
+        if (!current) {
+          setUser(null);
+          setLoading(false);
+          return;
+        }
+        // A fresh Google consent can hand back a Workspace token; keep it in memory only.
+        if (session.provider_token) writeWorkspaceToken(session.provider_token, 3600);
         await hydrateWorkspace();
-        setUser(nextUser);
+        if (!active) return;
+        setUser(current);
         setAuthError(null);
       } catch (err) {
+        if (!active) return;
         setAuthError(friendlyAuthError(err));
+        setUser(null);
       } finally {
-        setLoading(false);
+        if (active) setLoading(false);
       }
+    };
+
+    void (async () => {
+      const { data } = await supabaseBrowser.auth.getSession();
+      await applySession(data.session);
+    })();
+
+    const unsubscribe = subscribeAuthState((session) => {
+      void applySession(session);
     });
-    return () => unsubscribe();
+
+    return () => {
+      active = false;
+      unsubscribe();
+    };
   }, [hydrateWorkspace]);
 
   const handleGoogleAuth = useCallback(async (): Promise<boolean> => {
     setSigningIn(true);
     setAuthError(null);
     try {
-      const { user: signedInUser } = await signInWithGoogle();
-      await ensureUserWorkspace(signedInUser);
-      setUser(signedInUser);
-      void hydrateWorkspace();
+      // Redirects the browser to Google; the /auth/callback route completes it.
+      await signInWithGoogle();
       return true;
     } catch (err) {
       setAuthError(friendlyAuthError(err));
-      return false;
-    } finally {
       setSigningIn(false);
+      return false;
     }
-  }, [hydrateWorkspace]);
+  }, []);
 
   const reconnectWorkspace = useCallback(async (): Promise<boolean> => {
     setWorkspaceIssue(null);
     const ready = await hydrateWorkspace();
     if (ready) return true;
 
-    // Prefer the app's own Google client when the server has one: it stores a
-    // refresh token, so the connection survives reloads. Only fall back to the
-    // Firebase popup (session-only access) when there is no server client.
+    // The server-side client stores a refresh token, so the connection survives
+    // reloads; there is no session-only popup fallback any more.
     let redirecting: boolean;
     try {
       redirecting = await startGoogleConnection();
@@ -171,20 +185,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
     if (redirecting) return false; // the browser is navigating to Google
 
-    try {
-      const { accessToken } = await connectWorkspacePopup();
-      setWorkspaceToken(accessToken);
-      setWorkspaceIssue(null);
-      void hydrateWorkspace();
-      return true;
-    } catch (err) {
-      setWorkspaceIssue(classifyWorkspaceError(err));
-      return false;
-    }
+    setWorkspaceIssue({
+      kind: "other",
+      message:
+        "Persistent Google connection is not configured. Add GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET to the server environment, then try again.",
+    });
+    return false;
   }, [hydrateWorkspace]);
 
   const signOut = async () => {
-    await logout();
+    await signOutSupabase();
+    clearWorkspaceToken();
     setUser(null);
     setWorkspaceToken(null);
     setWorkspaceEmail(null);

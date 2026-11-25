@@ -31,7 +31,7 @@ import {
   updateReplyHandled,
   upsertKnowledgeEntry,
   writeAuditLog,
-} from "./firestore-store";
+} from "./store";
 import type { CampaignPlan, DiscoveryCandidate, PerformanceInsight } from "./intelligence";
 import {
   buildLiveKnowledgeDigest,
