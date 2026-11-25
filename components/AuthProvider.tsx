@@ -18,6 +18,7 @@ import {
   workspaceStatus,
 } from "@/lib/workspace";
 import { clearWorkspaceToken, writeWorkspaceToken } from "@/lib/workspace-token";
+import { BrandLockup } from "./BrandMark";
 import { PreAuth } from "./PreAuth";
 import { Shell } from "./Shell";
 
@@ -207,17 +208,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   if (loading) {
     return (
       <div className="auth-shell">
-        <div className="auth-aurora" aria-hidden="true" />
         <div className="auth-loading">
-          <div className="login-brand" style={{ justifyContent: "center" }}>
-            <div className="brand-mark">
-              <img src="/brand/knowrevo-icon-t.png" alt="" aria-hidden="true" />
-            </div>
-            <div style={{ textAlign: "left" }}>
-              <div style={{ fontWeight: 700, fontSize: 16 }}>Knowrevo</div>
-              <div className="tiny">Checking your workspace session…</div>
-            </div>
-          </div>
+          <BrandLockup subtitle="Checking your workspace session…" />
           <div className="progress" style={{ justifyContent: "center", marginTop: 14 }}>
             <span className="spinner" />
             <span>Loading workspace…</span>

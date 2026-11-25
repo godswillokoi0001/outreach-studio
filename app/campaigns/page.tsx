@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { ArrowRight, MoreHorizontal, Sparkles, UserPlus } from "lucide-react";
+import { ArrowRight, MoreHorizontal, Plus, UserPlus } from "lucide-react";
 import { useAuth } from "@/components/AuthProvider";
 import { BatchRunner } from "@/components/Runner";
 import { LoadingPanel, Skeleton } from "@/components/Loading";
@@ -332,7 +332,7 @@ export default function CampaignsPage() {
             onClick={() => setPlannerOpen((open) => !open)}
             type="button"
           >
-            <Sparkles size={13} />
+            <Plus size={13} />
             {plannerOpen ? "Hide planner" : "Plan a campaign"}
           </button>
         </div>

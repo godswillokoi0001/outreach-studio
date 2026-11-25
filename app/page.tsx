@@ -2,15 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
-import {
-  ArrowRight,
-  ArrowUpRight,
-  CheckSquare,
-  Clock,
-  MessageSquare,
-  Search,
-  Sparkles,
-} from "lucide-react";
+import { ArrowRight, ArrowUpRight, Check } from "lucide-react";
 import { useAuth } from "@/components/AuthProvider";
 import { Badge, Banner, Card, Empty, Stat } from "@/components/ui";
 import { LoadingPanel } from "@/components/Loading";
@@ -79,12 +71,12 @@ export default function DashboardPage() {
     const maxSend = Math.max(1, ...days.map((day) => day.count));
 
     const funnel = [
-      { label: "Prospects", value: data.leads.total, soft: false },
-      { label: "Researched", value: data.leads.researched, soft: false },
-      { label: "Qualified", value: data.leads.qualified, soft: false },
-      { label: "Emails drafted", value: data.emails.generated, soft: true },
-      { label: "Sent", value: data.emails.sent, soft: false },
-      { label: "Replied", value: data.replies.total, soft: false },
+      { label: "Prospects", value: data.leads.total, final: false },
+      { label: "Researched", value: data.leads.researched, final: false },
+      { label: "Qualified", value: data.leads.qualified, final: false },
+      { label: "Drafted", value: data.emails.generated, final: false },
+      { label: "Sent", value: data.emails.sent, final: false },
+      { label: "Replied", value: data.replies.total, final: true },
     ];
     const funnelMax = Math.max(1, ...funnel.map((stage) => stage.value));
 
@@ -114,7 +106,7 @@ export default function DashboardPage() {
       {
         href: "/knowledge",
         title: "Business knowledge",
-        hint: data.knowledgeEmpty ? "Tell the AI who you are" : "In place",
+        hint: data.knowledgeEmpty ? "Tell Knowrevo who you are" : "In place",
         done: !data.knowledgeEmpty,
       },
       {
@@ -137,6 +129,39 @@ export default function DashboardPage() {
       },
     ];
 
+    const needs = [
+      {
+        href: "/review",
+        title: "Emails to review",
+        hint: pending ? "Drafts are waiting for your approval." : "New drafts will appear here.",
+        count: pending,
+        tone: pending ? "warn" : "muted",
+      },
+      {
+        href: "/conversations",
+        title: "Replies",
+        hint: data.replies.positive
+          ? `${data.replies.positive} interested — answer while it is warm.`
+          : "Synced from Gmail and classified.",
+        count: data.replies.total,
+        tone: data.replies.positive ? "active" : "muted",
+      },
+      {
+        href: "/followups",
+        title: "Follow-ups due",
+        hint: "Sequences stop automatically when someone replies.",
+        count: data.followupsDue,
+        tone: data.followupsDue ? "warn" : "muted",
+      },
+      {
+        href: "/research",
+        title: "Waiting for research",
+        hint: "Each prospect is checked against their real website.",
+        count: queued,
+        tone: queued ? "active" : "muted",
+      },
+    ];
+
     return {
       pending,
       queued,
@@ -151,10 +176,17 @@ export default function DashboardPage() {
       focus,
       summary,
       setup,
+      needs,
       freshAccount: data.leads.total === 0 && data.campaigns.length === 0,
       incompleteSetup: setup.some((step) => !step.done),
     };
   }, [data, workspaceToken]);
+
+  const todayLabel = new Date().toLocaleDateString(undefined, {
+    weekday: "long",
+    month: "long",
+    day: "numeric",
+  });
 
   return (
     <main className="page">
@@ -162,126 +194,180 @@ export default function DashboardPage() {
 
       {loading && !data && (
         <div className="stack">
-          <LoadingPanel
-            label="Preparing your workspace"
-            estimateMs={2300}
-            steps={LOAD_STEPS}
-          />
-          <div className="skel" style={{ height: 190, borderRadius: 18 }} />
+          <LoadingPanel label="Preparing your workspace" estimateMs={2300} steps={LOAD_STEPS} />
+          <div className="skel" style={{ height: 120 }} />
           <div className="grid grid-auto">
-            {[0, 1, 2, 3].map((index) => (
-              <div key={index} className="skel" style={{ height: 84 }} />
+            {[0, 1, 2, 3, 4].map((index) => (
+              <div key={index} className="skel" style={{ height: 82 }} />
             ))}
           </div>
           <div className="grid grid-2">
-            <div className="skel" style={{ height: 250 }} />
-            <div className="skel" style={{ height: 250 }} />
-          </div>
-          <div className="grid grid-2">
-            <div className="skel" style={{ height: 200 }} />
-            <div className="skel" style={{ height: 200 }} />
+            <div className="skel" style={{ height: 240 }} />
+            <div className="skel" style={{ height: 240 }} />
           </div>
         </div>
       )}
 
       {data && derived && (
-        <div className="stack">
-          <section className="hero dash-hero rise" aria-label="Workspace overview">
-            <div className="hero-eyebrow">Workspace overview</div>
-            <h1>
-              {greeting}, {firstName}.
-            </h1>
-            <p>{derived.summary}</p>
+        <div className="wk">
+          <header className="wk-head rise">
+            <div>
+              <div className="page-eyebrow">Workspace</div>
+              <h1 className="wk-title">
+                {greeting}, {firstName}.
+              </h1>
+              <p className="wk-summary">{derived.summary}</p>
 
-            <div className="dash-actions">
-              {!workspaceToken ? (
-                <button
-                  className="btn dash-cta"
-                  onClick={() => void reconnectWorkspace()}
-                  type="button"
-                >
-                  Connect Google
-                  <ArrowRight size={14} />
-                </button>
-              ) : derived.focus ? (
-                <Link className="btn dash-cta" href={derived.focus.href}>
-                  {derived.focus.label}
-                  <ArrowRight size={14} />
+              <div className="wk-actions">
+                {!workspaceToken ? (
+                  <button className="btn btn-primary" onClick={() => void reconnectWorkspace()} type="button">
+                    Connect Google
+                    <ArrowRight size={14} />
+                  </button>
+                ) : derived.focus ? (
+                  <Link className="btn btn-primary" href={derived.focus.href}>
+                    {derived.focus.label}
+                    <ArrowRight size={14} />
+                  </Link>
+                ) : null}
+                <Link className="btn" href="/campaigns">
+                  New campaign
                 </Link>
-              ) : null}
-              <Link className="btn dash-cta-ghost" href="/campaigns">
-                <Sparkles size={14} />
-                New campaign
-              </Link>
-              <Link className="btn dash-cta-ghost" href="/research">
-                <Search size={14} />
-                Discover prospects
-              </Link>
+                <Link className="btn btn-ghost" href="/research">
+                  Discover prospects
+                </Link>
+              </div>
             </div>
 
-            <div className="hero-grid">
-              <div className="hero-chip">
-                <div className="hero-chip-label">Prospects</div>
-                <div className="hero-chip-value">
-                  <CountUp value={data.leads.total} />
-                </div>
-                <div className="hero-chip-note">{data.leads.byStatus.new ?? 0} unprocessed</div>
+            <div className="wk-date">
+              <strong>{todayLabel}</strong>
+              {data.emails.sent} sent · {data.replies.total} replies all time
+            </div>
+          </header>
+
+          <section className="wk-kpis rise rise-1" aria-label="Key numbers">
+            <div className="wk-kpi">
+              <div className="wk-kpi-label">Prospects</div>
+              <div className="wk-kpi-value">
+                <CountUp value={data.leads.total} />
               </div>
-              <div className="hero-chip">
-                <div className="hero-chip-label">Qualified</div>
-                <div className="hero-chip-value">
-                  <CountUp value={data.leads.qualified} />
-                </div>
-                <div className="hero-chip-note">{data.leads.disqualified} disqualified</div>
+              <div className="wk-kpi-note">{data.leads.byStatus.new ?? 0} unprocessed</div>
+            </div>
+            <div className="wk-kpi">
+              <div className="wk-kpi-label">Qualified</div>
+              <div className="wk-kpi-value">
+                <CountUp value={data.leads.qualified} />
               </div>
-              <div className="hero-chip">
-                <div className="hero-chip-label">Awaiting approval</div>
-                <div className="hero-chip-value">
-                  <CountUp value={data.emails.pending} />
-                </div>
-                <div className="hero-chip-note">{data.emails.generated} drafted</div>
+              <div className="wk-kpi-note">{data.leads.disqualified} disqualified</div>
+            </div>
+            <div className="wk-kpi" data-accent={derived.pending ? "true" : undefined}>
+              <div className="wk-kpi-label">Awaiting approval</div>
+              <div className="wk-kpi-value">
+                <CountUp value={data.emails.pending} />
               </div>
-              <div className="hero-chip">
-                <div className="hero-chip-label">Emails opened</div>
-                <div className="hero-chip-value">
-                  <CountUp value={derived.openedMessages} />
-                </div>
-                <div className="hero-chip-note">
-                  {derived.opensToday > 0
-                    ? `${derived.opensToday} open${derived.opensToday === 1 ? "" : "s"} today`
-                    : `${derived.openRate}% of sends`}
-                </div>
+              <div className="wk-kpi-note">{data.emails.generated} drafted</div>
+            </div>
+            <div className="wk-kpi">
+              <div className="wk-kpi-label">Opened</div>
+              <div className="wk-kpi-value">
+                <CountUp value={derived.openedMessages} />
               </div>
-              <div className="hero-chip">
-                <div className="hero-chip-label">Reply rate</div>
-                <div className="hero-chip-value">
-                  <CountUp
-                    value={derived.replyRate}
-                    suffix="%"
-                    decimals={derived.replyRate % 1 === 0 ? 0 : 1}
-                  />
-                </div>
-                <div className="hero-chip-note">
-                  {data.replies.total} of {data.emails.sent} sent
-                </div>
+              <div className="wk-kpi-note">
+                {derived.opensToday > 0
+                  ? `${derived.opensToday} open${derived.opensToday === 1 ? "" : "s"} today`
+                  : `${derived.openRate}% of sends`}
+              </div>
+            </div>
+            <div className="wk-kpi">
+              <div className="wk-kpi-label">Reply rate</div>
+              <div className="wk-kpi-value">
+                <CountUp
+                  value={derived.replyRate}
+                  suffix="%"
+                  decimals={derived.replyRate % 1 === 0 ? 0 : 1}
+                />
+              </div>
+              <div className="wk-kpi-note">
+                {data.replies.total} of {data.emails.sent} sent
               </div>
             </div>
           </section>
+
+          <div className="wk-split rise rise-1">
+            <Card
+              title="Needs your attention"
+              sub="The next four decisions in the pipeline."
+              actions={
+                <Link className="btn btn-sm btn-ghost" href="/review">
+                  Open review
+                </Link>
+              }
+            >
+              <div className="wk-rows">
+                {derived.needs.map((need) => (
+                  <Link key={need.href} className="wk-row" href={need.href}>
+                    <div>
+                      <div className="wk-row-title">
+                        <span className="wk-dot" data-tone={need.tone} />
+                        {need.title}
+                      </div>
+                      <div className="wk-row-hint">{need.hint}</div>
+                    </div>
+                    <div className="wk-row-end">
+                      <span className="wk-count" data-zero={need.count ? undefined : "true"}>
+                        {need.count || "—"}
+                      </span>
+                      <ArrowRight size={14} className="wk-arrow" aria-hidden="true" />
+                    </div>
+                  </Link>
+                ))}
+              </div>
+            </Card>
+
+            <Card
+              title="Pipeline"
+              sub="Where every prospect currently sits"
+              actions={
+                <Link className="btn btn-sm btn-ghost" href="/leads">
+                  All leads
+                </Link>
+              }
+            >
+              <div className="wk-bars">
+                {derived.funnel.map((stage) => (
+                  <div key={stage.label} className="wk-bar-row">
+                    <span className="wk-bar-label">{stage.label}</span>
+                    <span className="wk-bar-track">
+                      <span
+                        className="wk-bar-fill"
+                        data-final={stage.final ? "true" : undefined}
+                        style={{ width: `${Math.max(2, (stage.value / derived.funnelMax) * 100)}%` }}
+                      />
+                    </span>
+                    <span className="wk-bar-value">{stage.value}</span>
+                  </div>
+                ))}
+              </div>
+              <p className="wk-foot-note">
+                {data.leads.total
+                  ? `${Math.round((data.leads.researched / Math.max(1, data.leads.total)) * 100)}% of prospects have research evidence stored.`
+                  : "Import prospects and the pipeline fills itself in."}
+              </p>
+            </Card>
+          </div>
 
           {derived.incompleteSetup && (
             <Card
               title={derived.freshAccount ? "Get set up in four steps" : "Finish your setup"}
               sub="Each step is optional to look at, but the pipeline only runs when all four are done."
             >
-              <div className="setup-path">
+              <div className="wk-setup">
                 {derived.setup.map((step, index) => (
-                  <Link key={step.href} href={step.href} className="setup-step" data-done={step.done}>
-                    <span className="setup-num">{step.done ? "✓" : index + 1}</span>
+                  <Link key={step.href} href={step.href} className="wk-setup-step" data-done={step.done}>
+                    <span className="wk-setup-n">{step.done ? <Check size={11} /> : index + 1}</span>
                     <span>
-                      <span className="setup-title" style={{ display: "block" }}>
-                        {step.title}
-                      </span>
-                      <span className="setup-hint">{step.hint}</span>
+                      <span className="wk-setup-title">{step.title}</span>
+                      <span className="wk-setup-hint">{step.hint}</span>
                     </span>
                   </Link>
                 ))}
@@ -289,133 +375,58 @@ export default function DashboardPage() {
             </Card>
           )}
 
-          <div className="quick-grid rise rise-1">
-            <QuickCard
-              href="/review"
-              icon={<CheckSquare size={17} strokeWidth={1.8} />}
-              title="Emails to review"
-              count={data.emails.pending}
-              hint={
-                data.emails.pending
-                  ? "Nothing sends without your approval."
-                  : "New drafts will appear here."
-              }
-              tone={data.emails.pending ? "warn" : "idle"}
-            />
-            <QuickCard
-              href="/conversations"
-              icon={<MessageSquare size={17} strokeWidth={1.8} />}
-              title="Replies"
-              count={data.replies.total}
-              hint={
-                data.replies.positive
-                  ? `${data.replies.positive} interested — answer while it is warm.`
-                  : "Synced from Gmail and classified."
-              }
-              tone={data.replies.positive ? undefined : "idle"}
-            />
-            <QuickCard
-              href="/followups"
-              icon={<Clock size={17} strokeWidth={1.8} />}
-              title="Follow-ups due"
-              count={data.followupsDue}
-              hint="Sequences stop automatically on reply."
-              tone={data.followupsDue ? "warn" : "idle"}
-            />
-            <QuickCard
-              href="/research"
-              icon={<Search size={17} strokeWidth={1.8} />}
-              title="Waiting for research"
-              count={derived.queued}
-              hint="Each prospect is checked against their real website."
-              tone={derived.queued ? undefined : "idle"}
-            />
-          </div>
-
-          <div className="grid grid-2 rise rise-2">
-            <Card
-              title="Pipeline"
-              sub="Where every prospect currently sits"
-              actions={
-                <Link className="btn btn-sm" href="/leads">
-                  All leads
-                </Link>
-              }
-            >
-              <div className="funnel">
-                {derived.funnel.map((stage) => (
-                  <div key={stage.label} className="funnel-row">
-                    <span className="funnel-label">{stage.label}</span>
-                    <span className="funnel-track">
-                      <span
-                        className={`funnel-fill${stage.soft ? " soft" : ""}`}
-                        style={{ width: `${Math.max(2, (stage.value / derived.funnelMax) * 100)}%` }}
-                      />
-                    </span>
-                    <span className="funnel-value">{stage.value}</span>
-                  </div>
-                ))}
-              </div>
-              <p className="funnel-note">
-                {data.leads.total
-                  ? `${Math.round((data.leads.researched / Math.max(1, data.leads.total)) * 100)}% of your prospects have research evidence stored.`
-                  : "Import prospects and the funnel fills itself in."}
-              </p>
-            </Card>
-
-            <Card
-              title="Campaigns"
-              sub="Live status of your outreach"
-              actions={
-                <Link className="btn btn-sm" href="/campaigns">
-                  Manage
-                </Link>
-              }
-            >
-              {data.campaigns.length === 0 ? (
-                <Empty title="No campaigns yet">
-                  Plan one from the <Link href="/campaigns">campaigns page</Link>, or import a sheet to get prospects
-                  first.
-                </Empty>
-              ) : (
-                <div className="table-wrap">
-                  <table>
-                    <thead>
-                      <tr>
-                        <th>Campaign</th>
-                        <th>Status</th>
-                        <th className="num">Leads</th>
-                        <th className="num">Sent</th>
-                        <th className="num">Waiting</th>
-                        <th className="num">Replies</th>
+          <Card
+            title="Campaigns"
+            sub="Live status of your outreach"
+            actions={
+              <Link className="btn btn-sm btn-ghost" href="/campaigns">
+                Manage
+              </Link>
+            }
+          >
+            {data.campaigns.length === 0 ? (
+              <Empty title="No campaigns yet">
+                Plan one from the <Link href="/campaigns">campaigns page</Link>, or import a sheet to get prospects
+                first.
+              </Empty>
+            ) : (
+              <div className="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Campaign</th>
+                      <th>Status</th>
+                      <th className="num">Leads</th>
+                      <th className="num">Sent</th>
+                      <th className="num">Waiting</th>
+                      <th className="num">Replies</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {data.campaigns.map((campaign) => (
+                      <tr key={campaign.id}>
+                        <td className="strong">{campaign.name}</td>
+                        <td>
+                          <Badge tone={statusTone(campaign.status)}>{label(campaign.status)}</Badge>
+                        </td>
+                        <td className="num">{campaign.leads}</td>
+                        <td className="num">{campaign.sent}</td>
+                        <td className="num">{campaign.pending}</td>
+                        <td className="num">{campaign.replies}</td>
                       </tr>
-                    </thead>
-                    <tbody>
-                      {data.campaigns.map((campaign) => (
-                        <tr key={campaign.id}>
-                          <td className="strong">{campaign.name}</td>
-                          <td>
-                            <Badge tone={statusTone(campaign.status)}>{label(campaign.status)}</Badge>
-                          </td>
-                          <td className="num">{campaign.leads}</td>
-                          <td className="num">{campaign.sent}</td>
-                          <td className="num">{campaign.pending}</td>
-                          <td className="num">{campaign.replies}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </Card>
-          </div>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </Card>
 
-          <div className="grid grid-2">
+          <div className="wk-split">
             <Card
               title="Sending activity"
               sub="Confirmed Gmail sends, last 14 days"
               actions={
-                <Link className="btn btn-sm" href="/analytics">
+                <Link className="btn btn-sm btn-ghost" href="/analytics">
                   Analytics
                   <ArrowUpRight size={12} />
                 </Link>
@@ -427,18 +438,18 @@ export default function DashboardPage() {
                 </Empty>
               ) : (
                 <>
-                  <div className="spark" aria-hidden="true">
+                  <div className="wk-chart" aria-hidden="true">
                     {derived.days.map((day) => (
-                      <div key={day.key} className="spark-col" title={`${day.key}: ${day.count} sent`}>
+                      <div key={day.key} className="wk-chart-col" title={`${day.key}: ${day.count} sent`}>
                         <div
-                          className="spark-bar"
-                          style={{ height: `${Math.max(4, (day.count / derived.maxSend) * 84)}px` }}
+                          className="wk-chart-bar"
+                          style={{ height: `${Math.max(4, (day.count / derived.maxSend) * 72)}px` }}
                         />
-                        <span className="spark-day">{day.short}</span>
+                        <span className="wk-chart-day">{day.short}</span>
                       </div>
                     ))}
                   </div>
-                  <div className="row" style={{ marginTop: 14 }}>
+                  <div className="grid grid-3" style={{ marginTop: 16 }}>
                     <Stat
                       label="Sent"
                       value={data.emails.sent}
@@ -457,10 +468,10 @@ export default function DashboardPage() {
                   Imports, research runs, approvals and sends are logged here.
                 </Empty>
               ) : (
-                <ul className="feed">
+                <ul className="wk-feed">
                   {data.activity.map((item, index) => (
                     <li key={`${item.created_at}-${index}`}>
-                      <span className="feed-time">
+                      <span className="wk-feed-time">
                         {new Date(item.created_at).toLocaleString(undefined, {
                           day: "2-digit",
                           month: "short",
@@ -468,7 +479,7 @@ export default function DashboardPage() {
                           minute: "2-digit",
                         })}
                       </span>
-                      <span className="feed-text">{item.action.replace(/_/g, " ")}</span>
+                      <span className="wk-feed-text">{item.action.replace(/_/g, " ")}</span>
                     </li>
                   ))}
                 </ul>
@@ -478,36 +489,5 @@ export default function DashboardPage() {
         </div>
       )}
     </main>
-  );
-}
-
-function QuickCard({
-  href,
-  icon,
-  title,
-  count,
-  hint,
-  tone,
-}: {
-  href: string;
-  icon: React.ReactNode;
-  title: string;
-  count: number;
-  hint: string;
-  tone?: string | null;
-}) {
-  return (
-    <Link className="quick-card" href={href} data-tone={tone ?? undefined}>
-      <span className="quick-icon" aria-hidden="true">
-        {icon}
-      </span>
-      <span className="quick-body">
-        <span className="quick-title" style={{ display: "block" }}>
-          {title}
-        </span>
-        <span className="quick-hint">{hint}</span>
-      </span>
-      <span className={`quick-count${count ? "" : " null"}`}>{count || "—"}</span>
-    </Link>
   );
 }

@@ -1082,7 +1082,7 @@ export async function executeAgentTool(
 
       case "suppress_email": {
         const email = asStr(args.email);
-        const reason = asStr(args.reason, "Added by AI Operator");
+        const reason = asStr(args.reason, "Added by the operator");
         if (!email) {
           return { ok: false, summary: "Email address is required.", data: { error: "email is required" } };
         }

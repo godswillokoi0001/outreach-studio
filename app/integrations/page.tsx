@@ -10,7 +10,6 @@ import {
   Mail,
   Plug,
   ShieldCheck,
-  Sparkles,
   Unplug,
 } from "lucide-react";
 import Link from "next/link";
@@ -249,7 +248,6 @@ export default function IntegrationsPage() {
           }
         >
           <div className="row" style={{ gap: 10, marginBottom: 12 }}>
-            <Sparkles size={17} style={{ color: "var(--accent)" }} />
             <span style={{ fontSize: 13 }}>
               {aiSettings?.ai_api_key
                 ? `Every AI call uses ${getProvider(aiSettings.ai_provider)?.label ?? aiSettings.ai_provider} · ${aiSettings.model}.`

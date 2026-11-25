@@ -129,7 +129,7 @@ export function normalizeAgentTurnResponse(raw: unknown): {
   modelUsed: string;
 } {
   if (!raw || typeof raw !== "object") {
-    throw new Error("The AI Operator received an empty response from the server. Please try again.");
+    throw new Error("The operator received an empty response from the server. Please try again.");
   }
   const obj = raw as Partial<AgentTurnResponse> & { error?: unknown };
   if (typeof obj.error === "string" && obj.error.trim()) {

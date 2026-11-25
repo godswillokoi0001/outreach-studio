@@ -13,8 +13,8 @@ import {
   MousePointerClick,
   Search,
   ShieldCheck,
-  Sparkles,
 } from "lucide-react";
+import { BrandLockup } from "./BrandMark";
 
 const PROOF_POINTS = [
   {
@@ -65,12 +65,8 @@ export function LoginGate({
 
   return (
     <main className="auth-shell">
-      <div className="auth-aurora" aria-hidden="true" />
-
       <div className="auth-top">
-        <div className="landing-brand">
-          <img src="/brand/knowrevo-logo-t.png" alt="Knowrevo" className="landing-logo" />
-        </div>
+        <BrandLockup />
         {onBack && (
           <button type="button" className="btn btn-ghost auth-back" onClick={onBack}>
             <ArrowLeft size={14} />
@@ -86,16 +82,15 @@ export function LoginGate({
         transition={{ type: "spring", stiffness: 240, damping: 26 }}
       >
         <aside className="auth-aside">
-          <div className="auth-aside-glow" aria-hidden="true" />
           <div className="auth-aside-top">
-            <span className="auth-eyebrow">Knowledge-powered outreach</span>
+            <span className="auth-eyebrow">Knowrevo workspace</span>
             <h2>
               Your knowledge.
               <br />
               Your next customer.
             </h2>
             <p>
-              Research, personalised writing, approved sending and live open + reply signals — in one private
+              Research, personal writing, approved sending and live open and reply signals — in one private
               workspace.
             </p>
           </div>
@@ -152,9 +147,6 @@ export function LoginGate({
               exit={{ opacity: 0, y: -4 }}
               transition={{ duration: 0.18, ease: "easeOut" }}
             >
-              <span className="auth-heading-icon">
-                <Sparkles size={16} />
-              </span>
               <h1>{isSignup ? "Start your workspace" : "Welcome back"}</h1>
               <p>
                 {isSignup

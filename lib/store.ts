@@ -866,7 +866,7 @@ export async function addLeadsToCampaign(
         updatedAt: serverTimestamp(),
       });
     } catch (err) {
-      handleFirestoreError(err, OperationType.UPDATE, path);
+      handleDataError(err, OperationType.UPDATE, path);
     }
   }
   return moving.length;

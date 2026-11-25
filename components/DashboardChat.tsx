@@ -12,7 +12,6 @@ import {
 import {
   AlertCircle,
   ArrowUpRight,
-  Bot,
   CheckCircle2,
   ChevronDown,
   ChevronUp,
@@ -26,7 +25,6 @@ import {
   Send,
   ShieldAlert,
   ShieldCheck,
-  Sparkles,
   Square,
   Trash2,
   X,
@@ -48,6 +46,7 @@ import { withRetry } from "@/lib/retry";
 import { readWorkspaceToken as getWorkspaceAccessToken } from "@/lib/workspace-token";
 import { getSettings } from "@/lib/store";
 import { useAuth } from "./AuthProvider";
+import { BrandMark } from "./BrandMark";
 import { useAgentPresence } from "./AgentPresence";
 
 interface ActionStep {
@@ -824,7 +823,7 @@ export function DashboardChat({
   if (!open) {
     if (!busy) return null;
     return (
-      <div className="agent-mini" role="status" aria-live="polite" aria-label="AI Operator is working">
+      <div className="agent-mini" role="status" aria-live="polite" aria-label="Operator is working">
         <span className="agent-mini-spinner" aria-hidden="true" />
         <span className="agent-mini-text">{liveLine}</span>
         <span className="agent-mini-elapsed">{elapsed}s</span>
@@ -856,7 +855,7 @@ export function DashboardChat({
           ? { left: dockPos.x, top: dockPos.y, right: "auto", bottom: "auto" }
           : undefined
       }
-      aria-label="AI Operator"
+      aria-label="Operator"
     >
       <div
         className="chat-header"
@@ -872,10 +871,10 @@ export function DashboardChat({
             <GripVertical size={13} />
           </span>
           <div className={`chat-avatar${busy ? " busy" : ""}`}>
-            <Sparkles size={15} />
+            <BrandMark size={20} />
           </div>
           <div style={{ minWidth: 0 }}>
-            <div className="chat-title">AI Operator</div>
+            <div className="chat-title">Operator</div>
             <div className="chat-live-line" data-busy={busy ? "true" : "false"} title={liveLine}>
               <span className="chat-live-dot" />
               <span className="chat-live-text">{liveLine}</span>
@@ -956,8 +955,8 @@ export function DashboardChat({
             type="button"
             className="btn btn-sm btn-ghost"
             onClick={() => setCollapsed((value) => !value)}
-            title={collapsed ? "Expand AI Operator" : "Collapse AI Operator"}
-            aria-label={collapsed ? "Expand AI Operator" : "Collapse AI Operator"}
+            title={collapsed ? "Expand operator" : "Collapse operator"}
+            aria-label={collapsed ? "Expand operator" : "Collapse operator"}
             aria-expanded={!collapsed}
           >
             {collapsed ? <ChevronUp size={15} /> : <ChevronDown size={15} />}
@@ -966,8 +965,8 @@ export function DashboardChat({
             type="button"
             className="btn btn-sm btn-ghost"
             onClick={onClose}
-            title="Close AI Operator"
-            aria-label="Close AI Operator"
+            title="Close operator"
+            aria-label="Close operator"
           >
             <X size={15} />
           </button>
@@ -1032,7 +1031,7 @@ export function DashboardChat({
         ) : messages.length === 0 ? (
           <div className="chat-empty">
             <div className="chat-empty-icon">
-              <Bot size={20} />
+              <MousePointer2 size={19} />
             </div>
             <h3>Tell me what to do in your dashboard</h3>
             <p>

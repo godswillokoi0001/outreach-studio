@@ -15,6 +15,7 @@ import {
   LogOut,
   Menu,
   MessageSquare,
+  MousePointer2,
   MousePointerClick,
   PanelLeftClose,
   PanelLeftOpen,
@@ -23,8 +24,8 @@ import {
   Search,
   Send,
   Settings,
-  Sparkles,
   Users,
+  X,
 } from "lucide-react";
 import { AnimatePresence, motion } from "framer-motion";
 import { initAiConfig } from "@/lib/ai-client";
@@ -32,6 +33,7 @@ import { errorMessage } from "@/lib/client";
 import { subscribeBadgeCounts, subscribeOpenEvents } from "@/lib/store";
 import { runSendBatch, runSyncBatch } from "@/lib/pipeline-client";
 import { useAuth } from "./AuthProvider";
+import { BrandLockup } from "./BrandMark";
 import { DashboardChat } from "./DashboardChat";
 import { AgentPresenceProvider } from "./AgentPresence";
 import { TaskDockProvider, useTaskDock } from "./Loading";
@@ -253,18 +255,24 @@ function ShellInner({ children }: { children: ReactNode }) {
   };
 
   const displayName = user.displayName || user.email || "Signed in";
+  const currentSection = NAV.flatMap((group) => group.items).find((item) =>
+    item.href === "/" ? pathname === "/" : pathname.startsWith(item.href),
+  );
 
   return (
     <div className="app" data-collapsed={collapsed ? "true" : "false"}>
       <aside className={`sidebar${open ? " open" : ""}`}>
         <div className="brand">
-          <div className="brand-mark">
-            <img src="/brand/knowrevo-icon-dark.png" alt="" aria-hidden="true" />
-          </div>
-          <div className="brand-copy">
-            <div className="brand-name">Knowrevo</div>
-            <div className="brand-sub">Knowledge-powered outreach</div>
-          </div>
+          <BrandLockup tone="dark" size={30} subtitle="Knowledge-powered outreach" />
+          <button
+            className="sidebar-close"
+            onClick={() => setOpen(false)}
+            type="button"
+            aria-label="Close navigation"
+            title="Close menu"
+          >
+            <X size={15} />
+          </button>
           <button
             className="sidebar-toggle"
             onClick={toggleNav}
@@ -319,6 +327,14 @@ function ShellInner({ children }: { children: ReactNode }) {
         </nav>
       </aside>
 
+      <button
+        className="sidebar-scrim"
+        type="button"
+        aria-label="Close navigation"
+        tabIndex={open ? 0 : -1}
+        onClick={() => setOpen(false)}
+      />
+
       <div className="main" data-refresh={refreshKey}>
         <header className="topbar">
           <button
@@ -330,7 +346,11 @@ function ShellInner({ children }: { children: ReactNode }) {
             <Menu size={15} />
             <span>Menu</span>
           </button>
-          <div className="topbar-title">Knowrevo</div>
+          <div className="topbar-crumb">
+            <span className="topbar-crumb-muted">Knowrevo</span>
+            <span className="topbar-crumb-sep">/</span>
+            <span className="topbar-title">{currentSection?.label ?? "Dashboard"}</span>
+          </div>
           <div className="topbar-spacer" />
           <div className="topbar-actions">
             {syncNote && <span className="tiny" style={{ maxWidth: 240 }}>{syncNote}</span>}
@@ -366,11 +386,20 @@ function ShellInner({ children }: { children: ReactNode }) {
               onClick={() => setChatOpen((v) => !v)}
               type="button"
               aria-pressed={chatOpen}
+              aria-label="Operator"
+              title="Operator"
             >
-              <Sparkles size={13} />
-              <span>AI Operator</span>
+              <MousePointer2 size={13} />
+              <span>Operator</span>
             </button>
-            <button className="btn btn-sm" onClick={() => void runSync()} disabled={syncing} type="button">
+            <button
+              className="btn btn-sm"
+              onClick={() => void runSync()}
+              disabled={syncing}
+              type="button"
+              aria-label={syncing ? "Syncing replies" : "Sync replies"}
+              title="Sync replies from Gmail"
+            >
               <RefreshCw size={13} className={syncing ? "spin-icon" : undefined} />
               <span>{syncing ? "Syncing…" : "Sync"}</span>
             </button>

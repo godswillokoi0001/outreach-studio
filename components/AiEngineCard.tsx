@@ -7,11 +7,11 @@ import {
   Eye,
   EyeOff,
   KeyRound,
+  Activity,
   Loader2,
   Plug,
   RefreshCw,
   Trash2,
-  Zap,
 } from "lucide-react";
 import { AI_PROVIDERS, getProvider, guessProviderId } from "@/lib/ai/registry";
 import type { AiModelOption, AiProviderId } from "@/lib/ai/types";
@@ -325,7 +325,7 @@ export function AiEngineCard({
             <span>{busy === "detect" ? "Detecting provider & models…" : connected ? "Re-detect & refresh models" : "Connect & detect"}</span>
           </button>
           <button className="btn btn-sm" type="button" onClick={() => void test()} disabled={busy !== null || !connected}>
-            <Zap size={13} />
+            <Activity size={13} />
             <span>{busy === "test" ? "Testing…" : "Test connection"}</span>
           </button>
           {connected && (
