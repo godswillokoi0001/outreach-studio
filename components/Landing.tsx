@@ -455,6 +455,8 @@ export function Landing({
           Research → qualify → write → send → know what happened.
         </span>
         <div className="landing-footer-links">
+          <a href="/privacy-policy">Privacy</a>
+          <a href="/terms">Terms</a>
           <button type="button" onClick={onSignIn}>
             Sign in
           </button>

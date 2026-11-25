@@ -1,6 +1,7 @@
 "use client";
 
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from "react";
+import { usePathname } from "next/navigation";
 import type { User } from "firebase/auth";
 import {
   connectWorkspacePopup,
@@ -85,6 +86,8 @@ function classifyWorkspaceError(err: unknown): WorkspaceIssue {
 }
 
 export function AuthProvider({ children }: { children: ReactNode }) {
+  const pathname = usePathname();
+  const isPublicLegalPage = pathname === "/privacy-policy" || pathname === "/terms";
   const [user, setUser] = useState<User | null>(null);
   const [workspaceToken, setWorkspaceToken] = useState<string | null>(null);
   const [workspaceEmail, setWorkspaceEmail] = useState<string | null>(null);
@@ -187,6 +190,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setWorkspaceEmail(null);
     setWorkspaceIssue(null);
   };
+
+  if (isPublicLegalPage) return <>{children}</>;
 
   if (loading) {
     return (
