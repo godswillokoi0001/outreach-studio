@@ -73,12 +73,6 @@ const STEPS = [
   },
 ];
 
-const PROOF = [
-  { value: "4.2×", label: "more replies on researched prospects" },
-  { value: "12s", label: "to know an email was opened" },
-  { value: "0", label: "emails sent without approval" },
-];
-
 export function Landing({
   onSignIn,
   onSignUp,
@@ -381,29 +375,6 @@ export function Landing({
                 <p>{step.body}</p>
               </article>
             ))}
-          </div>
-        </section>
-
-        <section className="landing-proof">
-          {PROOF.map((item) => (
-            <div key={item.label}>
-              <strong>{item.value}</strong>
-              <span>{item.label}</span>
-            </div>
-          ))}
-        </section>
-
-        <section className="landing-quote">
-          <blockquote>
-            “The open notifications changed how I follow up. I used to guess who was warm. Now I know exactly which
-            email to answer first.”
-          </blockquote>
-          <div className="landing-quote-by">
-            <span className="landing-quote-avatar">AO</span>
-            <div>
-              <strong>Alex O.</strong>
-              <span>Founder, boutique web studio</span>
-            </div>
           </div>
         </section>
 
