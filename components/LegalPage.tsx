@@ -21,8 +21,10 @@ export function LegalPage({
     <main className="legal-page">
       <header className="legal-topbar">
         <Link className="legal-brand" href="/">
-          <span className="brand-mark" aria-hidden="true">OS</span>
-          <span>Outreach Studio</span>
+          <span className="brand-mark" aria-hidden="true">
+            <img src="/brand/knowrevo-icon-t.png" alt="" />
+          </span>
+          <span>Knowrevo</span>
         </Link>
         <Link className="legal-back" href="/">
           <ArrowLeft size={14} aria-hidden="true" />
@@ -64,14 +66,14 @@ export function LegalPage({
               <strong>Questions about this document?</strong>
               <p>Contact us at <a href="mailto:hello@godswillokoi.site">hello@godswillokoi.site</a>.</p>
             </div>
-            <a className="legal-contact-link" href="mailto:hello@godswillokoi.site" aria-label="Email Outreach Studio">
+            <a className="legal-contact-link" href="mailto:hello@godswillokoi.site" aria-label="Email Knowrevo">
               <ArrowUpRight size={16} aria-hidden="true" />
             </a>
           </aside>
         </article>
       </div>
       <footer className="legal-footer">
-        <span>Outreach Studio</span>
+        <span>Knowrevo</span>
         <div><Link href="/privacy-policy">Privacy</Link><Link href="/terms">Terms</Link></div>
       </footer>
     </main>

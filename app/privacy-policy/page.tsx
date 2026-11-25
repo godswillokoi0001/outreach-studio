@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import { LegalPage } from "@/components/LegalPage";
 
 export const metadata: Metadata = {
-  title: "Privacy Policy | Outreach Studio",
-  description: "How Outreach Studio collects, uses, and protects information when you use the service.",
+  title: "Privacy Policy | Knowrevo",
+  description: "How Knowrevo collects, uses, and protects information when you use the service.",
 };
 
 const sections = [
@@ -11,7 +11,7 @@ const sections = [
     id: "information-we-handle",
     title: "Information we handle",
     paragraphs: [
-      "Outreach Studio is a workspace for researching prospects and managing email outreach. Depending on the features you use, the service handles account details such as your name, email address, and account identifier; settings and business knowledge you provide; and workspace records such as prospect details, campaign drafts, approved messages, replies, and activity.",
+      "Knowrevo is a workspace for researching prospects and managing email outreach. Depending on the features you use, the service handles account details such as your name, email address, and account identifier; settings and business knowledge you provide; and workspace records such as prospect details, campaign drafts, approved messages, replies, and activity.",
       "If you connect Google, the service requests the Google permissions shown during consent so it can work with your Gmail and Google Sheets. This can include spreadsheet content you choose to import or update, messages and message metadata needed to send approved email and sync replies, and account information used to identify the connected Google account. You can disconnect Google access through your Google Account security settings.",
       "When a recipient loads remote images in an email, a small tracking image may record an open event, the message and prospect identifiers, timestamp, and the recipient mail client’s user-agent string. Image prefetching by mail clients can make open events inaccurate; recipients can prevent this tracking by blocking remote images.",
     ],
@@ -53,7 +53,7 @@ const sections = [
     id: "children-and-changes",
     title: "Children and policy updates",
     paragraphs: [
-      "Outreach Studio is intended for business use and is not directed to children. We may update this policy as the service changes. The updated date above indicates when the latest version was published; continued use after an update means the updated policy applies to future use.",
+      "Knowrevo is intended for business use and is not directed to children. We may update this policy as the service changes. The updated date above indicates when the latest version was published; continued use after an update means the updated policy applies to future use.",
     ],
   },
 ] satisfies Parameters<typeof LegalPage>[0]["sections"];
@@ -62,7 +62,7 @@ export default function PrivacyPolicyPage() {
   return (
     <LegalPage
       title="Privacy policy"
-      summary="A straightforward account of what Outreach Studio handles, why it is needed, and the choices you have."
+      summary="A straightforward account of what Knowrevo handles, why it is needed, and the choices you have."
       sections={sections}
     />
   );

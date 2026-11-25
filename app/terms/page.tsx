@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import { LegalPage } from "@/components/LegalPage";
 
 export const metadata: Metadata = {
-  title: "Terms of Service | Outreach Studio",
-  description: "Terms governing your use of Outreach Studio for prospect research and email outreach.",
+  title: "Terms of Service | Knowrevo",
+  description: "Terms governing your use of Knowrevo for prospect research and email outreach.",
 };
 
 const sections = [
@@ -11,14 +11,14 @@ const sections = [
     id: "accepting-terms",
     title: "Accepting these terms",
     paragraphs: [
-      "These Terms of Service apply when you access or use Outreach Studio. By using the service, you agree to these terms. If you use it for a business or other organization, you confirm that you are authorized to accept these terms on its behalf.",
+      "These Terms of Service apply when you access or use Knowrevo. By using the service, you agree to these terms. If you use it for a business or other organization, you confirm that you are authorized to accept these terms on its behalf.",
     ],
   },
   {
     id: "using-the-service",
     title: "Using the service",
     paragraphs: [
-      "Outreach Studio provides tools for managing prospect information, researching businesses, preparing outreach, connecting Google services, and reviewing campaign activity. You must provide accurate account information, protect access to your account, and use the service only as permitted by applicable law and these terms.",
+      "Knowrevo provides tools for managing prospect information, researching businesses, preparing outreach, connecting Google services, and reviewing campaign activity. You must provide accurate account information, protect access to your account, and use the service only as permitted by applicable law and these terms.",
       "You are responsible for the information you submit, the Google account and other integrations you connect, and the messages you approve or send. Keep your credentials secure and promptly contact us if you believe your account has been used without permission.",
     ],
   },
@@ -48,8 +48,8 @@ const sections = [
     id: "availability-and-liability",
     title: "Availability and disclaimers",
     paragraphs: [
-      "The service is provided on an “as available” basis. We do not guarantee uninterrupted availability, delivery of any email, inbox placement, recipient engagement, accuracy of third-party data, or any particular sales result. Google and other providers may change or limit their services, which can affect Outreach Studio features.",
-      "To the extent permitted by law, Outreach Studio is provided without warranties of any kind, express or implied. Nothing in these terms excludes a right or liability that cannot legally be excluded.",
+      "The service is provided on an “as available” basis. We do not guarantee uninterrupted availability, delivery of any email, inbox placement, recipient engagement, accuracy of third-party data, or any particular sales result. Google and other providers may change or limit their services, which can affect Knowrevo features.",
+      "To the extent permitted by law, Knowrevo is provided without warranties of any kind, express or implied. Nothing in these terms excludes a right or liability that cannot legally be excluded.",
     ],
   },
   {
@@ -72,7 +72,7 @@ export default function TermsPage() {
   return (
     <LegalPage
       title="Terms of service"
-      summary="The responsibilities and ground rules for using Outreach Studio to manage prospecting and outreach."
+      summary="The responsibilities and ground rules for using Knowrevo to manage prospecting and outreach."
       sections={sections}
     />
   );
