@@ -92,8 +92,7 @@ export function Landing({
 
       <header className="landing-nav">
         <div className="landing-brand">
-          <span className="brand-mark">OS</span>
-          <span className="landing-brand-name">Outreach Studio</span>
+          <img src="/brand/knowrevo-logo-t.png" alt="Knowrevo" className="landing-logo" />
         </div>
         <nav className="landing-links" aria-label="Sections">
           <a href="#product">Product</a>
@@ -117,18 +116,16 @@ export function Landing({
           <div className="landing-hero-copy">
             <span className="landing-pill">
               <Sparkles size={13} />
-              AI prospecting that reports back
+              Knowledge-powered outreach
             </span>
             <h1>
-              Know who <em>opened</em>.
+              Your knowledge.
               <br />
-              Know who <em>replied</em>.
-              <br />
-              Never send blind.
+              <em>Your next customer.</em>
             </h1>
             <p>
-              Outreach Studio researches each prospect, writes from your own knowledge, sends from your Gmail, and
-              tells you the second a message is read or answered.
+              Knowrevo researches prospects, learns from your business knowledge, creates personalized emails and tracks
+              engagement and replies — all from one workspace.
             </p>
             <div className="landing-hero-actions">
               <button type="button" className="btn landing-cta" onClick={onSignUp}>
@@ -158,11 +155,13 @@ export function Landing({
                 <span className="mock-dot" />
                 <span className="mock-dot" />
                 <span className="mock-dot" />
-                <span className="mock-url">outreach.studio/dashboard</span>
+                <span className="mock-url">knowrevo.app/dashboard</span>
               </div>
               <div className="mock-body">
                 <div className="mock-side">
-                  <span className="mock-brand">OS</span>
+                  <span className="mock-brand">
+                    <img src="/brand/knowrevo-icon-dark.png" alt="" aria-hidden="true" />
+                  </span>
                   {["Dashboard", "Leads", "Campaigns", "Review", "Conversations", "Analytics"].map((item, index) => (
                     <span key={item} className={`mock-nav${index === 0 ? " active" : ""}`}>
                       {item}
@@ -418,7 +417,7 @@ export function Landing({
             <ul className="landing-checks">
               <li>
                 <ShieldCheck size={15} />
-                <span>Per-account isolation with Firestore security rules.</span>
+                <span>Per-account isolation on every request.</span>
               </li>
               <li>
                 <CheckCircle2 size={15} />
@@ -448,8 +447,7 @@ export function Landing({
 
       <footer className="landing-footer">
         <div className="landing-brand">
-          <span className="brand-mark">OS</span>
-          <span className="landing-brand-name">Outreach Studio</span>
+          <img src="/brand/knowrevo-logo-t.png" alt="Knowrevo" className="landing-logo" />
         </div>
         <span className="landing-footer-note">
           Research → qualify → write → send → know what happened.

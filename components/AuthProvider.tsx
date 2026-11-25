@@ -199,9 +199,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         <div className="auth-aurora" aria-hidden="true" />
         <div className="auth-loading">
           <div className="login-brand" style={{ justifyContent: "center" }}>
-            <div className="brand-mark">OS</div>
+            <div className="brand-mark">
+              <img src="/brand/knowrevo-icon-t.png" alt="" aria-hidden="true" />
+            </div>
             <div style={{ textAlign: "left" }}>
-              <div style={{ fontWeight: 600, fontSize: 16 }}>Outreach Studio</div>
+              <div style={{ fontWeight: 700, fontSize: 16 }}>Knowrevo</div>
               <div className="tiny">Checking your workspace session…</div>
             </div>
           </div>

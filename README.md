@@ -1,4 +1,4 @@
-# Outreach Studio
+# Knowrevo
 
 An AI sales-intelligence and cold-outreach workspace. It reads your prospect list, researches each business,
 qualifies it against what you actually sell, writes a personalised email, and — once you approve it — sends it

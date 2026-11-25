@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useAuth } from "@/components/AuthProvider";
 import { Badge, Banner, Card, Empty, Modal, Pager, Progress } from "@/components/ui";
 import { errorMessage } from "@/lib/client";
@@ -25,6 +25,27 @@ export default function SentPage() {
   const [opens, setOpens] = useState<EmailOpen[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  const reload = useCallback(async () => {
+    try {
+      const [m, l, o] = await Promise.all([
+        listMessages(user.uid),
+        listLeads(user.uid),
+        listOpenEvents(user.uid),
+      ]);
+      setMessages(m);
+      setLeads(l);
+      setOpens(o);
+    } catch (err) {
+      setError(errorMessage(err));
+    }
+  }, [user.uid]);
+
+  useEffect(() => {
+    const onRefresh = () => void reload();
+    window.addEventListener("os:data-refreshed", onRefresh);
+    return () => window.removeEventListener("os:data-refreshed", onRefresh);
+  }, [reload]);
 
   useEffect(() => {
     let active = true;
@@ -155,7 +176,13 @@ export default function SentPage() {
                         <div className="tiny">{message.lead_email ?? ""}</div>
                       </td>
                       <td style={{ maxWidth: 340 }}>{message.subject ?? "—"}</td>
-                      <td className="tiny">{message.kind === "followup" ? "Follow-up" : "Initial"}</td>
+                      <td className="tiny">
+                        {message.kind === "followup"
+                          ? "Follow-up"
+                          : message.kind === "reply"
+                            ? "Your reply"
+                            : "Initial"}
+                      </td>
                       <td>
                         <Badge tone={statusTone(message.status)}>{label(message.status)}</Badge>
                         {message.error && <div className="tiny">{message.error.slice(0, 90)}</div>}

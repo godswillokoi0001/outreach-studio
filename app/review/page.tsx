@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useAuth } from "@/components/AuthProvider";
+import { BatchRunner } from "@/components/Runner";
 import { Badge, Banner, Card, Empty, Modal, Pager, Progress } from "@/components/ui";
 import { authedPost, errorMessage } from "@/lib/client";
 import type { ComposedEmail } from "@/lib/compose";
@@ -16,7 +17,7 @@ import {
   updateMessageStatus,
 } from "@/lib/firestore-store";
 import { fmtDate, label, statusTone } from "@/lib/format";
-import { buildLiveKnowledgeDigest } from "@/lib/pipeline-client";
+import { buildLiveKnowledgeDigest, sendMessageNow } from "@/lib/pipeline-client";
 import type { Campaign, Lead, Message } from "@/lib/types";
 
 interface MessageRow extends Message {
@@ -37,7 +38,7 @@ const TABS = [
 const PAGE_SIZE = 20;
 
 export default function ReviewPage() {
-  const { user } = useAuth();
+  const { user, workspaceToken, reconnectWorkspace } = useAuth();
   const [tab, setTab] = useState<string>("pending_approval");
   const [campaign, setCampaign] = useState("");
   const [page, setPage] = useState(1);
@@ -97,6 +98,12 @@ export default function ReviewPage() {
     };
   }, [user.uid]);
 
+  useEffect(() => {
+    const onRefresh = () => void reload();
+    window.addEventListener("os:data-refreshed", onRefresh);
+    return () => window.removeEventListener("os:data-refreshed", onRefresh);
+  }, [reload]);
+
   const rows: MessageRow[] = useMemo(() => {
     const leadMap = new Map(leads.map((l) => [l.id, l]));
     return messages.map((m) => {
@@ -138,6 +145,34 @@ export default function ReviewPage() {
     setOpen(message);
     setSubject(message.subject ?? "");
     setBody(message.body ?? "");
+  };
+
+  const sendNow = async (message: MessageRow) => {
+    setBusy(`send:${message.id}`);
+    setError(null);
+    setNotice(null);
+    try {
+      if (!workspaceToken) {
+        const ok = await reconnectWorkspace();
+        if (!ok) throw new Error("Connect Google before sending emails.");
+      }
+      // Save any edits, then approve, so "Send now" works straight from the modal.
+      await updateMessageContent(user.uid, message.id, { subject, body });
+      if (message.status !== "approved") {
+        await updateMessageStatus(user.uid, message.id, "approved", {
+          approved_at: new Date().toISOString(),
+        });
+        await updateLeadFields(user.uid, message.lead_id, { status: "approved" });
+      }
+      const result = await sendMessageNow(user.uid, message.id);
+      setNotice(result.info);
+      setOpen(null);
+      await reload();
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setBusy(null);
+    }
   };
 
   const act = async (action: "approve_all" | "edit" | "approve" | "reject" | "regenerate", id?: string) => {
@@ -285,6 +320,13 @@ export default function ReviewPage() {
               >
                 Approve all pending in campaign
               </button>
+              <BatchRunner
+                type="send"
+                label="Send all approved"
+                limit={2}
+                confirmText="Send every approved email now from your connected Gmail account? They go to real prospects."
+                onDone={reload}
+              />
               <span className="tiny row-end">{filtered.length} emails</span>
             </div>
           </div>
@@ -322,7 +364,13 @@ export default function ReviewPage() {
                         </div>
                       </td>
                       <td style={{ maxWidth: 320 }}>{message.subject ?? "—"}</td>
-                      <td className="tiny">{message.kind === "followup" ? `Follow-up ${message.step}` : "Initial"}</td>
+                      <td className="tiny">
+                        {message.kind === "followup"
+                          ? `Follow-up ${message.step}`
+                          : message.kind === "reply"
+                            ? "Your reply"
+                            : "Initial"}
+                      </td>
                       <td className="num">{message.score ?? "—"}</td>
                       <td>
                         <Badge tone={statusTone(message.status)}>{label(message.status)}</Badge>
@@ -372,6 +420,14 @@ export default function ReviewPage() {
             <div className="row" style={{ marginBottom: 10 }}>
               <button
                 className="btn btn-sm btn-primary"
+                onClick={() => void sendNow(open)}
+                disabled={busy !== null}
+                type="button"
+              >
+                {busy === `send:${open.id}` ? "Sending…" : "Send now"}
+              </button>
+              <button
+                className="btn btn-sm"
                 onClick={() => void act("approve", open.id)}
                 disabled={busy !== null}
                 type="button"

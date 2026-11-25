@@ -1111,7 +1111,7 @@ export function DashboardChat({
           placeholder={
             pendingConfirm
               ? "Confirm or cancel the pending action above…"
-              : "Tell me what you want done in Outreach Studio…"
+              : "Tell me what you want done in Knowrevo…"
           }
           value={input}
           disabled={busy || Boolean(pendingConfirm)}

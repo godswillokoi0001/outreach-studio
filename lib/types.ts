@@ -118,7 +118,7 @@ export interface Message {
   lead_id: string;
   campaign_id: string | null;
   step: number;
-  kind: "initial" | "followup";
+  kind: "initial" | "followup" | "reply";
   subject: string | null;
   body: string | null;
   angle: string | null;

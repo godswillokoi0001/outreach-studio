@@ -69,8 +69,7 @@ export function LoginGate({
 
       <div className="auth-top">
         <div className="landing-brand">
-          <span className="brand-mark">OS</span>
-          <span className="landing-brand-name">Outreach Studio</span>
+          <img src="/brand/knowrevo-logo-t.png" alt="Knowrevo" className="landing-logo" />
         </div>
         {onBack && (
           <button type="button" className="btn btn-ghost auth-back" onClick={onBack}>
@@ -89,11 +88,11 @@ export function LoginGate({
         <aside className="auth-aside">
           <div className="auth-aside-glow" aria-hidden="true" />
           <div className="auth-aside-top">
-            <span className="auth-eyebrow">The outreach workspace</span>
+            <span className="auth-eyebrow">Knowledge-powered outreach</span>
             <h2>
-              Outreach that
+              Your knowledge.
               <br />
-              reports back.
+              Your next customer.
             </h2>
             <p>
               Research, personalised writing, approved sending and live open + reply signals — in one private
@@ -258,7 +257,7 @@ export function LoginGate({
           </ul>
 
           <div className="auth-switch">
-            {isSignup ? "Already have a workspace?" : "New to Outreach Studio?"}{" "}
+            {isSignup ? "Already have a workspace?" : "New to Knowrevo?"}{" "}
             <button type="button" onClick={() => setMode(isSignup ? "signin" : "signup")}>
               {isSignup ? "Sign in" : "Create an account"}
             </button>

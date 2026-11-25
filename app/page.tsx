@@ -22,7 +22,7 @@ import { label, statusTone } from "@/lib/format";
 type DashboardData = Awaited<ReturnType<typeof loadDashboardBundle>>;
 
 const LOAD_STEPS = [
-  { label: "Opening your Firestore workspace", ms: 700 },
+  { label: "Opening your Knowrevo workspace", ms: 700 },
   { label: "Loading prospects and campaigns", ms: 900 },
   { label: "Tallying emails, replies and activity", ms: 700 },
 ];

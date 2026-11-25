@@ -30,7 +30,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import { initAiConfig } from "@/lib/ai-client";
 import { errorMessage } from "@/lib/client";
 import { subscribeBadgeCounts, subscribeOpenEvents } from "@/lib/firestore-store";
-import { runSyncBatch } from "@/lib/pipeline-client";
+import { runSendBatch, runSyncBatch } from "@/lib/pipeline-client";
 import { useAuth } from "./AuthProvider";
 import { DashboardChat } from "./DashboardChat";
 import { AgentPresenceProvider } from "./AgentPresence";
@@ -189,7 +189,10 @@ function ShellInner({ children }: { children: ReactNode }) {
       const message = result.info || `Synced (${result.processed} new).`;
       setSyncNote(result.errors.length ? result.errors[0] : message);
       task.finish(result.errors.length && !result.processed ? "error" : "done", message);
-      if (result.processed > 0) setRefreshKey((k) => k + 1);
+      if (result.processed > 0) {
+        setRefreshKey((k) => k + 1);
+        window.dispatchEvent(new Event("os:data-refreshed"));
+      }
     } catch (err) {
       const message = errorMessage(err);
       setSyncNote(message);
@@ -198,6 +201,51 @@ function ShellInner({ children }: { children: ReactNode }) {
       setSyncing(false);
     }
   };
+
+  // Background pipeline: once per ten minutes per tab, pull new replies and send
+  // anything already approved. Both respect the user's limits, window and
+  // suppression list, so this only automates the clicks, never the policy.
+  useEffect(() => {
+    if (!user?.uid || !workspaceToken) return;
+    const KEY = "os:auto-pipeline";
+    let last = 0;
+    try {
+      last = Number(window.sessionStorage.getItem(KEY) ?? 0);
+    } catch {
+      last = 0;
+    }
+    if (Date.now() - last < 10 * 60 * 1000) return;
+    try {
+      window.sessionStorage.setItem(KEY, String(Date.now()));
+    } catch {
+      /* storage unavailable */
+    }
+
+    let cancelled = false;
+    void (async () => {
+      try {
+        const sync = await runSyncBatch(user.uid, 10);
+        if (cancelled) return;
+        if (sync.processed > 0) {
+          setRefreshKey((k) => k + 1);
+          window.dispatchEvent(new Event("os:data-refreshed"));
+        }
+        const send = await runSendBatch(user.uid, undefined, 2);
+        if (cancelled) return;
+        if (send.processed > 0) {
+          setSyncNote(send.info ?? `Auto-sent ${send.processed} approved email(s).`);
+          setRefreshKey((k) => k + 1);
+          window.dispatchEvent(new Event("os:data-refreshed"));
+        }
+      } catch {
+        // Background automation is best-effort; the manual buttons stay available.
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [user?.uid, workspaceToken]);
 
   const badgeFor = (href: string): number | null => {
     if (href === "/review") return counts.review || null;
@@ -212,10 +260,12 @@ function ShellInner({ children }: { children: ReactNode }) {
     <div className="app" data-collapsed={collapsed ? "true" : "false"}>
       <aside className={`sidebar${open ? " open" : ""}`}>
         <div className="brand">
-          <div className="brand-mark">OS</div>
+          <div className="brand-mark">
+            <img src="/brand/knowrevo-icon-dark.png" alt="" aria-hidden="true" />
+          </div>
           <div className="brand-copy">
-            <div className="brand-name">Outreach Studio</div>
-            <div className="brand-sub">Sales intelligence</div>
+            <div className="brand-name">Knowrevo</div>
+            <div className="brand-sub">Knowledge-powered outreach</div>
           </div>
           <button
             className="sidebar-toggle"
@@ -282,7 +332,7 @@ function ShellInner({ children }: { children: ReactNode }) {
             <Menu size={15} />
             <span>Menu</span>
           </button>
-          <div className="topbar-title">Outreach Studio</div>
+          <div className="topbar-title">Knowrevo</div>
           <div className="topbar-spacer" />
           <div className="topbar-actions">
             {syncNote && <span className="tiny" style={{ maxWidth: 240 }}>{syncNote}</span>}

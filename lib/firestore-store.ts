@@ -1054,7 +1054,8 @@ function mapMessage(id: string, data: Record<string, unknown>): Message {
     lead_id: String(data.lead_id ?? ""),
     campaign_id: data.campaign_id ? String(data.campaign_id) : null,
     step: Number(data.step ?? 1),
-    kind: data.kind === "followup" ? "followup" : "initial",
+    kind:
+      data.kind === "followup" ? "followup" : data.kind === "reply" ? "reply" : "initial",
     subject: data.subject ? String(data.subject) : null,
     body: data.body ? String(data.body) : null,
     angle: data.angle ? String(data.angle) : null,
@@ -1090,7 +1091,7 @@ export async function createMessage(
     lead_id: string;
     campaign_id: string | null;
     step: number;
-    kind: "initial" | "followup";
+    kind: "initial" | "followup" | "reply";
     subject: string;
     body: string;
     angle: string;
@@ -1121,6 +1122,49 @@ export async function createMessage(
       sent_at: null,
       error: null,
       approved_at: input.status === "approved" ? nowIso : null,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
+    return id;
+  } catch (err) {
+    handleFirestoreError(err, OperationType.CREATE, path);
+  }
+}
+
+/** Store a reply the operator sent from the app so the thread stays complete. */
+export async function recordOutgoingReply(
+  uid: string,
+  input: {
+    lead_id: string;
+    campaign_id: string | null;
+    subject: string;
+    body: string;
+    gmail_id: string;
+    thread_id: string | null;
+  },
+): Promise<string> {
+  const id = randomId("msg");
+  const path = `users/${uid}/messages/${id}`;
+  const nowIso = new Date().toISOString();
+  try {
+    await setDoc(doc(db, "users", uid, "messages", id), {
+      ownerId: uid,
+      lead_id: input.lead_id,
+      campaign_id: input.campaign_id,
+      step: 0,
+      kind: "reply",
+      subject: clampStr(input.subject, 200),
+      body: clampStr(input.body, 12000),
+      angle: null,
+      rationale: null,
+      service: null,
+      status: "sent",
+      gmail_id: clampStr(input.gmail_id, 200),
+      thread_id: clampStr(input.thread_id, 200),
+      rfc_message_id: null,
+      sent_at: nowIso,
+      error: null,
+      approved_at: null,
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
     });

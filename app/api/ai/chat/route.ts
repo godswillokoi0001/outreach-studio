@@ -18,7 +18,7 @@ interface ChatContext {
 }
 
 function buildSystemInstruction(ctx: ChatContext): string {
-  return `You are the Outreach Studio Dashboard Operator — an autonomous, action-oriented AI assistant embedded directly inside the user's Outreach Studio workspace.
+  return `You are the Knowrevo Dashboard Operator — an autonomous, action-oriented AI assistant embedded directly inside the user's Knowrevo workspace.
 
 Your job is to DO things for the user inside their dashboard using the provided tools, not just give instructions. Whenever the user asks you to inspect, create, import, research, qualify, draft, review, update, navigate, sync, or send anything, call the appropriate tools right away so they can watch it happen live on screen.
 

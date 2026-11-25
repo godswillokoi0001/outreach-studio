@@ -31,7 +31,7 @@ export async function POST(req: NextRequest) {
         try {
           const res = await fetch(item.url, {
             signal: controller.signal,
-            headers: { "User-Agent": "OutreachStudio/1.0" },
+            headers: { "User-Agent": "Knowrevo/1.0" },
           });
           if (!res.ok) return;
           const text = stripHtml((await res.text()).slice(0, 200_000)).slice(0, 4000);

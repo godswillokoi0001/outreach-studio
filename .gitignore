@@ -13,5 +13,9 @@ cookies.txt
 !.env.example
 .dev.vars
 .dev.vars.*
+
+# Firebase service-account keys used only for the one-off Supabase migration
+firebase-service-account*.json
+service-account*.json
 *.log
 .DS_Store

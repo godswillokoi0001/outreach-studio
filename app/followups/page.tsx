@@ -29,6 +29,13 @@ export default function FollowupsPage() {
     }
   }, [user.uid]);
 
+  // Keep the due list fresh after the background reply sync or a send.
+  useEffect(() => {
+    const onRefresh = () => void reload();
+    window.addEventListener("os:data-refreshed", onRefresh);
+    return () => window.removeEventListener("os:data-refreshed", onRefresh);
+  }, [reload]);
+
   useEffect(() => {
     let active = true;
     loadFollowupsBundle(user.uid).then(
@@ -72,6 +79,13 @@ export default function FollowupsPage() {
         <Card title="Generate follow-ups" sub="Writes the next scheduled message for each due prospect.">
           <div className="row">
             <BatchRunner type="followup" label="Prepare due follow-ups" limit={2} variant="primary" onDone={reload} />
+            <BatchRunner
+              type="send"
+              label="Send approved emails"
+              limit={2}
+              confirmText="Send every approved email now, including follow-ups, from your connected Gmail account? They go to real prospects."
+              onDone={reload}
+            />
             <Link className="btn btn-sm" href="/review">
               Review drafted follow-ups
             </Link>

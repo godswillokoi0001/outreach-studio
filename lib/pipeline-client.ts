@@ -437,7 +437,19 @@ export async function runSendBatch(
   });
 
   if (queue.length === 0) {
-    return { processed: 0, remaining: 0, details: [], errors: [], info: "No approved emails waiting to send." };
+    const approvedSomewhere = messages.filter(
+      (m) => m.status === "approved" && (!campaignId || m.campaign_id === campaignId),
+    );
+    const blockedByCampaign = approvedSomewhere.length > 0;
+    return {
+      processed: 0,
+      remaining: 0,
+      details: [],
+      errors: [],
+      info: blockedByCampaign
+        ? "These emails are approved, but their campaign is not. Approve or resume the campaign first."
+        : "No approved emails waiting to send.",
+    };
   }
 
   const windowCheck = checkSendWindow(settings);
@@ -567,6 +579,90 @@ export async function runSendBatch(
     details,
     errors,
   };
+}
+
+/** Send one specific approved email immediately (the per-message Send now action). */
+export async function sendMessageNow(
+  uid: string,
+  messageId: string,
+): Promise<{ processed: number; info: string }> {
+  if (!(await ensureWorkspaceToken())) {
+    throw new Error("Connect Google (click 'Connect Google' in the top bar) before sending emails.");
+  }
+
+  const [leads, campaigns, messages, suppressions, settings] = await Promise.all([
+    listLeads(uid),
+    listCampaigns(uid),
+    listMessages(uid),
+    listSuppressions(uid),
+    getSettings(uid),
+  ]);
+
+  const msg = messages.find((m) => m.id === messageId);
+  if (!msg) throw new Error("That email no longer exists. Reload and try again.");
+  if (msg.status === "sent") return { processed: 0, info: "That email was already sent." };
+  if (msg.status === "sending") throw new Error("That email is already being sent.");
+  if (msg.status !== "approved") throw new Error("Approve the email before sending it.");
+
+  const lead = leads.find((l) => l.id === msg.lead_id);
+  if (!lead?.email) throw new Error("This prospect has no email address.");
+  if (suppressions.some((s) => s.email.toLowerCase() === lead.email!.toLowerCase())) {
+    throw new Error("This address is on the suppression list.");
+  }
+
+  if (msg.campaign_id) {
+    const camp = campaigns.find((c) => c.id === msg.campaign_id);
+    if (camp && camp.status !== "approved" && camp.status !== "running") {
+      throw new Error(
+        `Campaign "${camp.name}" is ${camp.status}. Approve or resume it before sending its emails.`,
+      );
+    }
+  }
+
+  const quota = await getSendQuotaState(uid, settings);
+  if (settings.daily_limit - quota.sendsTodayCount <= 0) {
+    throw new Error(`Daily send limit reached (${settings.daily_limit}/day).`);
+  }
+
+  const profile = await authedPost<{ emailAddress: string }>(
+    "/api/workspace/gmail",
+    { action: "profile" },
+    { requireWorkspace: true },
+  );
+  const senderEmail = settings.sender_email?.trim() || profile.emailAddress;
+  const rfcMessageId = createRfcMessageId(msg.id, senderEmail);
+  const previousSent = messages
+    .filter((m) => m.lead_id === lead.id && m.status === "sent")
+    .sort((a, b) => (b.sent_at ?? "").localeCompare(a.sent_at ?? ""))[0];
+
+  try {
+    await markMessageSending(uid, msg.id, rfcMessageId);
+    const sent = await authedPost<{ id: string; threadId: string }>(
+      "/api/workspace/gmail",
+      {
+        action: "send",
+        email: {
+          to: lead.email,
+          from: senderEmail,
+          fromName: settings.sender_name || settings.sender_company || senderEmail,
+          subject: msg.subject ?? "(no subject)",
+          body: msg.body ?? "",
+          rfcMessageId,
+          inReplyTo: msg.kind === "followup" ? previousSent?.rfc_message_id ?? null : null,
+          threadId: msg.kind === "followup" ? previousSent?.thread_id ?? null : null,
+          unsubscribeEmail: settings.unsubscribe_email || senderEmail,
+          tracking: { enabled: true, messageId: msg.id, leadId: lead.id },
+        },
+      },
+      { requireWorkspace: true },
+    );
+    await recordSendSuccess(uid, msg, lead, sent.id, sent.threadId);
+    return { processed: 1, info: `Sent to ${lead.email}.` };
+  } catch (err) {
+    const text = errorMessage(err);
+    await markMessageFailed(uid, msg.id, text);
+    throw new Error(text);
+  }
 }
 
 function extractEmailAddress(header: string | undefined): string | null {

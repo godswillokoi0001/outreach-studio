@@ -3,15 +3,18 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useAuth } from "@/components/AuthProvider";
 import { Badge, Banner, Card, Empty, Pager, Progress } from "@/components/ui";
-import { errorMessage } from "@/lib/client";
+import { authedPost, errorMessage } from "@/lib/client";
 import {
   addSuppression,
+  getSettings,
   listLeads,
   listMessages,
   listReplies,
+  recordOutgoingReply,
   updateLeadFields,
   updateReplyHandled,
 } from "@/lib/firestore-store";
+import { createRfcMessageId } from "@/lib/outreach-utils";
 import { fmtDate } from "@/lib/format";
 import type { Lead, Message, Reply } from "@/lib/types";
 
@@ -59,7 +62,7 @@ function classTone(classification: string | null): string | undefined {
 const PAGE_SIZE = 15;
 
 export default function ConversationsPage() {
-  const { user } = useAuth();
+  const { user, workspaceToken, reconnectWorkspace } = useAuth();
   const [filter, setFilter] = useState("all");
   const [page, setPage] = useState(1);
   const [notice, setNotice] = useState<string | null>(null);
@@ -70,6 +73,8 @@ export default function ConversationsPage() {
   const [leads, setLeads] = useState<Lead[]>([]);
   const [messages, setMessages] = useState<Message[]>([]);
   const [loading, setLoading] = useState(true);
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [sending, setSending] = useState<string | null>(null);
 
   const reload = useCallback(async () => {
     setLoading(true);
@@ -192,6 +197,87 @@ export default function ConversationsPage() {
     }
   };
 
+  // Refresh as soon as the background reply sync finishes.
+  useEffect(() => {
+    const onRefresh = () => void reload();
+    window.addEventListener("os:data-refreshed", onRefresh);
+    return () => window.removeEventListener("os:data-refreshed", onRefresh);
+  }, [reload]);
+
+  const sendReply = async (reply: ReplyRow) => {
+    const body = (drafts[reply.id] ?? reply.draft_reply ?? "").trim();
+    if (!body) {
+      setError("Write a reply before sending it.");
+      return;
+    }
+    setSending(reply.id);
+    setError(null);
+    setNotice(null);
+    try {
+      if (!workspaceToken) {
+        const ok = await reconnectWorkspace();
+        if (!ok) throw new Error("Connect Google before replying.");
+      }
+      const lead = reply.lead_id ? leads.find((l) => l.id === reply.lead_id) : undefined;
+      const to = reply.from_email || lead?.email || "";
+      if (!to) throw new Error("This reply has no address to answer.");
+
+      const [settings, profile] = await Promise.all([
+        getSettings(user.uid),
+        authedPost<{ emailAddress: string }>(
+          "/api/workspace/gmail",
+          { action: "profile" },
+          { requireWorkspace: true },
+        ),
+      ]);
+      const senderEmail = settings.sender_email?.trim() || profile.emailAddress;
+      const baseSubject = reply.subject ?? "";
+      const subject = /^re:/i.test(baseSubject)
+        ? baseSubject
+        : `Re: ${baseSubject || "your message"}`;
+      const rfcMessageId = createRfcMessageId(`reply-${reply.id}`, senderEmail);
+
+      const sent = await authedPost<{ id: string; threadId: string }>(
+        "/api/workspace/gmail",
+        {
+          action: "send",
+          email: {
+            to,
+            from: senderEmail,
+            fromName: settings.sender_name || settings.sender_company || senderEmail,
+            subject,
+            body,
+            rfcMessageId,
+            threadId: reply.thread_id ?? null,
+            unsubscribeEmail: settings.unsubscribe_email || senderEmail,
+            tracking: { enabled: false },
+          },
+        },
+        { requireWorkspace: true },
+      );
+
+      await recordOutgoingReply(user.uid, {
+        lead_id: reply.lead_id ?? "",
+        campaign_id: reply.campaign_id,
+        subject,
+        body,
+        gmail_id: sent.id,
+        thread_id: sent.threadId ?? reply.thread_id ?? null,
+      });
+      if (reply.lead_id) {
+        await updateLeadFields(user.uid, reply.lead_id, { status: "replied" });
+      }
+      await updateReplyHandled(user.uid, reply.id, true);
+      setNotice(`Reply sent to ${to}. Follow-ups for this prospect stay stopped.`);
+      setDrafts((current) => ({ ...current, [reply.id]: "" }));
+      await reload();
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setSending(null);
+    }
+  };
+
   const copy = async (text: string) => {
     try {
       await navigator.clipboard.writeText(text);
@@ -250,8 +336,8 @@ export default function ConversationsPage() {
           ) : paged.length === 0 ? (
             <div style={{ padding: 18 }}>
               <Empty title="No replies yet">
-                Use &ldquo;Sync replies&rdquo; in the top bar after prospects start answering. Replies are matched by
-                sender address and classified automatically.
+                Replies sync automatically when the app loads. You can also press &ldquo;Sync&rdquo; in the top bar.
+                Replies are matched by sender address and classified automatically.
               </Empty>
             </div>
           ) : (
@@ -312,7 +398,13 @@ export default function ConversationsPage() {
                         {threads[reply.lead_id].map((message) => (
                           <div key={message.id}>
                             <div className="tiny">
-                              {fmtDate(message.sent_at)} · {message.kind === "followup" ? "Follow-up" : "Initial"}:{" "}
+                              {fmtDate(message.sent_at)} ·{" "}
+                              {message.kind === "followup"
+                                ? "Follow-up"
+                                : message.kind === "reply"
+                                  ? "Your reply"
+                                  : "Initial"}
+                              :{" "}
                               {message.subject}
                             </div>
                             <pre className="pre" style={{ background: "#fff", fontSize: 12.4 }}>
@@ -323,6 +415,46 @@ export default function ConversationsPage() {
                       </div>
                     </details>
                   )}
+
+                  <div style={{ marginBottom: 10 }}>
+                    <div className="label" style={{ marginBottom: 4 }}>
+                      Send a reply from here
+                    </div>
+                    <textarea
+                      className="textarea"
+                      rows={4}
+                      value={drafts[reply.id] ?? reply.draft_reply ?? ""}
+                      onChange={(e) =>
+                        setDrafts((current) => ({ ...current, [reply.id]: e.target.value }))
+                      }
+                      placeholder="Write your answer…"
+                    />
+                    <div className="row" style={{ marginTop: 6 }}>
+                      <button
+                        className="btn btn-sm btn-primary"
+                        onClick={() => void sendReply(reply)}
+                        disabled={sending !== null}
+                        type="button"
+                      >
+                        {sending === reply.id ? "Sending…" : "Send reply"}
+                      </button>
+                      {reply.draft_reply && (
+                        <button
+                          className="btn btn-sm btn-ghost"
+                          onClick={() =>
+                            setDrafts((current) => ({
+                              ...current,
+                              [reply.id]: reply.draft_reply ?? "",
+                            }))
+                          }
+                          disabled={sending !== null}
+                          type="button"
+                        >
+                          Reset to suggestion
+                        </button>
+                      )}
+                    </div>
+                  </div>
 
                   <div className="row">
                     <button
