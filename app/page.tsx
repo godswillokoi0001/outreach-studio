@@ -9,7 +9,13 @@ import { BrandLoader } from "@/components/BrandLoader";
 import { CountUp } from "@/components/motion/CountUp";
 import { ClearActivityModal } from "@/components/ClearActivityModal";
 import { errorMessage } from "@/lib/client";
-import { loadDashboardBundle } from "@/lib/store";
+import {
+  computeOnboardingCompleteness,
+  DEFAULT_ONBOARDING_ANSWERS,
+  type OnboardingState,
+  type StructuredKnowledgeBase,
+} from "@/lib/onboarding";
+import { getOnboardingState, getStructuredKnowledgeBase, loadDashboardBundle } from "@/lib/store";
 import { label, statusTone } from "@/lib/format";
 
 type DashboardData = Awaited<ReturnType<typeof loadDashboardBundle>>;
@@ -20,22 +26,36 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [clearActivityOpen, setClearActivityOpen] = useState(false);
+  const [onboardingState, setOnboardingState] = useState<OnboardingState | null>(null);
+  const [structuredKb, setStructuredKb] = useState<StructuredKnowledgeBase | null>(null);
 
   const loadData = useCallback(async () => {
     try {
-      const bundle = await loadDashboardBundle(user.uid);
+      const [bundle, onb, kb] = await Promise.all([
+        loadDashboardBundle(user.uid),
+        getOnboardingState(user.uid, user),
+        getStructuredKnowledgeBase(user.uid),
+      ]);
       setData(bundle);
+      setOnboardingState(onb);
+      setStructuredKb(kb);
     } catch (err) {
       setError(errorMessage(err));
     }
-  }, [user.uid]);
+  }, [user]);
 
   useEffect(() => {
     let active = true;
-    loadDashboardBundle(user.uid).then(
-      (bundle) => {
+    Promise.all([
+      loadDashboardBundle(user.uid),
+      getOnboardingState(user.uid, user),
+      getStructuredKnowledgeBase(user.uid),
+    ]).then(
+      ([bundle, onb, kb]) => {
         if (!active) return;
         setData(bundle);
+        setOnboardingState(onb);
+        setStructuredKb(kb);
         setLoading(false);
       },
       (err) => {
@@ -47,7 +67,7 @@ export default function DashboardPage() {
     return () => {
       active = false;
     };
-  }, [user.uid]);
+  }, [user]);
 
   const hour = new Date().getHours();
   const greeting = hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening";
@@ -187,6 +207,13 @@ export default function DashboardPage() {
     };
   }, [data, workspaceToken]);
 
+  const profileCompleteness = useMemo(() => {
+    return computeOnboardingCompleteness(
+      onboardingState?.answers ?? DEFAULT_ONBOARDING_ANSWERS,
+      structuredKb,
+    );
+  }, [onboardingState, structuredKb]);
+
   const todayLabel = new Date().toLocaleDateString(undefined, {
     weekday: "long",
     month: "long",
@@ -232,9 +259,43 @@ export default function DashboardPage() {
 
             <div className="wk-date">
               <strong>{todayLabel}</strong>
-              {data.emails.sent} sent · {data.replies.total} replies all time
+              {data.emails.sent} sent · {data.replies.total} replies all time · Profile {profileCompleteness.score}%
             </div>
           </header>
+
+          {(!profileCompleteness.isEssentialsComplete || profileCompleteness.score < 100) && (
+            <Banner tone={profileCompleteness.isEssentialsComplete ? "info" : "warn"}>
+              <div
+                className="row"
+                style={{ justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10 }}
+              >
+                <div style={{ flex: 1, minWidth: 220 }}>
+                  <div className="row" style={{ gap: 8, alignItems: "center", marginBottom: 4 }}>
+                    <strong style={{ fontSize: 13.5 }}>
+                      Profile completeness: {profileCompleteness.score}%
+                    </strong>
+                    {!profileCompleteness.isEssentialsComplete && (
+                      <Badge tone="warn">Essentials missing</Badge>
+                    )}
+                  </div>
+                  <div className="tiny">
+                    {profileCompleteness.missingEssentials.length > 0
+                      ? `Complete essentials (${profileCompleteness.missingEssentials.join(", ")}) for sharper Growth Advisor & outreach results.`
+                      : `Looking good! Add optional details (${profileCompleteness.missingNiceToHave.slice(0, 3).join(", ")}) to reach 100%.`}
+                  </div>
+                </div>
+                <div className="row" style={{ gap: 8 }}>
+                  <Link href="/onboarding" className="btn btn-primary btn-sm">
+                    Complete your profile
+                    <ArrowRight size={13} />
+                  </Link>
+                  <Link href="/knowledge" className="btn btn-sm">
+                    Knowledge base
+                  </Link>
+                </div>
+              </div>
+            </Banner>
+          )}
 
           <section className="wk-kpis rise rise-1" aria-label="Workspace overview">
             <div className="wk-kpi-group">

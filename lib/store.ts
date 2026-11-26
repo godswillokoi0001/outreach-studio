@@ -45,6 +45,15 @@ import {
   type GrowthProfile,
 } from "./growth-advisor";
 import {
+  DEFAULT_ONBOARDING_ANSWERS,
+  compileSectionsToMasterMarkdown,
+  prefillAnswersFromUser,
+  type KnowledgeVersion,
+  type OnboardingState,
+  type StructuredKnowledgeBase,
+} from "./onboarding";
+import type { AppUser } from "./auth";
+import {
   DEFAULT_SETTINGS,
   type AuditLog,
   type Campaign,
@@ -227,7 +236,13 @@ export async function getKnowledgeBundle(uid: string): Promise<{
   for (const d of kSnap.docs) {
     const data = d.data();
     const category = String(data.category ?? "custom");
-    if (category.startsWith("growth_advisor_")) continue;
+    if (
+      category.startsWith("growth_advisor_") ||
+      category.startsWith("system_onboarding_") ||
+      category.startsWith("system_kb_")
+    ) {
+      continue;
+    }
     if (d.id === "master" || d.id === `master_${uid}` || data.is_master === true || category === "master") {
       const text = String(data.content ?? "");
       if (text.trim() || !master) {
@@ -1903,9 +1918,14 @@ export async function getKnowledgePresence(uid: string): Promise<boolean> {
         columns: ["id"],
       }),
     ]);
-    const userKnowledgeDocs = entries.docs.filter(
-      (d) => !String(d.data().category ?? "").startsWith("growth_advisor_"),
-    );
+    const userKnowledgeDocs = entries.docs.filter((d) => {
+      const cat = String(d.data().category ?? "");
+      return (
+        !cat.startsWith("growth_advisor_") &&
+        !cat.startsWith("system_onboarding_") &&
+        !cat.startsWith("system_kb_")
+      );
+    });
     return userKnowledgeDocs.length === 0 && sources.docs.length === 0;
   } catch (err) {
     handleDataError(err, OperationType.LIST, `users/${uid}/knowledge`);
@@ -2356,4 +2376,180 @@ export async function commitExecutedCampaign(
   });
 
   return { campaign, leadsCreated, draftsCreated };
+}
+
+// ---------------------------------------------------------------------------
+// Onboarding & Structured Knowledge Base
+// ---------------------------------------------------------------------------
+
+export async function getOnboardingState(uid: string, user?: AppUser | null): Promise<OnboardingState> {
+  const docId = `system_onboarding_${uid}`;
+  const nowIso = new Date().toISOString();
+  try {
+    const snap = await getDoc(doc(db, "users", uid, "knowledge", docId));
+    if (snap.exists()) {
+      const parsed = JSON.parse(String(snap.data().content ?? "{}")) as Partial<OnboardingState>;
+      const mergedAnswers = prefillAnswersFromUser(
+        { ...DEFAULT_ONBOARDING_ANSWERS, ...(parsed.answers ?? {}) },
+        user ?? null,
+      );
+      return {
+        status:
+          parsed.status === "completed" || parsed.status === "in_progress" || parsed.status === "not_started"
+            ? parsed.status
+            : "not_started",
+        currentStep: typeof parsed.currentStep === "number" ? Math.max(1, Math.min(12, parsed.currentStep)) : 1,
+        answers: mergedAnswers,
+        startedAt: parsed.startedAt,
+        updatedAt: parsed.updatedAt || nowIso,
+        completedAt: parsed.completedAt,
+      };
+    }
+
+    // No explicit onboarding record yet: distinguish brand-new Google sign-ups from
+    // established returning accounts that already populated their workspace.
+    const [knowledgeEmpty, campaigns, leads] = await Promise.all([
+      getKnowledgePresence(uid),
+      listCampaigns(uid),
+      listLeadIndex(uid),
+    ]);
+    const isEstablishedAccount = !knowledgeEmpty || campaigns.length > 0 || leads.length > 0;
+
+    return {
+      status: isEstablishedAccount ? "completed" : "not_started",
+      currentStep: isEstablishedAccount ? 12 : 1,
+      answers: prefillAnswersFromUser({ ...DEFAULT_ONBOARDING_ANSWERS }, user ?? null),
+      updatedAt: nowIso,
+      completedAt: isEstablishedAccount ? nowIso : undefined,
+    };
+  } catch {
+    return {
+      status: "not_started",
+      currentStep: 1,
+      answers: prefillAnswersFromUser({ ...DEFAULT_ONBOARDING_ANSWERS }, user ?? null),
+      updatedAt: nowIso,
+    };
+  }
+}
+
+export async function saveOnboardingState(uid: string, state: OnboardingState): Promise<OnboardingState> {
+  const docId = `system_onboarding_${uid}`;
+  const path = `users/${uid}/knowledge/${docId}`;
+  const next: OnboardingState = {
+    ...state,
+    updatedAt: new Date().toISOString(),
+  };
+  try {
+    const ref = doc(db, "users", uid, "knowledge", docId);
+    const snap = await getDoc(ref);
+    const serialized = JSON.stringify(next);
+    if (!snap.exists()) {
+      await setDoc(ref, {
+        ownerId: uid,
+        category: "system_onboarding_state",
+        title: "Onboarding Progress & Answers",
+        content: serialized,
+        sort: 999,
+        is_master: false,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+    } else {
+      await updateDoc(ref, {
+        category: "system_onboarding_state",
+        content: serialized,
+        updatedAt: serverTimestamp(),
+      });
+    }
+    return next;
+  } catch (err) {
+    handleDataError(err, OperationType.WRITE, path);
+  }
+}
+
+export async function getStructuredKnowledgeBase(uid: string): Promise<StructuredKnowledgeBase | null> {
+  const docId = `system_kb_structured_${uid}`;
+  try {
+    const snap = await getDoc(doc(db, "users", uid, "knowledge", docId));
+    if (!snap.exists()) return null;
+    const raw = JSON.parse(String(snap.data().content ?? "null")) as StructuredKnowledgeBase | null;
+    if (!raw || !Array.isArray(raw.sections)) return null;
+    return raw;
+  } catch {
+    return null;
+  }
+}
+
+export async function saveStructuredKnowledgeBase(
+  uid: string,
+  kb: StructuredKnowledgeBase,
+  authorNote = "Updated Knowledge Base",
+): Promise<StructuredKnowledgeBase> {
+  const docId = `system_kb_structured_${uid}`;
+  const path = `users/${uid}/knowledge/${docId}`;
+  const nowIso = new Date().toISOString();
+
+  const snapshot: KnowledgeVersion = {
+    id: randomId("kbv"),
+    timestamp: nowIso,
+    summary: `${kb.sections.length} sections · ${kb.missingGaps.length} gaps`,
+    authorNote,
+    sections: kb.sections.map((s) => ({ ...s })),
+  };
+
+  const nextVersions = [snapshot, ...(kb.versions ?? [])].slice(0, 25);
+  const nextKb: StructuredKnowledgeBase = {
+    ...kb,
+    versions: nextVersions,
+    updatedAt: nowIso,
+  };
+
+  try {
+    const ref = doc(db, "users", uid, "knowledge", docId);
+    const snap = await getDoc(ref);
+    const serialized = JSON.stringify(nextKb);
+    if (!snap.exists()) {
+      await setDoc(ref, {
+        ownerId: uid,
+        category: "system_kb_structured",
+        title: "Structured Knowledge Base & History",
+        content: serialized,
+        sort: 999,
+        is_master: false,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+    } else {
+      await updateDoc(ref, {
+        category: "system_kb_structured",
+        content: serialized,
+        updatedAt: serverTimestamp(),
+      });
+    }
+
+    // Keep master_${uid} compiled cleanly so all downstream AI tools stay synced automatically.
+    const compiledMaster = compileSectionsToMasterMarkdown(nextKb.sections);
+    await saveMasterKnowledge(uid, compiledMaster);
+
+    return nextKb;
+  } catch (err) {
+    handleDataError(err, OperationType.WRITE, path);
+  }
+}
+
+export async function deleteAllUserProfileAndKnowledgeData(uid: string): Promise<void> {
+  const [kSnap, sSnap] = await Promise.all([
+    getDocs(query(collection(db, `users/${uid}/knowledge`), where("ownerId", "==", uid))),
+    getDocs(query(collection(db, `users/${uid}/knowledgeSources`), where("ownerId", "==", uid))),
+  ]);
+
+  const batch = writeBatch(db);
+  for (const d of kSnap.docs) {
+    batch.delete(d.ref);
+  }
+  for (const d of sSnap.docs) {
+    batch.delete(d.ref);
+  }
+  await batch.commit();
+  await writeAuditLog(uid, "profile_and_knowledge_deleted", "knowledge", uid);
 }

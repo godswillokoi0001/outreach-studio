@@ -2,14 +2,16 @@
 
 import { BrandLoader } from "@/components/BrandLoader";
 
+import Link from "next/link";
 import { useEffect, useState, useSyncExternalStore } from "react";
-import { Trash2 } from "lucide-react";
+import { BookOpen, RotateCcw, Trash2 } from "lucide-react";
 import { useAuth } from "@/components/AuthProvider";
 import { Banner, Card, Empty, Field, Stat, Toggle } from "@/components/ui";
 import { useConfirm, useToast } from "@/components/Feedback";
 import { errorMessage } from "@/lib/client";
 import {
   addSuppression,
+  deleteAllUserProfileAndKnowledgeData,
   getSettings,
   listSuppressions,
   removeSuppression,
@@ -495,6 +497,50 @@ export default function SettingsPage() {
               </table>
             </div>
           )}
+        </Card>
+
+        <Card
+          title="Knowledge Base & Onboarding Profile"
+          sub="Your structured business Knowledge Base powers Growth Advisor, Analyse, Prospect Research, and Outreach."
+        >
+          <p className="tiny" style={{ margin: "0 0 12px", lineHeight: 1.55 }}>
+            Your answers and Knowledge Base sections are stored privately under your Google account in Supabase. You can
+            edit individual sections anytime, re-run the onboarding questionnaire, or permanently delete all profile and
+            Knowledge Base data on request.
+          </p>
+          <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
+            <Link href="/knowledge" className="btn btn-primary btn-sm">
+              <BookOpen size={13} />
+              Open Knowledge Base
+            </Link>
+            <Link href="/onboarding" className="btn btn-sm">
+              <RotateCcw size={13} />
+              Re-run onboarding questions
+            </Link>
+            <button
+              type="button"
+              className="btn btn-sm btn-ghost"
+              onClick={async () => {
+                const ok = await confirmDialog({
+                  title: "Delete all profile & Knowledge Base data?",
+                  message:
+                    "This permanently deletes your saved onboarding answers, structured Knowledge Base sections, version history, custom notes, uploaded documents, and Growth Advisor profile.",
+                  confirmLabel: "Delete all data",
+                  tone: "bad",
+                });
+                if (!ok) return;
+                try {
+                  await deleteAllUserProfileAndKnowledgeData(user.uid);
+                  toast.success("Profile & Knowledge Base deleted", "Your workspace knowledge has been wiped.");
+                } catch (err) {
+                  toast.error("Could not delete data", errorMessage(err));
+                }
+              }}
+            >
+              <Trash2 size={13} />
+              Delete profile &amp; Knowledge Base
+            </button>
+          </div>
         </Card>
 
         <Card

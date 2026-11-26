@@ -249,3 +249,69 @@ test("Growth Advisor profile completeness, fingerprinting, and staleness detecti
     true,
   );
 });
+
+test("Onboarding URL validation, user prefill, completeness scoring, and Markdown compiler", async () => {
+  const {
+    DEFAULT_ONBOARDING_ANSWERS,
+    compileSectionsToMasterMarkdown,
+    computeOnboardingCompleteness,
+    normalizeUrlInput,
+    prefillAnswersFromUser,
+    validateUrlStrict,
+  } = await import("./onboarding");
+
+  assert.equal(validateUrlStrict("https://example.com"), true);
+  assert.equal(validateUrlStrict("acme.co.uk"), true);
+  assert.equal(validateUrlStrict("not-a-domain"), false);
+  assert.equal(normalizeUrlInput("acme.com"), "https://acme.com");
+
+  const prefilled = prefillAnswersFromUser(DEFAULT_ONBOARDING_ANSWERS, {
+    uid: "u1",
+    ownerId: "u1",
+    email: "alice@acme.com",
+    displayName: "Alice Johnson",
+    photoURL: "https://example.com/photo.jpg",
+    emailVerified: true,
+  });
+  assert.equal(prefilled.fullName, "Alice Johnson");
+  assert.equal(prefilled.email, "alice@acme.com");
+  assert.equal(prefilled.photoUrl, "https://example.com/photo.jpg");
+
+  const emptyComp = computeOnboardingCompleteness(DEFAULT_ONBOARDING_ANSWERS);
+  assert.equal(emptyComp.isEssentialsComplete, false);
+  assert.ok(emptyComp.missingEssentials.length >= 4);
+
+  const partialAnswers = {
+    ...prefilled,
+    roleTitle: "Founder",
+    businessName: "Acme Web",
+    industry: "Web Design",
+    businessDescription: "We build clinic websites",
+    priceRange: "$3,000",
+    idealCustomerSummary: "Dental clinic owners",
+  };
+  const partialComp = computeOnboardingCompleteness(partialAnswers);
+  assert.equal(partialComp.isEssentialsComplete, true);
+  assert.ok(partialComp.score >= 40);
+
+  const markdown = compileSectionsToMasterMarkdown([
+    {
+      id: "sec_1",
+      key: "business_overview",
+      title: "Business overview",
+      content: "We help clinics grow.",
+      provenance: "ai_generated",
+      updatedAt: "2026-11-26T17:00:00Z",
+    },
+    {
+      id: "sec_2",
+      key: "proof",
+      title: "Proof and credibility",
+      content: "",
+      provenance: "ai_generated",
+      updatedAt: "2026-11-26T17:00:00Z",
+    },
+  ]);
+  assert.match(markdown, /## Business overview\n\nWe help clinics grow\./);
+  assert.match(markdown, /## Proof and credibility\n\nNot provided\./);
+});

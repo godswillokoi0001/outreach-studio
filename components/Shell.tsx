@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import {
   useCallback,
   useEffect,
@@ -39,7 +39,7 @@ import {
 import { AnimatePresence, motion } from "framer-motion";
 import { initAiConfig } from "@/lib/ai-client";
 import { errorMessage } from "@/lib/client";
-import { subscribeBadgeCounts, subscribeOpenEvents } from "@/lib/store";
+import { getOnboardingState, subscribeBadgeCounts, subscribeOpenEvents } from "@/lib/store";
 import {
   emptySignalMarks,
   getSignalMarks,
@@ -52,6 +52,7 @@ import {
 } from "@/lib/signals";
 import { runSendBatch, runSyncBatch } from "@/lib/pipeline-client";
 import { useAuth } from "./AuthProvider";
+import { BrandLoader } from "./BrandLoader";
 import { BrandLockup, BrandMark } from "./BrandMark";
 import { Menu, MenuItem, MenuSeparator } from "./Menu";
 import { ThemeToggle } from "./ThemeToggle";
@@ -120,6 +121,7 @@ export function Shell({ children }: { children: ReactNode }) {
 
 function ShellInner({ children }: { children: ReactNode }) {
   const pathname = usePathname();
+  const router = useRouter();
   const dock = useTaskDock();
   const toast = useToast();
   const {
@@ -147,7 +149,31 @@ function ShellInner({ children }: { children: ReactNode }) {
   const [syncNote, setSyncNote] = useState<string | null>(null);
   const [signals, setSignals] = useState<SignalToast[]>([]);
   const [latest, setLatest] = useState<{ open: string; reply: string }>({ open: "", reply: "" });
+  const [onboardingChecked, setOnboardingChecked] = useState(false);
+  const [onboardingDone, setOnboardingDone] = useState(true);
   const uid = user?.uid ?? "";
+
+  useEffect(() => {
+    if (!uid) return;
+    let active = true;
+    getOnboardingState(uid, user)
+      .then((state) => {
+        if (!active) return;
+        const done = state.status === "completed";
+        setOnboardingDone(done);
+        setOnboardingChecked(true);
+        if (!done && pathname !== "/onboarding") {
+          router.replace("/onboarding");
+        }
+      })
+      .catch(() => {
+        if (!active) return;
+        setOnboardingChecked(true);
+      });
+    return () => {
+      active = false;
+    };
+  }, [uid, user, pathname, router]);
   // What this browser has already announced and already looked at, so a
   // notification appears once and stays marked seen until something new lands.
   const marks = useSyncExternalStore(
@@ -346,6 +372,30 @@ function ShellInner({ children }: { children: ReactNode }) {
   const currentSection = NAV.flatMap((group) => group.items).find((item) =>
     item.href === "/" ? pathname === "/" : pathname.startsWith(item.href),
   );
+
+  // Never flash the dashboard before onboarding status is verified for new sign-ups.
+  if (!onboardingChecked || (!onboardingDone && pathname !== "/onboarding")) {
+    return <BrandLoader fullScreen />;
+  }
+
+  // Focused onboarding screen wrapper during first-time setup
+  if (pathname === "/onboarding" && !onboardingDone) {
+    return (
+      <div style={{ minHeight: "100vh", background: "var(--bg)", display: "flex", flexDirection: "column" }}>
+        <header className="topbar" style={{ justifyContent: "space-between" }}>
+          <BrandLockup tone="brand" size={22} subtitle="Workspace Setup" />
+          <div className="row" style={{ gap: 8 }}>
+            <ThemeToggle />
+            <button type="button" className="btn btn-sm btn-ghost" onClick={() => void signOut()}>
+              <LogOut size={13} />
+              Sign out
+            </button>
+          </div>
+        </header>
+        <div style={{ flex: 1, paddingBottom: 40 }}>{children}</div>
+      </div>
+    );
+  }
 
   return (
     <div className="app" data-collapsed={collapsed ? "true" : "false"}>
