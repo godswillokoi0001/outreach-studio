@@ -95,6 +95,10 @@ export function FeedbackProvider({ children }: { children: ReactNode }) {
     setToasts((current) => current.filter((item) => item.id !== id));
   }, []);
 
+  const dismissAll = useCallback(() => {
+    setToasts([]);
+  }, []);
+
   const push = useCallback(
     (input: ToastInput) => {
       seq.current += 1;
@@ -156,7 +160,13 @@ export function FeedbackProvider({ children }: { children: ReactNode }) {
       <ConfirmContext.Provider value={{ confirm }}>
         {children}
 
-        <div className="toast-stack" role="status" aria-live="polite">
+        <div
+          className="toast-stack"
+          data-active={toasts.length > 0 ? "true" : "false"}
+          role="status"
+          aria-live="polite"
+        >
+          <div className="toast-backdrop" aria-hidden="true" onClick={dismissAll} />
           <AnimatePresence initial={false}>
             {toasts.map((item) => {
               const Icon =
@@ -166,10 +176,10 @@ export function FeedbackProvider({ children }: { children: ReactNode }) {
                   key={item.id}
                   className="toast"
                   data-tone={item.tone}
-                  initial={{ opacity: 0, y: 14, scale: 0.97 }}
+                  initial={{ opacity: 0, y: 18, scale: 0.92 }}
                   animate={{ opacity: 1, y: 0, scale: 1 }}
-                  exit={{ opacity: 0, y: 8, scale: 0.98 }}
-                  transition={{ type: "spring", stiffness: 380, damping: 30 }}
+                  exit={{ opacity: 0, y: 10, scale: 0.96 }}
+                  transition={{ type: "spring", stiffness: 330, damping: 26 }}
                 >
                   <span className="toast-icon" aria-hidden="true">
                     <Icon size={16} />

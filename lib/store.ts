@@ -128,6 +128,7 @@ function normalizeSettingsPayload(uid: string, input: Partial<Settings>, base: S
     ai_verified_at: clampStr(s.ai_verified_at, 64) ?? "",
     ai_key_hint: clampStr(s.ai_key_hint, 40) ?? "",
     ai_providers: clampStr(s.ai_providers, 20_000) ?? "",
+    ui_prefs: clampStr(s.ui_prefs, 500) ?? "",
   };
 }
 
@@ -161,6 +162,7 @@ function toSettings(data: Record<string, unknown>): Settings {
       ai_verified_at: String(data.ai_verified_at ?? ""),
       ai_key_hint: String(data.ai_key_hint ?? ""),
       ai_providers: String(data.ai_providers ?? ""),
+      ui_prefs: String(data.ui_prefs ?? ""),
     };
 }
 

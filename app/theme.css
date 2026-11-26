@@ -178,7 +178,7 @@ a:hover {
 }
 
 .brand {
-  padding: 18px 16px 16px;
+  padding: 14px 14px 12px;
   border-bottom: 1px solid var(--sidebar-line);
   gap: 9px;
 }
@@ -188,7 +188,7 @@ a:hover {
 }
 .brand .brand-lockup-sub {
   color: #7d8ca0;
-  font-size: 10px;
+  font-size: 8.5px;
 }
 
 .sidebar-toggle {
@@ -279,13 +279,29 @@ a:hover {
   flex-basis: 64px;
 }
 .app[data-collapsed="true"] .brand {
-  padding: 14px 0 12px;
-  flex-direction: column;
-  align-items: center;
-  gap: 10px;
+  position: relative;
+  padding: 12px 0;
+  justify-content: center;
+  gap: 0;
 }
+/* The expand control only appears when the collapsed mark is hovered. */
 .app[data-collapsed="true"] .brand .sidebar-toggle {
-  margin-left: 0;
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  width: auto;
+  height: auto;
+  border-radius: 10px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--transition);
+}
+.app[data-collapsed="true"] .brand:hover .sidebar-toggle,
+.app[data-collapsed="true"] .brand:focus-within .sidebar-toggle {
+  opacity: 1;
+  pointer-events: auto;
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
 }
 .app[data-collapsed="true"] .brand .brand-lockup-copy,
 .app[data-collapsed="true"] .nav-text,

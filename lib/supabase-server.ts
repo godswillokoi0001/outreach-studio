@@ -42,6 +42,7 @@ const STRING_FIELDS = [
   "ai_verified_at",
   "ai_key_hint",
   "ai_providers",
+  "ui_prefs",
 ] as const satisfies readonly (keyof Settings)[];
 
 const NUMBER_FIELDS = [
@@ -127,11 +128,12 @@ export async function saveSupabaseSettingsServer(
       .select("id");
 
     if (error) {
-      // Before the ai_providers migration has been applied, keep saving every
-      // other setting instead of failing the whole document.
-      if (/ai_providers/i.test(error.message)) {
-        const { ai_providers: _omit, ...rest } = fields as Record<string, unknown>;
-        void _omit;
+      // Before the ai_providers / ui_prefs migrations have been applied, keep
+      // saving every other setting instead of failing the whole document.
+      if (/ai_providers|ui_prefs/i.test(error.message)) {
+        const rest = { ...(fields as Record<string, unknown>) };
+        if (/ai_providers/i.test(error.message)) delete rest.ai_providers;
+        if (/ui_prefs/i.test(error.message)) delete rest.ui_prefs;
         const retry = await supabaseServer
           .from("settings")
           .update(rest as never)

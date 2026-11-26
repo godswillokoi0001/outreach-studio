@@ -99,7 +99,7 @@ export default function FollowupsPage() {
 
         <Card title="Due prospects" sub="Eligible for the next message right now">
           {loading && !data ? (
-            <BrandLoader size="sm" />
+            <BrandLoader />
           ) : (data?.due.length ?? 0) === 0 ? (
             <Empty title="Nothing due">
               Prospects become eligible after the first follow-up gap in the campaign (for example 4 days with no

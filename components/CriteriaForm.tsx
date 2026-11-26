@@ -14,7 +14,6 @@ import {
   criteriaSummary,
   type ResearchCriteria,
 } from "@/lib/criteria";
-import { BrandLoader } from "./BrandLoader";
 import { Field } from "./ui";
 
 /**
@@ -102,7 +101,7 @@ export function CriteriaForm({
           disabled={autoBusy !== null || busy || disabled}
           title="Let the AI choose the filters from your knowledge base"
         >
-          {autoBusy === "auto" ? <BrandLoader size={13} /> : <Zap size={13} aria-hidden="true" />}
+          <Zap size={13} aria-hidden="true" />
           <span>{value.auto ? "Auto is on" : "Auto"}</span>
         </button>
       </div>
@@ -142,7 +141,7 @@ export function CriteriaForm({
           onClick={() => void runAuto("instruction")}
           disabled={!instruction.trim() || autoBusy !== null || busy || disabled}
         >
-          {autoBusy === "instruction" ? <BrandLoader size={13} /> : <SlidersHorizontal size={13} />}
+          <SlidersHorizontal size={13} />
           <span>Fill form</span>
         </button>
       </div>

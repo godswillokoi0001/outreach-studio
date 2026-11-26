@@ -102,7 +102,7 @@ export default function AnalyticsPage() {
       <div className="stack">
         {error && <Banner tone="bad">{error}</Banner>}
         {failure && <Banner tone="bad">{failure}</Banner>}
-        {loading && !data && <BrandLoader size="sm" />}
+        {loading && !data && <BrandLoader />}
 
         {data && (
           <>

@@ -215,7 +215,7 @@ export default function KnowledgePage() {
 
       {error && <Banner tone="bad">{error}</Banner>}
       {note && <Banner tone={note.tone}>{note.text}</Banner>}
-      {loading && !data && <BrandLoader size="sm" />}
+      {loading && !data && <BrandLoader />}
 
       {data && (
         <div className="stack">
@@ -295,7 +295,7 @@ Rules: Never discount below $2,000. Always mention the 3-week timeline.`}
               }}
             >
               <span className="upload-icon">
-                {uploading ? <BrandLoader size={18} /> : <FileUp size={18} />}
+                <FileUp size={18} />
               </span>
               <div className="upload-copy">
                 <strong>{uploading ? `Reading ${uploading}…` : "Drop files here, or choose them"}</strong>

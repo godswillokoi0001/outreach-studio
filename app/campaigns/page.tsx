@@ -408,7 +408,7 @@ export default function CampaignsPage() {
 
             {busy === "plan" && (
               <div style={{ marginTop: 14, display: "grid", placeItems: "center", padding: "12px 0" }}>
-                <BrandLoader size="sm" />
+                <BrandLoader />
               </div>
             )}
 

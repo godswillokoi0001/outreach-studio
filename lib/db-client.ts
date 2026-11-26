@@ -108,6 +108,7 @@ const TABLE_BY_COLLECTION: Record<string, string> = {
   knowledge: "knowledge",
   knowledgeSources: "knowledge_sources",
   tracking: "email_opens",
+  operatorMemory: "operator_conversations",
 };
 
 function tableForCollection(name: string): string {

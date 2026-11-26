@@ -36,7 +36,6 @@ import { authedPost, errorMessage } from "@/lib/client";
 import { saveSettings } from "@/lib/store";
 import type { Settings } from "@/lib/types";
 import { Badge, Banner, Card, Field } from "./ui";
-import { BrandLoader } from "./BrandLoader";
 import { useConfirm, useToast } from "./Feedback";
 
 interface DetectResponse {
@@ -95,7 +94,7 @@ export function ModelProvidersCard({
       listRef.current = next;
       setOverrides(next);
       writeProviders(next);
-      void saveSettings(uid, providersPatchFor(next)).catch((err) => {
+      void saveSettings(uid, providersPatchFor(next, readActiveProviderId())).catch((err) => {
         toast.error("Provider saved on this browser only", errorMessage(err));
       });
     },
@@ -337,7 +336,7 @@ export function ModelProvidersCard({
                       onClick={() => void testProvider(provider)}
                       disabled={busy !== null}
                     >
-                      {busy === `test:${provider.id}` ? <BrandLoader size={12} /> : <TestTube2 size={12} />}
+                      <TestTube2 size={12} />
                       <span>Test connection</span>
                     </button>
                     <button
@@ -467,7 +466,7 @@ export function ModelProvidersCard({
                     disabled={busy !== null || !editing.apiKey.trim()}
                     title="Verify the key and load this provider's models"
                   >
-                    {busy === `test:${editing.id}` ? <BrandLoader size={12} /> : <RefreshCw size={12} />}
+                    <RefreshCw size={12} />
                     <span>Fetch models</span>
                   </button>
                 </div>
@@ -512,7 +511,6 @@ export function ModelProvidersCard({
 
             <div className="row">
               <button type="button" className="btn btn-sm btn-primary" onClick={() => void saveDraft()} disabled={busy !== null}>
-                {busy === `test:${editing.id}` ? <BrandLoader size={12} /> : null}
                 <span>Save &amp; test</span>
               </button>
               <button type="button" className="btn btn-sm" onClick={() => setEditing(null)}>

@@ -559,7 +559,7 @@ export default function ResearchPage() {
 
           {busy === "discover" && (
             <div style={{ marginTop: 12, display: "grid", placeItems: "center", padding: "12px 0" }}>
-              <BrandLoader size="sm" />
+              <BrandLoader />
             </div>
           )}
 

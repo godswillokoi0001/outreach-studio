@@ -46,7 +46,6 @@ export default function SettingsPage() {
   const [suppressions, setSuppressions] = useState<Suppression[]>([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
-  const [notice, setNotice] = useState<string | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
   const [email, setEmail] = useState("");
   const [reason, setReason] = useState("");
@@ -95,11 +94,9 @@ export default function SettingsPage() {
   const save = async () => {
     setBusy(true);
     setFailure(null);
-    setNotice(null);
     try {
       const saved = await saveSettings(user.uid, form);
       setForm(saved);
-      setNotice("Settings saved.");
       toast.success("Settings saved", "Your sending rules are in effect.");
     } catch (err) {
       const message = errorMessage(err);
@@ -118,7 +115,6 @@ export default function SettingsPage() {
       setEmail("");
       setReason("");
       setSuppressions(await listSuppressions(user.uid));
-      setNotice("Address suppressed. It will never be contacted.");
       toast.success("Address suppressed", "It will never be contacted.");
     } catch (err) {
       const message = errorMessage(err);
@@ -160,8 +156,7 @@ export default function SettingsPage() {
 
       <div className="stack">
         {failure && <Banner tone="bad">{failure}</Banner>}
-        {notice && <Banner tone="ok">{notice}</Banner>}
-        {loading && <BrandLoader size="sm" />}
+        {loading && <BrandLoader />}
 
         <Card title="Sender identity" sub="Used in every email and in the signature.">
           <div className="grid grid-3">

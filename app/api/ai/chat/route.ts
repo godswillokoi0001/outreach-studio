@@ -19,6 +19,8 @@ interface ChatContext {
   userName?: string | null;
   summary?: string;
   knowledge?: string;
+  /** Saved conversation and activity digest, loaded from the account's memory. */
+  memory?: string;
 }
 
 /**
@@ -38,6 +40,18 @@ ${trimmed.slice(0, 12000)}
 --- END KNOWLEDGE BASE ---`;
 }
 
+function memoryBlock(memory?: string): string {
+  const trimmed = memory?.trim();
+  if (!trimmed) {
+    return `\n\nOPERATOR MEMORY\nNo earlier conversations are saved yet. This is the first piece of work in memory.`;
+  }
+  return `\n\nOPERATOR MEMORY — saved from earlier sessions (persists until the user clears it)
+This is what you already did and discussed. Use it to stay consistent, to pick up unfinished work, and to avoid asking for the same information twice. Never claim to remember anything that is not written here.
+--- BEGIN MEMORY ---
+${trimmed.slice(0, 6000)}
+--- END MEMORY ---`;
+}
+
 const LIVE_CONTEXT = (ctx: ChatContext) => `LIVE WORKSPACE CONTEXT
 - Current page: ${ctx.currentPath || "/"}
 - Signed-in user: ${ctx.userName || "(unnamed)"} <${ctx.userEmail || "unknown"}>
@@ -54,6 +68,7 @@ MODE PERMISSIONS
 - If the user asks you to actually do something inside the app (run research, create a campaign, change settings), say that Agent mode does that and offer to switch — do not pretend it happened.
 
 ${LIVE_CONTEXT(ctx)}
+${memoryBlock(ctx.memory)}
 ${knowledgeBlock(ctx.knowledge)}
 
 STYLE
@@ -71,6 +86,7 @@ MODE PERMISSIONS
 - Keep a short change log in your reply: what you inspected, what you found, what you propose.
 
 ${LIVE_CONTEXT(ctx)}
+${memoryBlock(ctx.memory)}
 ${knowledgeBlock(ctx.knowledge)}
 
 DIAGNOSTIC ORDER
@@ -90,6 +106,7 @@ FINISH THE JOB
 - Only ask the user something when the task is impossible without a fact you cannot look up. If a tool fails, retry or work around it and report plainly what is blocked.
 
 ${LIVE_CONTEXT(ctx)}
+${memoryBlock(ctx.memory)}
 
 OPERATING RULES
 1. Act directly with tools: Prefer executing actions over telling the user which buttons to click. Chain multiple tool calls cleanly when needed (for example: navigate_to_page -> add_lead / plan_and_create_campaign -> run_research_batch -> run_qualify_batch -> run_compose_batch).
@@ -99,6 +116,7 @@ OPERATING RULES
 4. Safety & confirmations: Destructive or external actions (sending Gmail emails, writing back to Google Sheets, deleting leads, approving/archiving/pausing campaigns, approving emails, suppressing addresses) run automatically in autopilot. Call them normally when the task needs them — never ask the user in chat to confirm, and never tell them to click a button you can click with a tool. The UI shows a confirmation card by itself if the operator has switched confirmations on.
 5. Be honest and grounded: Report real tool outputs, counts, and any errors plainly. Never claim an email was sent or a sheet was imported unless the tool succeeded. Every step is verified by the interface; if a tool result says an action failed, say so.
 6. Keep responses crisp, structured, and scannable (short paragraphs or concise bullet points, no walls of text).
+7. Remember your work: consult OPERATOR MEMORY before starting so you continue rather than repeat. Everything you do is saved there automatically when the user does not clear it.
 ${knowledgeBlock(ctx.knowledge)}
 
 WRITING FROM THE KNOWLEDGE BASE

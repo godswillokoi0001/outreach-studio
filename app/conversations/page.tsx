@@ -338,7 +338,7 @@ export default function ConversationsPage() {
 
           {loading && replies.length === 0 ? (
             <div style={{ padding: 18 }}>
-              <BrandLoader size="sm" />
+              <BrandLoader />
             </div>
           ) : paged.length === 0 ? (
             <div style={{ padding: 18 }}>

@@ -268,7 +268,7 @@ export default function LeadsPage() {
 
           {loading && allLeads.length === 0 ? (
             <div style={{ padding: 18 }}>
-              <BrandLoader size="sm" />
+              <BrandLoader />
             </div>
           ) : paged.length === 0 ? (
             <div style={{ padding: 18 }}>

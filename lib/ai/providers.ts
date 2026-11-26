@@ -244,11 +244,24 @@ export function providersFromSettings(settings: Settings | null | undefined): Sa
   }
 }
 
-/** The settings patch that stores the whole provider list in the database. */
-export function providersPatchFor(list: SavedProvider[]): Partial<Settings> {
+/**
+ * The settings patch that stores the whole provider list in the database.
+ *
+ * The active provider is passed in explicitly: writing the first enabled entry
+ * instead silently reset the user's chosen model every time an unrelated
+ * provider was tested, toggled or deleted.
+ */
+export function providersPatchFor(
+  list: SavedProvider[],
+  activeProviderId?: string,
+): Partial<Settings> {
+  const active =
+    list.find((item) => item.id === activeProviderId && item.enabled) ??
+    list.find((item) => item.enabled) ??
+    list[0];
   return {
     ai_providers: JSON.stringify(list),
-    ...(list[0] ? settingsPatchFor(list.find((item) => item.enabled) ?? list[0]) : {}),
+    ...(active ? settingsPatchFor(active) : {}),
   };
 }
 

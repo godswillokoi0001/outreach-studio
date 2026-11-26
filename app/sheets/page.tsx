@@ -202,19 +202,12 @@ export default function SheetsPage() {
               disabled={!url || busy !== null}
               type="button"
             >
-              {busy === "tabs" ? (
-                <>
-                  <BrandLoader size={12} />
-                  <span>Loading worksheets…</span>
-                </>
-              ) : (
-                "Load worksheets"
-              )}
+              {busy === "tabs" ? "Loading worksheets…" : "Load worksheets"}
             </button>
           </div>
           {busy === "tabs" && (
             <div style={{ marginTop: 12 }}>
-              <BrandLoader size="sm" />
+              <BrandLoader />
             </div>
           )}
         </Card>
@@ -248,7 +241,7 @@ export default function SheetsPage() {
             </div>
             {busy === "preview" && (
               <div style={{ marginTop: 12 }}>
-                <BrandLoader size="sm" />
+                <BrandLoader />
               </div>
             )}
             {sheet.tabs.length === 0 && (
@@ -300,7 +293,7 @@ export default function SheetsPage() {
                 </div>
                 {busy === "import" && (
                   <div style={{ marginBottom: 14 }}>
-                    <BrandLoader size="sm" />
+                    <BrandLoader />
                   </div>
                 )}
                 <div className="row">
@@ -365,7 +358,7 @@ export default function SheetsPage() {
           </div>
           {busy === "writeback" && (
             <div style={{ marginTop: 12 }}>
-              <BrandLoader size="sm" />
+              <BrandLoader />
             </div>
           )}
         </Card>

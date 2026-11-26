@@ -43,6 +43,10 @@ const COLUMNS: Record<string, string[]> = {
   ],
   knowledge_sources: ["id", "owner_id", "label", "kind", "url", "content", "created_at", "updated_at"],
   email_opens: ["id", "owner_id", "message_id", "lead_id", "opened_at", "user_agent"],
+  operator_conversations: [
+    "id", "owner_id", "title", "mode", "model", "provider_id", "messages", "contents",
+    "created_at", "updated_at",
+  ],
 };
 
 const TIMESTAMP_COLUMNS = new Set([

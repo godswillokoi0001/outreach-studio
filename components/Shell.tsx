@@ -36,7 +36,6 @@ import { subscribeBadgeCounts, subscribeOpenEvents } from "@/lib/store";
 import { runSendBatch, runSyncBatch } from "@/lib/pipeline-client";
 import { useAuth } from "./AuthProvider";
 import { BrandLockup, BrandMark } from "./BrandMark";
-import { BrandLoader } from "./BrandLoader";
 import { Menu, MenuItem, MenuSeparator } from "./Menu";
 import { ThemeToggle } from "./ThemeToggle";
 import { DashboardChat } from "./DashboardChat";
@@ -286,9 +285,9 @@ function ShellInner({ children }: { children: ReactNode }) {
       <aside className={`sidebar${open ? " open" : ""}`}>
         <div className="brand">
           {collapsed ? (
-            <BrandMark tone="dark" size={28} className="brand-collapsed-mark" />
+            <BrandMark tone="dark" size={22} className="brand-collapsed-mark" />
           ) : (
-            <BrandLockup tone="dark" size={30} subtitle="Knowledge-powered outreach" />
+            <BrandLockup tone="dark" size={24} subtitle="Knowledge-powered outreach" />
           )}
           <button
             className="sidebar-close"
@@ -421,7 +420,7 @@ function ShellInner({ children }: { children: ReactNode }) {
                 aria-label={syncing ? "Syncing replies" : "Sync replies"}
                 title="Sync replies from Gmail"
               >
-                {syncing ? <BrandLoader size={13} /> : <RefreshCw size={13} aria-hidden="true" />}
+                <RefreshCw size={13} aria-hidden="true" />
                 <span className="topbar-collapse">{syncing ? "Syncing…" : "Sync"}</span>
               </button>
             </div>

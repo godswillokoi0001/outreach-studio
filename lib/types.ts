@@ -256,6 +256,8 @@ export interface Settings {
   ai_key_hint: string;
   /** JSON list of every saved model provider, so the vault survives a refresh. */
   ai_providers: string;
+  /** JSON UI preferences (operator dock mode and panel position) for the account. */
+  ui_prefs: string;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -282,6 +284,7 @@ export const DEFAULT_SETTINGS: Settings = {
   ai_verified_at: "",
   ai_key_hint: "",
   ai_providers: "",
+  ui_prefs: "",
 };
 
 export const LEAD_STATUS_LABELS: Record<string, string> = {

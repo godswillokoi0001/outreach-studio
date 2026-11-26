@@ -13,6 +13,7 @@ import {
 import {
   AlertCircle,
   ArrowUpRight,
+  Bot,
   CheckCircle2,
   ChevronDown,
   ChevronUp,
@@ -58,21 +59,30 @@ import { authedPost, errorMessage } from "@/lib/client";
 import { setActiveAiConfig } from "@/lib/ai-client";
 import {
   enabledProviders,
+  providersFromSettings,
   readActiveProviderId,
+  readProviders,
   setActiveProviderId,
+  settingsPatchFor,
   toAiConfig,
   useModelProviders,
+  writeProviders,
 } from "@/lib/ai/providers";
 import { withRetry } from "@/lib/retry";
 import { readWorkspaceToken as getWorkspaceAccessToken } from "@/lib/workspace-token";
-import { getSettings } from "@/lib/store";
+import { getSettings, saveSettings } from "@/lib/store";
 import { buildLiveKnowledgeDigest } from "@/lib/pipeline-client";
 import { useAuth } from "./AuthProvider";
-import { BrandMark } from "./BrandMark";
 import { Menu, MenuItem, MenuSeparator } from "./Menu";
-import { BrandLoader } from "./BrandLoader";
 import { useAgentPresence } from "./AgentPresence";
 import { useConfirm } from "./Feedback";
+import {
+  clearOperatorMemory,
+  deleteOperatorMemory,
+  loadOperatorMemory,
+  saveOperatorMemory,
+  type OperatorMemoryRecord,
+} from "@/lib/operator-memory";
 
 type OperatorMode = "chat" | "agent" | "developer";
 type DockMode = "floating" | "docked";
@@ -192,6 +202,80 @@ interface RecentAction {
   status: ActionStep["status"];
   at: number;
   summary?: string;
+}
+
+function conversationFromMemory(record: OperatorMemoryRecord): Conversation {
+  const mode: OperatorMode =
+    record.mode === "chat" || record.mode === "developer" ? record.mode : "agent";
+  return {
+    id: record.id,
+    title: record.title,
+    mode,
+    model: record.model,
+    providerId: record.providerId,
+    createdAt: record.createdAt,
+    updatedAt: record.updatedAt,
+    messages: (record.messages ?? []) as ChatMessage[],
+    contents: (record.contents ?? []) as AgentContent[],
+  };
+}
+
+/**
+ * What the operator is told about earlier work. It is built from the saved
+ * memory in the database, so it works on a computer that has never opened the
+ * panel before. Keeping it compact matters: it rides along with every turn.
+ */
+function buildMemoryDigest(
+  conversations: Conversation[],
+  recent: RecentAction[],
+  activeId: string | null,
+): string {
+  const sections: string[] = [];
+  const past = conversations
+    .filter((conversation) => conversation.id !== activeId)
+    .sort((a, b) => b.updatedAt - a.updatedAt)
+    .slice(0, 8);
+
+  if (past.length > 0) {
+    sections.push(
+      "Saved conversations (most recent first):",
+      ...past.map((conversation) => {
+        const lastUser = [...conversation.messages].reverse().find((message) => message.role === "user")?.text;
+        const lastReply = [...conversation.messages]
+          .reverse()
+          .find((message) => message.role === "assistant" && message.text)?.text;
+        const actions = [
+          ...new Set(
+            conversation.messages
+              .flatMap((message) => message.steps ?? [])
+              .filter((step) => step.status === "done")
+              .map((step) => step.label),
+          ),
+        ].slice(-6);
+        return [
+          `- ${new Date(conversation.updatedAt).toISOString().slice(0, 10)} [${conversation.mode}] ${conversation.title}`,
+          lastUser ? `  asked: ${lastUser.replace(/\s+/g, " ").slice(0, 200)}` : "",
+          lastReply ? `  outcome: ${lastReply.replace(/\s+/g, " ").slice(0, 240)}` : "",
+          actions.length > 0 ? `  actions completed: ${actions.join("; ")}` : "",
+        ]
+          .filter(Boolean)
+          .join("\n");
+      }),
+    );
+  }
+
+  const logged = recent.slice(0, 12);
+  if (logged.length > 0) {
+    sections.push(
+      "Recent logged activity:",
+      ...logged.map(
+        (entry) =>
+          `- ${entry.label}${entry.summary ? ` — ${entry.summary.slice(0, 140)}` : ""} [${entry.status}]`,
+      ),
+    );
+  }
+
+  return sections.join("\n").slice(0, 6000);
 }
 
 function timeAgo(timestamp: number, now: number): string {
@@ -359,7 +443,40 @@ export function DashboardChat({
   const [providerChoice, setProviderChoice] = useState<string | null>(null);
   const storedProviderId = readActiveProviderId();
   const providerId =
-    providerChoice ?? (storedProviderId || providers.find((provider) => provider.enabled)?.id || "");
+    providerChoice ??
+    (storedProviderId && providers.some((provider) => provider.id === storedProviderId)
+      ? storedProviderId
+      : providers.find((provider) => provider.enabled)?.id || "");
+
+  // A browser that has never opened Settings still gets the account's provider
+  // vault, so the operator's model switcher lists every saved model here too.
+  useEffect(() => {
+    void getSettings(user.uid)
+      .then((settings) => {
+        const saved = providersFromSettings(settings);
+        if (saved.length > 0) {
+          const local = readProviders();
+          const merged = [
+            ...saved,
+            ...local.filter((entry) => !saved.some((remote) => remote.id === entry.id)),
+          ];
+          // Without a local choice, mirror the account's active provider so the
+          // switcher and the server agree on another computer.
+          if (!readActiveProviderId()) {
+            const active =
+              saved.find(
+                (entry) =>
+                  entry.provider === settings.ai_provider &&
+                  entry.apiKey === settings.ai_api_key &&
+                  entry.model === settings.model,
+              ) ?? saved.find((entry) => entry.enabled);
+            if (active) setActiveProviderId(active.id);
+          }
+          writeProviders(merged);
+        }
+      })
+      .catch(() => undefined);
+  }, [user.uid]);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [attachNotice, setAttachNotice] = useState<string | null>(null);
   const [fileDrag, setFileDrag] = useState(false);
@@ -424,6 +541,45 @@ export function DashboardChat({
     const stored = typeof window === "undefined" ? null : readStored<DockMode>(DOCK_MODE_KEY);
     return stored === "docked" ? "docked" : "floating";
   });
+
+  // The docked/floating choice and the floating panel's position belong to the
+  // account, not to one browser, so they are stored in the settings document.
+  const prefsReadyRef = useRef(false);
+
+  useEffect(() => {
+    let active = true;
+    void getSettings(user.uid)
+      .then((settings) => {
+        if (!active) return;
+        try {
+          const prefs = settings.ui_prefs
+            ? (JSON.parse(settings.ui_prefs) as { dockMode?: DockMode; x?: number; y?: number })
+            : null;
+          if (prefs?.dockMode === "docked" || prefs?.dockMode === "floating") setDockMode(prefs.dockMode);
+          if (Number.isFinite(prefs?.x) && Number.isFinite(prefs?.y)) {
+            setDockPos({ x: Number(prefs?.x), y: Number(prefs?.y) });
+          }
+        } catch {
+          /* a corrupt preference falls back to the defaults */
+        }
+        prefsReadyRef.current = true;
+      })
+      .catch(() => {
+        prefsReadyRef.current = true;
+      });
+    return () => {
+      active = false;
+    };
+  }, [user.uid]);
+
+  useEffect(() => {
+    if (!prefsReadyRef.current) return;
+    const prefs = {
+      dockMode,
+      ...(dockPos ? { x: dockPos.x, y: dockPos.y } : {}),
+    };
+    void saveSettings(user.uid, { ui_prefs: JSON.stringify(prefs) }).catch(() => undefined);
+  }, [dockMode, dockPos, user.uid]);
   const [conversations, setConversations] = useState<Conversation[]>(() => {
     if (typeof window === "undefined") return [];
     const stored = readStored<Conversation[]>(CONV_KEY);
@@ -452,10 +608,56 @@ export function DashboardChat({
   const dockRef = useRef<HTMLDivElement | null>(null);
   const dockPosRef = useRef<{ x: number; y: number } | null>(dockPos);
   const dragStartRef = useRef<{ pointerX: number; pointerY: number; left: number; top: number } | null>(null);
+  const conversationsRef = useRef<Conversation[]>(conversations);
+  const memoryReadyRef = useRef(false);
+  const memoryTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     pathnameRef.current = pathname;
   }, [pathname]);
+
+  useEffect(() => {
+    conversationsRef.current = conversations;
+  }, [conversations]);
+
+  // Memory lives in the database, not this browser. Load it before anything is
+  // written back, restore the open thread, and upload any history that was
+  // saved locally before memory moved to Supabase.
+  useEffect(() => {
+    let active = true;
+    memoryReadyRef.current = false;
+    void loadOperatorMemory(user.uid)
+      .then((records) => {
+        if (!active) return;
+        const remote = records.map(conversationFromMemory);
+        const localOnly = conversationsRef.current.filter(
+          (conversation) => !remote.some((saved) => saved.id === conversation.id),
+        );
+        const merged = [...remote, ...localOnly]
+          .sort((a, b) => b.updatedAt - a.updatedAt)
+          .slice(0, 40);
+        setConversations(merged);
+        conversationsRef.current = merged;
+        if (localOnly.length > 0) {
+          void Promise.all(localOnly.map((conversation) => saveOperatorMemory(user.uid, conversation))).catch(
+            () => undefined,
+          );
+        }
+        const restore = merged.find((conversation) => conversation.id === activeIdRef.current);
+        if (restore) {
+          historyRef.current = restore.contents ?? [];
+          setMessages(restore.messages ?? []);
+          setMode(restore.mode);
+        }
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        if (active) memoryReadyRef.current = true;
+      });
+    return () => {
+      active = false;
+    };
+  }, [user.uid]);
 
   // Keep the request config and the per-chat provider marker in sync with the
   // selected model (an external system, so this belongs in an effect).
@@ -487,11 +689,13 @@ export function DashboardChat({
     } catch {
       /* storage unavailable */
     }
-    document.body.dataset.operatorDock = dockMode === "docked" ? "true" : "false";
+    // Only reserve the side space while the docked panel is actually open;
+    // otherwise a refresh with the panel closed leaves an empty column.
+    document.body.dataset.operatorDock = dockMode === "docked" && open ? "true" : "false";
     return () => {
       delete document.body.dataset.operatorDock;
     };
-  }, [dockMode]);
+  }, [dockMode, open]);
 
   useEffect(() => {
     activeIdRef.current = activeId;
@@ -510,6 +714,22 @@ export function DashboardChat({
       /* storage unavailable */
     }
   }, [conversations]);
+
+  // Persist the open conversation — transcript, action log and model context —
+  // on every change, lightly debounced so a streaming reply is not one write
+  // per token. Nothing is written until the database memory has loaded.
+  useEffect(() => {
+    if (!memoryReadyRef.current) return undefined;
+    const current = conversations.find((conversation) => conversation.id === activeIdRef.current);
+    if (!current) return undefined;
+    if (memoryTimerRef.current) window.clearTimeout(memoryTimerRef.current);
+    memoryTimerRef.current = window.setTimeout(() => {
+      void saveOperatorMemory(user.uid, current).catch(() => undefined);
+    }, 900);
+    return () => {
+      if (memoryTimerRef.current) window.clearTimeout(memoryTimerRef.current);
+    };
+  }, [conversations, user.uid]);
 
   // Keep the open conversation saved as it grows, so reopening the operator
   // (or reloading) returns the same thread, action log included.
@@ -798,6 +1018,7 @@ export function DashboardChat({
                 userName: user.displayName,
                 summary,
                 knowledge: knowledgeRef.current,
+                memory: buildMemoryDigest(conversationsRef.current, recent, activeIdRef.current),
               },
             },
             { retryTransient: true },
@@ -966,6 +1187,9 @@ export function DashboardChat({
     }
     setActiveProviderId(next.id);
     setActiveAiConfig(toAiConfig(next));
+    // Persist the choice: the settings row is what every device and every
+    // server-side AI call reads, so a refresh cannot fall back to the old model.
+    void saveSettings(user.uid, settingsPatchFor(next)).catch(() => undefined);
     setConversations((prev) =>
       prev.map((conversation) =>
         conversation.id === activeIdRef.current
@@ -1416,6 +1640,7 @@ export function DashboardChat({
 
   const deleteConversation = (id: string) => {
     setConversations((prev) => prev.filter((item) => item.id !== id));
+    void deleteOperatorMemory(user.uid, id).catch(() => undefined);
     if (activeIdRef.current === id) resetChat();
   };
 
@@ -1433,6 +1658,7 @@ export function DashboardChat({
   const clearAllConversations = () => {
     setConversations([]);
     resetChat();
+    void clearOperatorMemory(user.uid).catch(() => undefined);
   };
 
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -1494,7 +1720,7 @@ export function DashboardChat({
     if (!busy) return null;
     return (
       <div className="agent-mini" role="status" aria-live="polite" aria-label="Operator is working">
-        <BrandLoader size={16} />
+        <span className="busy-dot" aria-hidden="true" />
         <span className="agent-mini-text">{liveLine}</span>
         <span className="agent-mini-elapsed">{elapsed}s</span>
         <button
@@ -1545,7 +1771,7 @@ export function DashboardChat({
             <GripVertical size={13} />
           </span>
           <div className={`chat-avatar${busy ? " busy" : ""}`}>
-            <BrandMark size={20} />
+            <Bot size={18} aria-hidden="true" />
           </div>
           <div style={{ minWidth: 0 }}>
             <div className="chat-title">Operator</div>
@@ -1707,7 +1933,9 @@ export function DashboardChat({
                 <div>
                   <div className="strong">Conversations</div>
                   <div className="tiny">
-                    {conversations.length > 0 ? `${conversations.length} saved` : "Nothing saved yet"}
+                    {conversations.length > 0
+                      ? `${conversations.length} saved to your account`
+                      : "Nothing saved yet"}
                   </div>
                 </div>
                 <div className="row" style={{ gap: 4 }}>
@@ -1721,9 +1949,10 @@ export function DashboardChat({
                       className="btn btn-sm btn-ghost"
                       onClick={() => {
                         void confirmDialog({
-                          title: "Delete every saved conversation?",
-                          message: "The whole operator history is removed from this browser. This cannot be undone.",
-                          confirmLabel: "Delete all",
+                          title: "Clear the operator's memory?",
+                          message:
+                            "Every saved conversation and action log is deleted from your account, and the operator will not remember any of it. This cannot be undone.",
+                          confirmLabel: "Clear memory",
                           tone: "bad",
                         }).then((ok) => {
                           if (ok) clearAllConversations();
@@ -1750,7 +1979,8 @@ export function DashboardChat({
 
               {filteredConversations.length === 0 ? (
                 <p className="agent-convos-empty">
-                  Conversations are saved here with their messages and action log. Start one from the chat tab.
+                  Conversations, their messages and every action are remembered in your account — on any device.
+                  Start one from the chat tab.
                 </p>
               ) : (
                 <ul className="agent-convos-list">
@@ -1799,7 +2029,8 @@ export function DashboardChat({
                           onClick={() => {
                             void confirmDialog({
                               title: "Delete this conversation?",
-                              message: "Its messages and action log are removed from this browser.",
+                              message:
+                                "Its messages and action log are deleted from your account memory. This cannot be undone.",
                               confirmLabel: "Delete",
                               tone: "bad",
                             }).then((ok) => {
@@ -1852,7 +2083,7 @@ export function DashboardChat({
                 {recent.map((entry) => (
                   <div key={entry.id} className="agent-history-row" data-status={entry.status}>
                     <span className="agent-history-icon">
-                      {entry.status === "running" && <BrandLoader size={12} />}
+                      {entry.status === "running" && <span className="busy-dot" aria-hidden="true" />}
                       {entry.status === "done" && <CheckCircle2 size={12} />}
                       {entry.status === "error" && <AlertCircle size={12} />}
                       {entry.status === "cancelled" && <X size={12} />}
@@ -1933,7 +2164,7 @@ export function DashboardChat({
                       {msg.steps.map((step) => (
                         <div key={step.id} className={`chat-step chat-step-${step.status}`}>
                           <div className="chat-step-head">
-                            {step.status === "running" && <BrandLoader size={13} />}
+                            {step.status === "running" && <span className="busy-dot" aria-hidden="true" />}
                             {step.status === "done" && <CheckCircle2 size={13} className="chat-step-icon ok" />}
                             {step.status === "error" && <AlertCircle size={13} className="chat-step-icon bad" />}
                             {step.status === "cancelled" && <X size={13} className="chat-step-icon muted" />}
@@ -2040,7 +2271,7 @@ export function DashboardChat({
 
         {busy && statusLabel && (
           <div className="chat-working">
-            <BrandLoader size={13} />
+            <span className="busy-dot" aria-hidden="true" />
             <span>{statusLabel}</span>
           </div>
         )}
@@ -2132,7 +2363,7 @@ export function DashboardChat({
                       </span>
                       {transcribing ? (
                         <span className="tiny chat-voice-status">
-                          <BrandLoader size={11} /> Transcribing…
+                          <span className="busy-dot" aria-hidden="true" /> Transcribing…
                         </span>
                       ) : (
                         <input

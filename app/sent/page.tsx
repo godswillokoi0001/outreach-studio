@@ -210,7 +210,7 @@ export default function SentPage() {
 
           {loading && messages.length === 0 ? (
             <div style={{ padding: 18 }}>
-              <BrandLoader size="sm" />
+              <BrandLoader />
             </div>
           ) : paged.length === 0 ? (
             <div style={{ padding: 18 }}>

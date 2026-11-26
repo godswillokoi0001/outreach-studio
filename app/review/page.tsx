@@ -335,7 +335,7 @@ export default function ReviewPage() {
 
           {loading && messages.length === 0 ? (
             <div style={{ padding: 18 }}>
-              <BrandLoader size="sm" />
+              <BrandLoader />
             </div>
           ) : paged.length === 0 ? (
             <div style={{ padding: 18 }}>

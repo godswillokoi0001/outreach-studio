@@ -2,7 +2,6 @@
 
 import { useEffect, useRef, useState } from "react";
 import { errorMessage } from "@/lib/client";
-import { BrandLoader } from "./BrandLoader";
 import {
   runComposeBatch,
   runFollowupsBatch,
@@ -301,13 +300,7 @@ export function BatchRunner({
         disabled={running}
         type="button"
       >
-        {running ? (
-          <>
-            <BrandLoader size={13} /> Working…
-          </>
-        ) : (
-          label
-        )}
+        {running ? "Working…" : label}
       </button>
       {note && !error && <span className="tiny">{note}</span>}
       {error && (
