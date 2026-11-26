@@ -1,0 +1,297 @@
+/* ---------------------------------------------------------------------------
+   Feedback layer: toasts, confirm dialogs, operator launcher.
+   Loaded after dark.css so the dark overrides below always win.
+--------------------------------------------------------------------------- */
+
+/* Fields must follow the theme instead of hard-coding white. */
+.input,
+.select,
+.textarea,
+textarea,
+select,
+input[type="text"],
+input[type="number"],
+input[type="email"],
+input[type="search"],
+input[type="url"] {
+  background: var(--surface);
+  color: var(--ink);
+}
+
+html[data-theme="dark"] .input,
+html[data-theme="dark"] .select,
+html[data-theme="dark"] .textarea,
+html[data-theme="dark"] textarea,
+html[data-theme="dark"] select,
+html[data-theme="dark"] input[type="text"],
+html[data-theme="dark"] input[type="number"],
+html[data-theme="dark"] input[type="email"],
+html[data-theme="dark"] input[type="search"],
+html[data-theme="dark"] input[type="url"] {
+  background: var(--surface-2);
+  color: var(--ink);
+  border-color: var(--line);
+}
+
+html[data-theme="dark"] .input::placeholder,
+html[data-theme="dark"] .textarea::placeholder,
+html[data-theme="dark"] textarea::placeholder,
+html[data-theme="dark"] input::placeholder {
+  color: var(--muted);
+  opacity: 0.75;
+}
+
+/* Surfaces that hard-code a light gradient need a dark counterpart. */
+html[data-theme="dark"] .stat.accent {
+  background: linear-gradient(160deg, rgba(32, 204, 200, 0.12), var(--surface));
+  border-color: rgba(32, 204, 200, 0.26);
+}
+html[data-theme="dark"] tr.clickable:hover td {
+  background: var(--surface-2);
+}
+html[data-theme="dark"] .upload-icon {
+  background: var(--surface-2);
+  color: var(--teal);
+}
+html[data-theme="dark"] .chat-step-awaiting {
+  background: var(--warn-soft);
+  border-color: var(--line);
+}
+html[data-theme="dark"] .chat-textarea:focus {
+  background: var(--surface-2);
+}
+
+/* ---------- toasts ---------- */
+
+.toast-stack {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 90;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: min(380px, calc(100vw - 32px));
+  pointer-events: none;
+}
+
+.toast {
+  pointer-events: auto;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px 12px 12px 13px;
+  border-radius: var(--radius);
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--ink);
+  box-shadow: var(--shadow-md);
+}
+
+.toast[data-tone="ok"] {
+  border-color: color-mix(in srgb, var(--ok) 32%, var(--line));
+}
+.toast[data-tone="bad"] {
+  border-color: color-mix(in srgb, var(--bad) 34%, var(--line));
+}
+
+.toast-icon {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  flex: 0 0 26px;
+  background: var(--info-soft);
+  color: var(--info);
+}
+.toast[data-tone="ok"] .toast-icon {
+  background: var(--ok-soft);
+  color: var(--ok);
+}
+.toast[data-tone="bad"] .toast-icon {
+  background: var(--bad-soft);
+  color: var(--bad);
+}
+
+.toast-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+.toast-body strong {
+  font-size: 12.8px;
+  font-weight: 650;
+  line-height: 1.35;
+}
+.toast-body span {
+  font-size: 12px;
+  color: var(--ink-2);
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.toast button {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 2px;
+  border-radius: 6px;
+  display: grid;
+  place-items: center;
+}
+.toast button:hover {
+  background: var(--surface-2);
+  color: var(--ink);
+}
+
+/* ---------- confirm dialog ---------- */
+
+.confirm-backdrop {
+  z-index: 100;
+}
+
+.confirm-modal {
+  width: min(440px, calc(100vw - 32px));
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.confirm-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.confirm-head h2 {
+  font-size: 15.5px;
+  font-weight: 680;
+  margin: 0;
+  color: var(--ink);
+}
+
+.confirm-icon {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  flex: 0 0 34px;
+  border-radius: 50%;
+  background: var(--info-soft);
+  color: var(--info);
+}
+.confirm-icon[data-tone="bad"] {
+  background: var(--bad-soft);
+  color: var(--bad);
+}
+.confirm-icon[data-tone="ok"] {
+  background: var(--ok-soft);
+  color: var(--ok);
+}
+
+.confirm-message {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--ink-2);
+  overflow-wrap: anywhere;
+}
+
+.confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+/* ---------- operator launcher ---------- */
+
+.operator-fab {
+  position: fixed;
+  right: 22px;
+  bottom: 22px;
+  z-index: 80;
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  border: 1px solid rgba(32, 204, 200, 0.45);
+  background: linear-gradient(150deg, #0b2b3d, #081625 65%);
+  color: #eafcfa;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  box-shadow: 0 12px 30px -12px rgba(8, 22, 37, 0.65), 0 0 0 1px rgba(32, 204, 200, 0.12) inset;
+  transition: transform 0.16s var(--ease), box-shadow 0.16s var(--ease);
+}
+
+.operator-fab:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 18px 38px -14px rgba(8, 22, 37, 0.7);
+}
+
+.operator-fab:active {
+  transform: translateY(0) scale(0.97);
+}
+
+/* The open panel owns the bottom-right corner and has its own close button,
+   so the launcher steps out of the way instead of covering the composer. */
+.operator-fab[data-open="true"] {
+  opacity: 0;
+  transform: translateY(8px) scale(0.92);
+  pointer-events: none;
+}
+
+.brand-collapsed-mark {
+  display: block;
+  max-width: 34px;
+  object-fit: contain;
+}
+
+.operator-fab-dot {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--teal);
+  border: 2px solid var(--bg);
+}
+
+.operator-fab[data-busy="true"] .operator-fab-dot {
+  animation: operator-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes operator-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.45;
+    transform: scale(1.35);
+  }
+}
+
+/* The dock should never sit underneath the launcher. */
+.agent-dock {
+  z-index: 75;
+}
+
+@media (max-width: 640px) {
+  .toast-stack {
+    left: 12px;
+    right: 12px;
+    bottom: 84px;
+    width: auto;
+  }
+  .operator-fab {
+    right: 16px;
+    bottom: 16px;
+  }
+}

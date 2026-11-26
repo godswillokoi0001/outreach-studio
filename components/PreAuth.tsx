@@ -13,7 +13,9 @@ export function PreAuth({
   busy: boolean;
   error: string | null;
 }) {
-  const [view, setView] = useState<"landing" | "auth">("landing");
+  // A sign-in that came back broken should explain itself instead of dropping
+  // the user on the marketing page with no idea what happened.
+  const [view, setView] = useState<"landing" | "auth">(error ? "auth" : "landing");
   const [mode, setMode] = useState<"signup" | "signin">("signup");
 
   if (view === "landing") {

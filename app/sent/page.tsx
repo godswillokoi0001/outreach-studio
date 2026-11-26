@@ -1,10 +1,12 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { RotateCcw } from "lucide-react";
 import { useAuth } from "@/components/AuthProvider";
 import { Badge, Banner, Card, Empty, Modal, Pager, Progress } from "@/components/ui";
+import { useConfirm, useToast } from "@/components/Feedback";
 import { errorMessage } from "@/lib/client";
-import { listLeads, listMessages, listOpenEvents } from "@/lib/store";
+import { listLeads, listMessages, listOpenEvents, updateLeadFields, updateMessageStatus } from "@/lib/store";
 import { fmtDate, label, statusTone } from "@/lib/format";
 import type { EmailOpen, Lead, Message } from "@/lib/types";
 
@@ -17,6 +19,9 @@ const PAGE_SIZE = 20;
 
 export default function SentPage() {
   const { user } = useAuth();
+  const confirmDialog = useConfirm();
+  const toast = useToast();
+  const [busy, setBusy] = useState<string | null>(null);
   const [tab, setTab] = useState("sent");
   const [page, setPage] = useState(1);
   const [open, setOpen] = useState<SentRow | null>(null);
@@ -79,6 +84,62 @@ export default function SentPage() {
       };
     });
   }, [messages, leads]);
+
+  // Opens arrive after the email is read, so keep the list fresh instead of
+  // showing "Not yet" until the page is reloaded by hand.
+  useEffect(() => {
+    let active = true;
+    const refresh = () => {
+      if (document.hidden) return;
+      listOpenEvents(user.uid)
+        .then((next) => {
+          if (active) setOpens(next);
+        })
+        .catch(() => undefined);
+    };
+    // One read a minute, never while the tab is in the background: every tick
+    // is a real table scan on Supabase.
+    const timer = window.setInterval(refresh, 60_000);
+    document.addEventListener("visibilitychange", refresh);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", refresh);
+    };
+  }, [user.uid]);
+
+  /** Take a sent email out of the sent list and put it back in review. */
+  const revertToReview = async (message: SentRow) => {
+    const ok = await confirmDialog({
+      title: "Send this email back to review?",
+      message:
+        "It leaves the sent list and returns to the review queue, where you can edit it or approve it again. The recipient already received the original message.",
+      confirmLabel: "Back to review",
+      cancelLabel: "Keep as sent",
+      tone: "info",
+    });
+    if (!ok) return;
+    setBusy(message.id);
+    try {
+      await updateMessageStatus(user.uid, message.id, "pending_approval", {
+        sent_at: null,
+        gmail_id: null,
+        thread_id: null,
+        error: null,
+        approved_at: null,
+      });
+      if (message.lead_id) {
+        await updateLeadFields(user.uid, message.lead_id, { status: "email_generated" });
+      }
+      setOpen(null);
+      await reload();
+      toast.success("Moved back to review", "The email is waiting in Email review.");
+    } catch (err) {
+      toast.error("Could not move the email", errorMessage(err));
+    } finally {
+      setBusy(null);
+    }
+  };
 
   const openStats = useMemo(() => {
     const map = new Map<string, { count: number; last: string }>();
@@ -219,6 +280,19 @@ export default function SentPage() {
               </span>
             </div>
             <pre className="pre">{open.body}</pre>
+            {(open.status === "sent" || open.status === "failed") && (
+              <div className="row" style={{ marginTop: 12 }}>
+                <button
+                  type="button"
+                  className="btn btn-sm"
+                  onClick={() => void revertToReview(open)}
+                  disabled={busy === open.id}
+                >
+                  <RotateCcw size={12} aria-hidden="true" />
+                  {busy === open.id ? "Moving…" : "Send back to review"}
+                </button>
+              </div>
+            )}
             <div className="divider" />
             <div className="open-summary" data-open={openStats.get(open.id) ? "true" : "false"}>
               <span className="open-summary-dot" />

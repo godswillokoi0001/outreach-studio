@@ -1177,9 +1177,13 @@ tbody tr:hover td {
   display: flex;
   gap: 10px;
   align-items: flex-start;
-  padding: 14px 14px 2px 0;
+  /* Keep the divider clear of the number/check badge beside it. */
+  padding: 14px 18px 6px 18px;
   border-right: 1px solid var(--line-soft);
   color: inherit;
+}
+.wk-setup-step:first-child {
+  padding-left: 0;
 }
 .wk-setup-step:last-child {
   border-right: none;
@@ -1191,6 +1195,7 @@ tbody tr:hover td {
   flex: 0 0 20px;
   width: 20px;
   height: 20px;
+  margin-top: 1px;
   border-radius: 50%;
   display: grid;
   place-items: center;

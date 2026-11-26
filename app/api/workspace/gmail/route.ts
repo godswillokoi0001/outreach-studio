@@ -134,7 +134,12 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ error: "Email payload is required." }, { status: 400 });
       }
       const tracking = body.email.tracking;
-      const publicOrigin = (process.env.NEXT_PUBLIC_APP_URL || req.nextUrl.origin).replace(/\/$/, "");
+      // The pixel has to point at a public origin. A leftover localhost value
+      // in NEXT_PUBLIC_APP_URL (common when copying .env.example) would embed
+      // an unreachable URL in every email and no open would ever be recorded.
+      const configuredOrigin = (process.env.NEXT_PUBLIC_APP_URL ?? "").trim().replace(/\/$/, "");
+      const usableOrigin = /^https?:\/\//i.test(configuredOrigin) && !/localhost|127\.0\.0\.1|0\.0\.0\.0/i.test(configuredOrigin);
+      const publicOrigin = (usableOrigin ? configuredOrigin : req.nextUrl.origin).replace(/\/$/, "");
       const pixelUrl =
         tracking?.enabled !== false && tracking?.messageId
           ? buildOpenPixelUrl(publicOrigin, {

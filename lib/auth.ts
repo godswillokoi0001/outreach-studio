@@ -33,8 +33,34 @@ export interface AppUser {
   emailVerified: boolean;
 }
 
+/**
+ * The origin sign-in must return to.
+ *
+ * Supabase stores the PKCE verifier in a cookie for the host that starts the
+ * flow. If the app is reachable on both `knowrevo.site` and
+ * `www.knowrevo.site`, returning to the other host loses that cookie and the
+ * exchange fails with "Unable to exchange external code". When the configured
+ * app URL is the same site (with or without `www`), use it so both steps happen
+ * on one host.
+ */
+export function appOrigin(): string {
+  if (typeof window === "undefined") return "";
+  const current = window.location.origin;
+  const configured = (process.env.NEXT_PUBLIC_APP_URL ?? "").replace(/\/+$/, "");
+  if (!configured) return current;
+  try {
+    const target = new URL(configured);
+    const here = new URL(current);
+    const bare = (host: string) => host.replace(/^www\./i, "").toLowerCase();
+    if (bare(target.hostname) === bare(here.hostname)) return target.origin;
+  } catch {
+    return current;
+  }
+  return current;
+}
+
 function authCallbackUrl(): string {
-  return `${window.location.origin}/auth/callback`;
+  return `${appOrigin()}/auth/callback`;
 }
 
 /** Identity-only Google sign-in through Supabase Auth. Redirects the browser. */

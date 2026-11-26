@@ -1,6 +1,7 @@
 "use client";
 
 import { normalizeEmail } from "./columns";
+import { invalidateDataCache } from "./db-client";
 import { authedPost, errorMessage, isQuotaError, sleep } from "./client";
 import { ensureWorkspaceToken } from "./workspace";
 import {
@@ -392,6 +393,9 @@ export async function runSendBatch(
   if (!(await ensureWorkspaceToken())) {
     throw new Error("Connect Google (click 'Connect Google' in the top bar) before sending emails.");
   }
+  // Sending must never work from a cached queue: another tab may have already
+  // sent one of these, and a duplicate email cannot be undone.
+  invalidateDataCache();
 
   const [leads, campaigns, messages, suppressions, settings] = await Promise.all([
     listLeads(uid),
@@ -551,7 +555,6 @@ export async function runSendBatch(
             rfcMessageId,
             inReplyTo: msg.kind === "followup" ? previousSent?.rfc_message_id ?? null : null,
             threadId: msg.kind === "followup" ? previousSent?.thread_id ?? null : null,
-            unsubscribeEmail: settings.unsubscribe_email || senderEmail,
             tracking: { enabled: true, messageId: msg.id, leadId: lead.id },
           },
         },
@@ -589,6 +592,7 @@ export async function sendMessageNow(
   if (!(await ensureWorkspaceToken())) {
     throw new Error("Connect Google (click 'Connect Google' in the top bar) before sending emails.");
   }
+  invalidateDataCache();
 
   const [leads, campaigns, messages, suppressions, settings] = await Promise.all([
     listLeads(uid),
@@ -650,7 +654,6 @@ export async function sendMessageNow(
           rfcMessageId,
           inReplyTo: msg.kind === "followup" ? previousSent?.rfc_message_id ?? null : null,
           threadId: msg.kind === "followup" ? previousSent?.thread_id ?? null : null,
-          unsubscribeEmail: settings.unsubscribe_email || senderEmail,
           tracking: { enabled: true, messageId: msg.id, leadId: lead.id },
         },
       },

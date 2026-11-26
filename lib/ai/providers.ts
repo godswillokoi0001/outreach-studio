@@ -223,6 +223,35 @@ export function seedFromSettings(list: SavedProvider[], settings: Settings | nul
   ];
 }
 
+/**
+ * Reads the provider vault persisted in the user's private settings row.
+ *
+ * localStorage is only a cache: the database copy is what survives a refresh,
+ * a new browser or a different device.
+ */
+export function providersFromSettings(settings: Settings | null | undefined): SavedProvider[] {
+  const raw = settings?.ai_providers;
+  if (!raw || typeof raw !== "string") return [];
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter((entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === "object")
+      .map((entry) => normalizeSaved(entry))
+      .filter((entry) => entry.provider && entry.apiKey);
+  } catch {
+    return [];
+  }
+}
+
+/** The settings patch that stores the whole provider list in the database. */
+export function providersPatchFor(list: SavedProvider[]): Partial<Settings> {
+  return {
+    ai_providers: JSON.stringify(list),
+    ...(list[0] ? settingsPatchFor(list.find((item) => item.enabled) ?? list[0]) : {}),
+  };
+}
+
 /** The subset persisted into the private settings row (server fallback). */
 export function settingsPatchFor(saved: SavedProvider): Partial<Settings> {
   return {

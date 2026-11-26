@@ -5,7 +5,7 @@ import type { Settings } from "./types";
 
 type PushDeviceRegistration = { uid: string; token: string; platform: string; created_at: string };
 
-const STRING_FIELDS = ["sender_name","sender_role","sender_company","sender_email","signature","unsubscribe_email","physical_address","send_days","model","ai_provider","ai_api_key","ai_base_url","ai_verified_at","ai_key_hint"] as const satisfies readonly (keyof Settings)[];
+const STRING_FIELDS = ["sender_name","sender_role","sender_company","sender_email","signature","unsubscribe_email","physical_address","send_days","model","ai_provider","ai_api_key","ai_base_url","ai_verified_at","ai_key_hint","ai_providers"] as const satisfies readonly (keyof Settings)[];
 const NUMBER_FIELDS = ["daily_limit","campaign_limit","interval_seconds","send_window_start","send_window_end","timezone_offset","followup_days","min_score"] as const satisfies readonly (keyof Settings)[];
 
 /**

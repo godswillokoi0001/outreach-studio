@@ -34,6 +34,7 @@ const STRING_LIMITS: Record<string, number> = {
   ai_base_url: 400,
   ai_verified_at: 64,
   ai_key_hint: 40,
+  ai_providers: 20_000,
 };
 
 const NUMBER_RANGES: Record<string, [number, number]> = {

@@ -18,6 +18,7 @@ import {
   workspaceStatus,
 } from "@/lib/workspace";
 import { clearWorkspaceToken, writeWorkspaceToken } from "@/lib/workspace-token";
+import { invalidateDataCache } from "@/lib/db-client";
 import { BrandLoader } from "./BrandLoader";
 import { BrandLockup } from "./BrandMark";
 import { PreAuth } from "./PreAuth";
@@ -31,6 +32,8 @@ export interface WorkspaceIssue {
 
 interface AuthContextValue {
   user: AppUser;
+  /** False until the first Google-connection check finishes after a load. */
+  workspaceReady: boolean;
   workspaceToken: string | null;
   workspaceEmail: string | null;
   /** True when the server has a stored refresh token, so Gmail/Sheets survive reloads. */
@@ -39,6 +42,8 @@ interface AuthContextValue {
   workspaceIssue: WorkspaceIssue | null;
   clearWorkspaceIssue: () => void;
   reconnectWorkspace: () => Promise<boolean>;
+  /** Clears the stored Google access immediately, without a page reload. */
+  disconnectWorkspace: () => Promise<void>;
   refreshWorkspace: () => Promise<void>;
   signOut: () => Promise<void>;
 }
@@ -53,6 +58,9 @@ export function useAuth(): AuthContextValue {
 
 function friendlyAuthError(err: unknown): string {
   const raw = err instanceof Error ? err.message : String(err);
+  if (/exchange external code|invalid_grant|code verifier|code challenge/i.test(raw)) {
+    return "That Google sign-in link had already been used or had expired, so it could not be completed. Click Continue with Google to start again.";
+  }
   if (/redirect_uri_mismatch|invalid redirect|redirect.*not allowed/i.test(raw)) {
     return "Google sign-in returned to an address Supabase has not authorised. In Supabase → Authentication → URL Configuration, set the Site URL to this app's URL and add it to the redirect allow list, then try again.";
   }
@@ -71,6 +79,26 @@ function friendlyAuthError(err: unknown): string {
   return raw;
 }
 
+/**
+ * Reads a failed sign-in from the address bar and removes it, so a refresh
+ * cannot replay an authorization code that has already been spent.
+ */
+function consumeAuthErrorFromUrl(): string | null {
+  if (typeof window === "undefined") return null;
+  const url = new URL(window.location.href);
+  const flagged = url.searchParams.get("auth") === "error";
+  const hash = new URLSearchParams(url.hash.replace(/^#/, ""));
+  const hashError = hash.get("error_description") ?? hash.get("error");
+  if (!flagged && !hashError) return null;
+
+  const reason = url.searchParams.get("reason") ?? hashError ?? "";
+  url.searchParams.delete("auth");
+  url.searchParams.delete("reason");
+  url.hash = "";
+  window.history.replaceState({}, "", `${url.pathname}${url.search}`);
+  return friendlyAuthError(new Error(reason || "Google sign-in did not complete."));
+}
+
 /** Separates Google's verification block from ordinary failures. */
 function classifyWorkspaceError(err: unknown): WorkspaceIssue {
   const raw = err instanceof Error ? err.message : String(err);
@@ -86,6 +114,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const isPublicLegalPage = pathname === "/privacy-policy" || pathname === "/terms";
   const [user, setUser] = useState<AppUser | null>(null);
+  const [workspaceReady, setWorkspaceReady] = useState(false);
   const [workspaceToken, setWorkspaceToken] = useState<string | null>(null);
   const [workspaceEmail, setWorkspaceEmail] = useState<string | null>(null);
   const [workspacePersistent, setWorkspacePersistent] = useState(false);
@@ -115,6 +144,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setWorkspaceToken(null);
         setWorkspaceEmail(null);
         setWorkspacePersistent(false);
+        setWorkspaceReady(false);
         setLoading(false);
         return;
       }
@@ -129,10 +159,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         }
         // A fresh Google consent can hand back a Workspace token; keep it in memory only.
         if (session.provider_token) writeWorkspaceToken(session.provider_token, 3600);
-        await hydrateWorkspace();
-        if (!active) return;
         setUser(current);
         setAuthError(null);
+        // Paint the workspace now and check the Google connection afterwards:
+        // waiting for the token exchange used to hold every screen hostage on reload.
+        setLoading(false);
+        void hydrateWorkspace().finally(() => {
+          if (active) setWorkspaceReady(true);
+        });
       } catch (err) {
         if (!active) return;
         setAuthError(friendlyAuthError(err));
@@ -143,7 +177,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     };
 
     void (async () => {
+      // A failed callback leaves ?auth=error&reason=… in the address bar. Show
+      // the reason once, then clean the URL so a refresh cannot replay a code
+      // that was already spent.
+      const notice = consumeAuthErrorFromUrl();
       const { data } = await supabaseBrowser.auth.getSession();
+      if (notice && !data.session) setAuthError(notice);
       await applySession(data.session);
     })();
 
@@ -195,9 +234,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return false;
   }, [hydrateWorkspace]);
 
+  const disconnectWorkspace = useCallback(async (): Promise<void> => {
+    // Clear local state first so every connected badge flips immediately.
+    clearWorkspaceToken();
+    setWorkspaceToken(null);
+    setWorkspaceEmail(null);
+    setWorkspacePersistent(false);
+    setWorkspaceIssue(null);
+    try {
+      const { disconnectWorkspace: clearOnServer } = await import("@/lib/workspace");
+      await clearOnServer();
+    } catch {
+      // The browser copy is already gone; the server copy is best-effort.
+    }
+  }, []);
+
   const signOut = async () => {
     await signOutSupabase();
     clearWorkspaceToken();
+    // Nothing from this account may survive into the next sign-in.
+    invalidateDataCache();
     setUser(null);
     setWorkspaceToken(null);
     setWorkspaceEmail(null);
@@ -228,12 +284,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     <AuthContext.Provider
       value={{
         user,
+        workspaceReady,
         workspaceToken,
         workspaceEmail,
         workspacePersistent,
         workspaceIssue,
         clearWorkspaceIssue: () => setWorkspaceIssue(null),
         reconnectWorkspace,
+        disconnectWorkspace,
         refreshWorkspace: async () => {
           await hydrateWorkspace();
         },

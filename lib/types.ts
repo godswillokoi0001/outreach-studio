@@ -254,6 +254,8 @@ export interface Settings {
   ai_verified_at: string;
   /** Masked tail of the key, for display. */
   ai_key_hint: string;
+  /** JSON list of every saved model provider, so the vault survives a refresh. */
+  ai_providers: string;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -279,6 +281,7 @@ export const DEFAULT_SETTINGS: Settings = {
   ai_base_url: "",
   ai_verified_at: "",
   ai_key_hint: "",
+  ai_providers: "",
 };
 
 export const LEAD_STATUS_LABELS: Record<string, string> = {
@@ -295,7 +298,7 @@ export const LEAD_STATUS_LABELS: Record<string, string> = {
   bounced: "Bounced",
   followup_pending: "Follow-up pending",
   converted: "Converted",
-  unsubscribed: "Unsubscribed",
+  unsubscribed: "Opted out",
   suppressed: "Suppressed",
 };
 

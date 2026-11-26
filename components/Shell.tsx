@@ -6,6 +6,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   BarChart3,
   Bell,
+  Bot,
   BookOpen,
   CheckCircle2,
   CheckSquare,
@@ -17,7 +18,6 @@ import {
   Menu as MenuIcon,
   MessageSquare,
   MoreHorizontal,
-  MousePointer2,
   MousePointerClick,
   PanelLeftClose,
   PanelLeftOpen,
@@ -35,7 +35,7 @@ import { errorMessage } from "@/lib/client";
 import { subscribeBadgeCounts, subscribeOpenEvents } from "@/lib/store";
 import { runSendBatch, runSyncBatch } from "@/lib/pipeline-client";
 import { useAuth } from "./AuthProvider";
-import { BrandLockup } from "./BrandMark";
+import { BrandLockup, BrandMark } from "./BrandMark";
 import { BrandLoader } from "./BrandLoader";
 import { Menu, MenuItem, MenuSeparator } from "./Menu";
 import { ThemeToggle } from "./ThemeToggle";
@@ -44,6 +44,7 @@ import { AgentPresenceProvider } from "./AgentPresence";
 import { TaskDockProvider, useTaskDock } from "./Loading";
 import { WorkspaceIssueNotice } from "./WorkspaceIssueNotice";
 import { PageMotion } from "./motion/PageMotion";
+import { useToast } from "./Feedback";
 
 const NAV_STATE_KEY = "os:nav:collapsed";
 
@@ -103,8 +104,18 @@ export function Shell({ children }: { children: ReactNode }) {
 function ShellInner({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const dock = useTaskDock();
-  const { user, workspaceToken, workspaceEmail, workspacePersistent, workspaceIssue, reconnectWorkspace, signOut } =
-    useAuth();
+  const toast = useToast();
+  const {
+    user,
+    workspaceReady,
+    workspaceToken,
+    workspaceEmail,
+    workspacePersistent,
+    workspaceIssue,
+    reconnectWorkspace,
+    disconnectWorkspace,
+    signOut,
+  } = useAuth();
 
   useEffect(() => {
     void initAiConfig(user.uid);
@@ -193,6 +204,11 @@ function ShellInner({ children }: { children: ReactNode }) {
       const result = await runSyncBatch(user.uid, 15);
       const message = result.info || `Synced (${result.processed} new).`;
       setSyncNote(result.errors.length ? result.errors[0] : message);
+      if (result.errors.length && !result.processed) {
+        toast.error("Sync failed", result.errors[0]);
+      } else {
+        toast.success("Inbox synced", message);
+      }
       task.finish(result.errors.length && !result.processed ? "error" : "done", message);
       if (result.processed > 0) {
         setRefreshKey((k) => k + 1);
@@ -201,6 +217,7 @@ function ShellInner({ children }: { children: ReactNode }) {
     } catch (err) {
       const message = errorMessage(err);
       setSyncNote(message);
+      toast.error("Sync failed", message);
       task.finish("error", message);
     } finally {
       setSyncing(false);
@@ -268,7 +285,11 @@ function ShellInner({ children }: { children: ReactNode }) {
     <div className="app" data-collapsed={collapsed ? "true" : "false"}>
       <aside className={`sidebar${open ? " open" : ""}`}>
         <div className="brand">
-          <BrandLockup tone="dark" size={30} subtitle="Knowledge-powered outreach" />
+          {collapsed ? (
+            <BrandMark tone="dark" size={28} className="brand-collapsed-mark" />
+          ) : (
+            <BrandLockup tone="dark" size={30} subtitle="Knowledge-powered outreach" />
+          )}
           <button
             className="sidebar-close"
             onClick={() => setOpen(false)}
@@ -366,7 +387,7 @@ function ShellInner({ children }: { children: ReactNode }) {
             ) : null}
 
             <div className="topbar-group" aria-label="Workspace actions">
-            {workspaceToken ? (
+            {!workspaceReady ? null : workspaceToken ? (
               <span
                 className="badge"
                 data-tone="ok"
@@ -402,17 +423,6 @@ function ShellInner({ children }: { children: ReactNode }) {
               >
                 {syncing ? <BrandLoader variant="button" size={13} /> : <RefreshCw size={13} aria-hidden="true" />}
                 <span className="topbar-collapse">{syncing ? "Syncing…" : "Sync"}</span>
-              </button>
-              <button
-                className={`btn btn-sm${chatOpen ? " btn-primary" : ""}`}
-                onClick={() => setChatOpen((v) => !v)}
-                type="button"
-                aria-pressed={chatOpen}
-                aria-label="Operator"
-                title="Operator"
-              >
-                <MousePointer2 size={13} aria-hidden="true" />
-                <span className="topbar-collapse">Operator</span>
               </button>
             </div>
 
@@ -469,12 +479,27 @@ function ShellInner({ children }: { children: ReactNode }) {
                     <MenuItem
                       onClick={() => {
                         close();
-                        void reconnectWorkspace();
+                        void reconnectWorkspace().then((ok) => {
+                          if (ok) toast.success("Google reconnected", "Gmail and Sheets are ready again.");
+                        });
                       }}
                     >
                       <Plug size={14} aria-hidden="true" />
                       {workspaceToken ? "Reconnect Google" : "Connect Google"}
                     </MenuItem>
+                    {workspaceToken ? (
+                      <MenuItem
+                        tone="danger"
+                        onClick={() => {
+                          close();
+                          void disconnectWorkspace().then(() => {
+                            toast.info("Google disconnected", "Gmail and Sheets access was removed.");
+                          });
+                        }}
+                      >
+                        <LogOut size={14} aria-hidden="true" /> Disconnect Google
+                      </MenuItem>
+                    ) : null}
                   </>
                 )}
               </Menu>
@@ -518,6 +543,19 @@ function ShellInner({ children }: { children: ReactNode }) {
 
         <PageMotion>{children}</PageMotion>
       </div>
+
+      <button
+        type="button"
+        className="operator-fab"
+        data-open={chatOpen ? "true" : "false"}
+        onClick={() => setChatOpen((value) => !value)}
+        aria-label={chatOpen ? "Close the operator" : "Open the operator"}
+        aria-expanded={chatOpen}
+        title={chatOpen ? "Close the operator" : "Operator"}
+      >
+        {chatOpen ? <X size={20} aria-hidden="true" /> : <Bot size={22} aria-hidden="true" />}
+        {!chatOpen && <span className="operator-fab-dot" aria-hidden="true" />}
+      </button>
 
       <DashboardChat
         open={chatOpen}

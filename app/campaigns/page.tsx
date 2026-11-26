@@ -11,6 +11,7 @@ import { LoadingPanel, Skeleton } from "@/components/Loading";
 import { DEFAULT_CRITERIA, INDUSTRY_OPTIONS, criteriaToFocus, type ResearchCriteria } from "@/lib/criteria";
 import { EMPTY_GEO, geoSummary, rememberLocation, type GeoSelection } from "@/lib/geo";
 import { Badge, Banner, Card, Empty, Field } from "@/components/ui";
+import { confirmDialog } from "@/components/Feedback";
 import { authedPost, errorMessage } from "@/lib/client";
 import {
   addLeadsToCampaign,
@@ -308,7 +309,15 @@ export default function CampaignsPage() {
       unarchive: "Unarchive this campaign? It returns to your active list.",
       archive: "Archive this campaign? It stops appearing in your active list.",
     };
-    if (confirmations[action] && !window.confirm(confirmations[action])) return;
+    if (confirmations[action]) {
+      const proceed = await confirmDialog({
+        title: "Confirm this campaign action",
+        message: confirmations[action],
+        confirmLabel: "Continue",
+        tone: action === "archive" ? "bad" : "info",
+      });
+      if (!proceed) return;
+    }
     setBusy(`${campaign.id}:${action}`);
     setFailure(null);
     setNotice(null);

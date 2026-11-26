@@ -41,6 +41,7 @@ const STRING_FIELDS = [
   "ai_base_url",
   "ai_verified_at",
   "ai_key_hint",
+  "ai_providers",
 ] as const satisfies readonly (keyof Settings)[];
 
 const NUMBER_FIELDS = [
@@ -99,7 +100,9 @@ export async function saveSupabaseSettingsServer(
       continue;
     }
 
-    payload[key] = value.slice(0, 2000);
+    // The provider vault is a JSON document, so it needs far more room than
+    // the single-line text fields.
+    payload[key] = value.slice(0, key === "ai_providers" ? 20_000 : 2000);
   }
 
   for (const key of NUMBER_FIELDS) {
@@ -124,6 +127,20 @@ export async function saveSupabaseSettingsServer(
       .select("id");
 
     if (error) {
+      // Before the ai_providers migration has been applied, keep saving every
+      // other setting instead of failing the whole document.
+      if (/ai_providers/i.test(error.message)) {
+        const { ai_providers: _omit, ...rest } = fields as Record<string, unknown>;
+        void _omit;
+        const retry = await supabaseServer
+          .from("settings")
+          .update(rest as never)
+          .eq("id", SETTINGS_ROW_ID)
+          .select("id");
+        if (!retry.error) return true;
+        console.error("[supabase-server] saveSettings retry error:", retry.error.message);
+        return false;
+      }
       console.error("[supabase-server] saveSettings error:", error.message);
       return false;
     }

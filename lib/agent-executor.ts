@@ -1045,7 +1045,6 @@ export async function executeAgentTool(
           "sender_role",
           "sender_company",
           "sender_email",
-          "unsubscribe_email",
           "physical_address",
           "send_days",
           "model",

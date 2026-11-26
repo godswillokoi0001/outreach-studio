@@ -83,9 +83,9 @@ test("cleanEmailText, validateEmail, and buildRawEmail format clean outreach mes
     subject: "Mobile booking flow",
     body: validBody,
     rfcMessageId: "<test@studio.com>",
-    unsubscribeEmail: "alex@studio.com",
   });
-  assert.ok(raw.includes("List-Unsubscribe: <mailto:alex@studio.com?subject=unsubscribe>"));
+  assert.ok(!raw.includes("List-Unsubscribe"));
+  assert.ok(!raw.toLowerCase().includes("unsubscribe"));
   assert.ok(raw.includes("Content-Transfer-Encoding: base64"));
 });
 

@@ -59,6 +59,32 @@ function resolveTable(name: string | null): string {
   return name;
 }
 
+/**
+ * Screens that only need counters or list labels ask for a few columns instead
+ * of `*`. Reading a 40 KB email body to count drafts is what pushed the project
+ * into its disk IO budget, so the column list is honoured here.
+ */
+function resolveColumns(table: string, raw: string | null): string {
+  if (!raw) return "*";
+  const allowed = new Set(COLUMNS[table]);
+  const requested = raw
+    .split(",")
+    .map((value) => value.trim())
+    .filter((value) => /^[a-z][a-z0-9_]*$/.test(value) && allowed.has(value));
+  if (requested.length === 0) return "*";
+  // Every row needs its id: the client turns it into the document handle.
+  if (!requested.includes("id")) requested.unshift("id");
+  return requested.join(",");
+}
+
+function resolveOrder(table: string, raw: string | null): { column: string; ascending: boolean } | null {
+  if (!raw) return null;
+  const [column, direction] = raw.split(".");
+  const allowed = new Set(COLUMNS[table]);
+  if (!column || !/^[a-z][a-z0-9_]*$/.test(column) || !allowed.has(column)) return null;
+  return { column, ascending: direction !== "desc" };
+}
+
 function cleanValues(table: string, raw: unknown): Row {
   if (!raw || typeof raw !== "object") return {};
   const allowed = new Set(COLUMNS[table]);
@@ -118,9 +144,20 @@ export async function GET(req: NextRequest) {
     const params = req.nextUrl.searchParams;
     const table = resolveTable(params.get("table"));
     const id = params.get("id");
+    const columns = resolveColumns(table, params.get("columns"));
+    const order = resolveOrder(table, params.get("order"));
+    const requestedLimit = Number(params.get("limit"));
+    const limit = Number.isFinite(requestedLimit) && requestedLimit > 0
+      ? Math.min(Math.floor(requestedLimit), 5000)
+      : null;
 
-    const query = supabaseServer.from(table as never).select("*");
-    const scoped = id ? query.eq("id", id).eq("owner_id", user.ownerId) : query.eq("owner_id", user.ownerId);
+    let scoped = supabaseServer.from(table as never).select(columns);
+    scoped = id
+      ? scoped.eq("id", id).eq("owner_id", user.ownerId)
+      : scoped.eq("owner_id", user.ownerId);
+    if (order) scoped = scoped.order(order.column, { ascending: order.ascending });
+    if (limit) scoped = scoped.limit(limit);
+
     const { data, error } = await scoped;
 
     if (error) throw new Error(`Could not read ${table}: ${error.message}`);

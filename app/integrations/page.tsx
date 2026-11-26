@@ -14,16 +14,18 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { useAuth } from "@/components/AuthProvider";
+import { useToast } from "@/components/Feedback";
 import { Badge, Banner, Card } from "@/components/ui";
 import { getProvider } from "@/lib/ai/registry";
 import { authedPost, errorMessage } from "@/lib/client";
 import { getSettings } from "@/lib/store";
 import type { Settings } from "@/lib/types";
-import { disconnectWorkspace, workspaceStatus, type WorkspaceStatus } from "@/lib/workspace";
+import { workspaceStatus, type WorkspaceStatus } from "@/lib/workspace";
 
 export default function IntegrationsPage() {
   const params = useSearchParams();
-  const { user, workspaceToken, reconnectWorkspace } = useAuth();
+  const { user, workspaceToken, reconnectWorkspace, disconnectWorkspace } = useAuth();
+  const toast = useToast();
   const [busy, setBusy] = useState<string | null>(null);
   const [note, setNote] = useState<{ tone: "ok" | "bad" | "info"; text: string } | null>(null);
   const [status, setStatus] = useState<WorkspaceStatus | null>(null);
@@ -112,6 +114,7 @@ export default function IntegrationsPage() {
       await disconnectWorkspace();
       await loadStatus();
       setNote({ tone: "ok", text: "Google disconnected. Stored access has been removed from this browser." });
+      toast.success("Google disconnected", "Gmail and Sheets access was removed. Connect again any time.");
     } catch (err) {
       setNote({ tone: "bad", text: errorMessage(err) });
     } finally {
@@ -281,7 +284,7 @@ export default function IntegrationsPage() {
             </li>
             <li className="row" style={{ gap: 8 }}>
               <CheckCircle2 size={15} style={{ color: "var(--accent)" }} />
-              <span>Unsubscribes and bounces are suppressed automatically and stop all future contact.</span>
+              <span>Opt-outs and bounces are suppressed automatically and stop all future contact.</span>
             </li>
           </ul>
         </Card>

@@ -93,12 +93,7 @@ export function validateEmail(subject: string, body: string): string | null {
   if (!body || body.trim().split(/\s+/).length < 25) return "Email body is too short.";
   if (body.trim().split(/\s+/).length > 400) return "Email body is too long for cold outreach.";
   if (/\[[^\]]{2,40}\]/.test(body)) return "Email still contains an unfilled placeholder.";
-  if (/\[unsubscribe\]/i.test(body)) return "Email contains an unfilled unsubscribe placeholder.";
   return null;
-}
-
-export function optOutLine(): string {
-  return `If you would rather not hear from me again, reply "unsubscribe" or let me know and I will not follow up.`;
 }
 
 function wrapBase64(value: string): string {
@@ -124,7 +119,6 @@ export interface RawEmailInput {
   body: string;
   rfcMessageId: string;
   inReplyTo?: string | null;
-  unsubscribeEmail?: string;
   /** Absolute URL of the 1x1 open-tracking pixel. Omit to send plain text only. */
   openPixelUrl?: string | null;
 }
@@ -156,9 +150,7 @@ export function buildOpenPixelUrl(
 }
 
 export function buildRawEmail(input: RawEmailInput): string {
-  const body = input.body.toLowerCase().includes("unsubscribe")
-    ? input.body
-    : `${input.body}\n\n${optOutLine()}`;
+  const body = input.body;
   const headers: string[] = [
     `From: ${input.fromName ? `${input.fromName} ` : ""}<${input.from}>`,
     `To: ${input.to}`,
@@ -169,9 +161,6 @@ export function buildRawEmail(input: RawEmailInput): string {
     `X-Outreach-Message-Id: ${input.rfcMessageId.replace(/[<>]/g, "")}`,
   ];
   if (input.inReplyTo) headers.push(`In-Reply-To: ${input.inReplyTo}`);
-  if (input.unsubscribeEmail) {
-    headers.push(`List-Unsubscribe: <mailto:${input.unsubscribeEmail}?subject=unsubscribe>`);
-  }
 
   const pixel = input.openPixelUrl
     ? `<img src="${escapeHtml(input.openPixelUrl)}" width="1" height="1" alt="" style="display:block;width:1px;height:1px;border:0;opacity:0;" />`

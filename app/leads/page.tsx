@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Plus } from "lucide-react";
 import { useAuth } from "@/components/AuthProvider";
 import { Badge, Banner, Card, Empty, Field, Modal, Pager, Progress } from "@/components/ui";
+import { confirmDialog } from "@/components/Feedback";
 import { errorMessage } from "@/lib/client";
 import {
   createLead,
@@ -138,9 +139,13 @@ export default function LeadsPage() {
   };
 
   const remove = async (lead: Lead) => {
-    if (!window.confirm(`Delete ${lead.business ?? lead.email} and all its messages and replies? This cannot be undone.`)) {
-      return;
-    }
+    const proceed = await confirmDialog({
+      title: `Delete ${lead.business ?? lead.email}?`,
+      message: "Its messages and replies are deleted with it. This cannot be undone.",
+      confirmLabel: "Delete prospect",
+      tone: "bad",
+    });
+    if (!proceed) return;
     try {
       await deleteLeadCascade(user.uid, lead.id);
       setSelected(null);

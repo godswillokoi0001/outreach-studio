@@ -471,7 +471,6 @@ export const AGENT_TOOLS: FunctionDeclaration[] = [
         sender_role: { type: Type.STRING },
         sender_company: { type: Type.STRING },
         sender_email: { type: Type.STRING },
-        unsubscribe_email: { type: Type.STRING },
         physical_address: { type: Type.STRING },
         daily_limit: { type: Type.INTEGER },
         campaign_limit: { type: Type.INTEGER },

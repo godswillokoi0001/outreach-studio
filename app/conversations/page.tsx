@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useAuth } from "@/components/AuthProvider";
 import { Badge, Banner, Card, Empty, Pager, Progress } from "@/components/ui";
+import { confirmDialog } from "@/components/Feedback";
 import { authedPost, errorMessage } from "@/lib/client";
 import {
   addSuppression,
@@ -32,7 +33,7 @@ const CLASS_LABELS: Record<string, string> = {
   not_interested: "Not interested",
   referral: "Referral",
   out_of_office: "Out of office",
-  unsubscribe: "Unsubscribe",
+  unsubscribe: "Asked to stop",
   bounce: "Bounced",
   other: "Other",
 };
@@ -175,7 +176,13 @@ export default function ConversationsPage() {
   };
 
   const suppressReply = async (reply: ReplyRow) => {
-    if (!window.confirm("Stop all contact with this prospect and add them to the suppression list?")) return;
+    const proceed = await confirmDialog({
+      title: "Stop all contact with this prospect?",
+      message: "They are added to the suppression list and will never be emailed again.",
+      confirmLabel: "Stop contact",
+      tone: "bad",
+    });
+    if (!proceed) return;
     setBusy(reply.id);
     setError(null);
     setNotice(null);
@@ -249,7 +256,6 @@ export default function ConversationsPage() {
             body,
             rfcMessageId,
             threadId: reply.thread_id ?? null,
-            unsubscribeEmail: settings.unsubscribe_email || senderEmail,
             tracking: { enabled: false },
           },
         },
@@ -312,7 +318,6 @@ export default function ConversationsPage() {
                 ["positive", "Positive"],
                 ["pricing", "Pricing"],
                 ["objection", "Objections"],
-                ["unsubscribe", "Unsubscribes"],
               ].map(([value, text]) => (
                 <button
                   key={value}
@@ -407,7 +412,7 @@ export default function ConversationsPage() {
                               :{" "}
                               {message.subject}
                             </div>
-                            <pre className="pre" style={{ background: "#fff", fontSize: 12.4 }}>
+                            <pre className="pre" style={{ background: "var(--surface)", fontSize: 12.4 }}>
                               {message.body}
                             </pre>
                           </div>

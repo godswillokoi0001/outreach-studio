@@ -61,7 +61,7 @@ export const STATUS_LABELS: Record<string, string> = {
   bounced: "Bounced",
   followup_pending: "Follow-up pending",
   converted: "Converted",
-  unsubscribed: "Unsubscribed",
+  unsubscribed: "Opted out",
   suppressed: "Suppressed",
   draft: "Draft",
   pending_approval: "Awaiting approval",

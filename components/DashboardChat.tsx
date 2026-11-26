@@ -72,6 +72,7 @@ import { BrandMark } from "./BrandMark";
 import { Menu, MenuItem, MenuSeparator } from "./Menu";
 import { BrandLoader } from "./BrandLoader";
 import { useAgentPresence } from "./AgentPresence";
+import { useConfirm } from "./Feedback";
 
 type OperatorMode = "chat" | "agent" | "developer";
 type DockMode = "floating" | "docked";
@@ -182,6 +183,7 @@ const DOCK_MODE_KEY = "agent-operator-dock-mode";
 const CONV_KEY = "agent-operator-conversations";
 const ACTIVE_KEY = "agent-operator-active";
 const RECENT_LIMIT = 40;
+const DEVELOPER_MODE_KEY = "os:developer-mode";
 
 interface RecentAction {
   id: string;
@@ -289,6 +291,7 @@ export function DashboardChat({
   const pathname = usePathname();
   const { user, workspaceToken, reconnectWorkspace } = useAuth();
   const presence = useAgentPresence();
+  const confirmDialog = useConfirm();
   const narrate = presence.narrate;
   const cursorEnabled = presence.enabled;
   const setCursorEnabled = presence.setEnabled;
@@ -388,6 +391,35 @@ export function DashboardChat({
     const stored = typeof window === "undefined" ? null : readStored<OperatorMode>(MODE_KEY);
     return stored === "chat" || stored === "agent" || stored === "developer" ? stored : "agent";
   });
+  // Developer mode is switched on from Settings, never from the operator menu.
+  const [developerEnabled, setDeveloperEnabled] = useState(() => {
+    if (typeof window === "undefined") return false;
+    try {
+      return window.localStorage.getItem(DEVELOPER_MODE_KEY) === "true";
+    } catch {
+      return false;
+    }
+  });
+
+  useEffect(() => {
+    const sync = () => {
+      let enabled = false;
+      try {
+        enabled = window.localStorage.getItem(DEVELOPER_MODE_KEY) === "true";
+      } catch {
+        enabled = false;
+      }
+      setDeveloperEnabled(enabled);
+      // Turning developer mode off from Settings also leaves that mode behind.
+      if (!enabled) setMode((current) => (current === "developer" ? "agent" : current));
+    };
+    window.addEventListener("storage", sync);
+    window.addEventListener(DEVELOPER_MODE_KEY, sync);
+    return () => {
+      window.removeEventListener("storage", sync);
+      window.removeEventListener(DEVELOPER_MODE_KEY, sync);
+    };
+  }, []);
   const [dockMode, setDockMode] = useState<DockMode>(() => {
     const stored = typeof window === "undefined" ? null : readStored<DockMode>(DOCK_MODE_KEY);
     return stored === "docked" ? "docked" : "floating";
@@ -1421,6 +1453,31 @@ export function DashboardChat({
     );
   }, [conversations, search]);
 
+  const modeOptions: { value: OperatorMode; label: string; icon: typeof MessageSquare; hint: string }[] = [
+    {
+      value: "chat",
+      label: "Chat",
+      icon: MessageSquare,
+      hint: "Conversation only — nothing in your workspace is changed",
+    },
+    {
+      value: "agent",
+      label: "Agent",
+      icon: MousePointer2,
+      hint: "Operate the app: research, campaigns, drafts and sends",
+    },
+    ...(developerEnabled
+      ? [
+          {
+            value: "developer" as OperatorMode,
+            label: "Developer",
+            icon: Wrench,
+            hint: "Diagnose problems and propose fixes",
+          },
+        ]
+      : []),
+  ];
+
   const liveLine = busy
     ? statusLabel ?? "Working…"
     : pendingConfirm
@@ -1522,13 +1579,7 @@ export function DashboardChat({
         </div>
         <div className="chat-toolbar">
         <div className="agent-mode-switch" role="group" aria-label="Operator mode">
-          {(
-            [
-              { value: "chat", label: "Chat", icon: MessageSquare, hint: "Conversation only — nothing in your workspace is changed" },
-              { value: "agent", label: "Agent", icon: MousePointer2, hint: "Operate the app: research, campaigns, drafts and sends" },
-              { value: "developer", label: "Developer", icon: Wrench, hint: "Diagnose problems and propose fixes" },
-            ] as const
-          ).map((option) => {
+          {modeOptions.map((option) => {
             const Icon = option.icon;
             return (
               <button
@@ -1669,7 +1720,14 @@ export function DashboardChat({
                       type="button"
                       className="btn btn-sm btn-ghost"
                       onClick={() => {
-                        if (window.confirm("Delete every saved conversation?")) clearAllConversations();
+                        void confirmDialog({
+                          title: "Delete every saved conversation?",
+                          message: "The whole operator history is removed from this browser. This cannot be undone.",
+                          confirmLabel: "Delete all",
+                          tone: "bad",
+                        }).then((ok) => {
+                          if (ok) clearAllConversations();
+                        });
                       }}
                       title="Clear all conversations"
                       aria-label="Clear all conversations"
@@ -1739,7 +1797,14 @@ export function DashboardChat({
                         <button
                           type="button"
                           onClick={() => {
-                            if (window.confirm("Delete this conversation?")) deleteConversation(conversation.id);
+                            void confirmDialog({
+                              title: "Delete this conversation?",
+                              message: "Its messages and action log are removed from this browser.",
+                              confirmLabel: "Delete",
+                              tone: "bad",
+                            }).then((ok) => {
+                              if (ok) deleteConversation(conversation.id);
+                            });
                           }}
                           aria-label="Delete conversation"
                           title="Delete"

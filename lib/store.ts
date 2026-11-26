@@ -127,6 +127,7 @@ function normalizeSettingsPayload(uid: string, input: Partial<Settings>, base: S
     ai_base_url: clampStr(s.ai_base_url, 400) ?? "",
     ai_verified_at: clampStr(s.ai_verified_at, 64) ?? "",
     ai_key_hint: clampStr(s.ai_key_hint, 40) ?? "",
+    ai_providers: clampStr(s.ai_providers, 20_000) ?? "",
   };
 }
 
@@ -159,6 +160,7 @@ function toSettings(data: Record<string, unknown>): Settings {
       ai_base_url: String(data.ai_base_url ?? ""),
       ai_verified_at: String(data.ai_verified_at ?? ""),
       ai_key_hint: String(data.ai_key_hint ?? ""),
+      ai_providers: String(data.ai_providers ?? ""),
     };
 }
 
@@ -441,7 +443,13 @@ export async function writeLeadEvent(
 export async function listAuditLogs(uid: string): Promise<AuditLog[]> {
   const path = `users/${uid}/auditLogs`;
   try {
-    const snap = await getDocs(query(collection(db, path), where("ownerId", "==", uid)));
+    // Only the newest 40 rows are ever shown. Reading the whole audit table
+    // (and slicing in the browser) was a pure waste of Supabase disk IO.
+    const snap = await getDocs(query(collection(db, path), where("ownerId", "==", uid)), {
+      columns: ["id", "action", "entity", "entity_id", "detail", "created_at"],
+      order: "created_at.desc",
+      limit: 40,
+    });
     return snap.docs
       .map((d) => {
         const data = d.data();
@@ -454,8 +462,7 @@ export async function listAuditLogs(uid: string): Promise<AuditLog[]> {
           created_at: tsToIso(data.createdAt),
         };
       })
-      .sort((a, b) => b.created_at.localeCompare(a.created_at))
-      .slice(0, 40);
+      .sort((a, b) => b.created_at.localeCompare(a.created_at));
   } catch (err) {
     handleDataError(err, OperationType.LIST, path);
   }
@@ -616,13 +623,49 @@ function mapLead(id: string, data: Record<string, unknown>): Lead {
   };
 }
 
-export async function listLeads(uid: string): Promise<Lead[]> {
+export async function listLeads(uid: string, options?: { force?: boolean }): Promise<Lead[]> {
   const path = `users/${uid}/leads`;
   try {
-    const snap = await getDocs(query(collection(db, path), where("ownerId", "==", uid)));
+    const snap = await getDocs(
+      query(collection(db, path), where("ownerId", "==", uid)),
+      options?.force ? { force: true } : undefined,
+    );
     return snap.docs
       .map((d) => mapLead(d.id, d.data()))
       .sort((a, b) => b.updated_at.localeCompare(a.updated_at));
+  } catch (err) {
+    handleDataError(err, OperationType.LIST, path);
+  }
+}
+
+/**
+ * The same leads without research JSON, notes or manual research.
+ *
+ * Dashboards and sidebar counters only read status and dates, and those text
+ * columns are by far the heaviest part of the row.
+ */
+export async function listLeadIndex(uid: string): Promise<Lead[]> {
+  const path = `users/${uid}/leads`;
+  try {
+    const snap = await getDocs(query(collection(db, path), where("ownerId", "==", uid)), {
+      columns: [
+        "id",
+        "campaign_id",
+        "business",
+        "contact_name",
+        "email",
+        "industry",
+        "location",
+        "status",
+        "score",
+        "priority",
+        "research_at",
+        "last_contacted_at",
+        "created_at",
+        "updated_at",
+      ],
+    });
+    return snap.docs.map((d) => mapLead(d.id, d.data()));
   } catch (err) {
     handleDataError(err, OperationType.LIST, path);
   }
@@ -645,7 +688,8 @@ export async function createLead(
   },
 ): Promise<{ id: string; duplicate: boolean }> {
   const email = normalizeEmail(input.email ?? "");
-  const existingLeads = await listLeads(uid);
+  // Duplicate detection must see rows added since the last cached read.
+  const existingLeads = await listLeads(uid, { force: true });
   if (email) {
     const dup = existingLeads.find((l) => l.email_norm === email);
     if (dup) return { id: dup.id, duplicate: true };
@@ -708,7 +752,7 @@ export async function importSheetRows(
   const limit = input.limit && input.limit > 0 ? input.limit : body.length;
   const sourceRef = clampStr(`${input.spreadsheetId}|${input.tab}`, 500);
 
-  const existingLeads = await listLeads(uid);
+  const existingLeads = await listLeads(uid, { force: true });
   const existingByEmail = new Map<string, Lead>();
   for (const l of existingLeads) {
     if (l.email_norm) existingByEmail.set(l.email_norm, l);
@@ -1017,6 +1061,35 @@ export async function listMessages(uid: string): Promise<Message[]> {
   }
 }
 
+/** Message rows without subject/body/rationale, for counters and badges. */
+export async function listMessageIndex(uid: string): Promise<Message[]> {
+  const path = `users/${uid}/messages`;
+  try {
+    const snap = await getDocs(query(collection(db, path), where("ownerId", "==", uid)), {
+      columns: [
+        "id",
+        "lead_id",
+        "campaign_id",
+        "step",
+        "kind",
+        "angle",
+        "status",
+        "gmail_id",
+        "thread_id",
+        "rfc_message_id",
+        "sent_at",
+        "error",
+        "approved_at",
+        "created_at",
+        "updated_at",
+      ],
+    });
+    return snap.docs.map((d) => mapMessage(d.id, d.data()));
+  } catch (err) {
+    handleDataError(err, OperationType.LIST, path);
+  }
+}
+
 export async function createMessage(
   uid: string,
   input: {
@@ -1129,7 +1202,14 @@ export async function updateMessageStatus(
   uid: string,
   id: string,
   status: Message["status"],
-  extra?: { approved_at?: string | null; error?: string | null },
+  extra?: {
+    approved_at?: string | null;
+    error?: string | null;
+    /** Cleared when a sent email is taken back to the review queue. */
+    sent_at?: string | null;
+    gmail_id?: string | null;
+    thread_id?: string | null;
+  },
 ): Promise<void> {
   const path = `users/${uid}/messages/${id}`;
   try {
@@ -1139,6 +1219,9 @@ export async function updateMessageStatus(
     };
     if (extra?.approved_at !== undefined) payload.approved_at = extra.approved_at;
     if (extra?.error !== undefined) payload.error = clampStr(extra.error, 1000);
+    if (extra?.sent_at !== undefined) payload.sent_at = extra.sent_at;
+    if (extra?.gmail_id !== undefined) payload.gmail_id = extra.gmail_id;
+    if (extra?.thread_id !== undefined) payload.thread_id = extra.thread_id;
     await updateDoc(doc(db, "users", uid, "messages", id), payload);
   } catch (err) {
     handleDataError(err, OperationType.UPDATE, path);
@@ -1273,6 +1356,19 @@ export async function listReplies(uid: string): Promise<Reply[]> {
   }
 }
 
+/** Reply rows without the full email body, for counters and badges. */
+export async function listReplyIndex(uid: string): Promise<Reply[]> {
+  const path = `users/${uid}/replies`;
+  try {
+    const snap = await getDocs(query(collection(db, path), where("ownerId", "==", uid)), {
+      columns: ["id", "lead_id", "classification", "handled", "received_at", "created_at"],
+    });
+    return snap.docs.map((d) => mapReply(d.id, d.data()));
+  } catch (err) {
+    handleDataError(err, OperationType.LIST, path);
+  }
+}
+
 export async function recordReply(
   uid: string,
   input: {
@@ -1393,7 +1489,11 @@ export async function removeSuppression(uid: string, email: string): Promise<voi
 export async function listSendLogs(uid: string): Promise<SendLog[]> {
   const path = `users/${uid}/sendLogs`;
   try {
-    const snap = await getDocs(query(collection(db, path), where("ownerId", "==", uid)));
+    const snap = await getDocs(query(collection(db, path), where("ownerId", "==", uid)), {
+      columns: ["id", "lead_id", "message_id", "status", "at", "created_at"],
+      order: "created_at.desc",
+      limit: 1000,
+    });
     return snap.docs
       .map((d): SendLog => {
         const data = d.data();
@@ -1452,11 +1552,14 @@ function mapOpen(id: string, data: Record<string, unknown>): EmailOpen {
 export async function listOpenEvents(uid: string): Promise<EmailOpen[]> {
   const path = "tracking";
   try {
-    const snap = await getDocs(query(collection(db, path), where("ownerId", "==", uid)));
+    const snap = await getDocs(query(collection(db, path), where("ownerId", "==", uid)), {
+      columns: ["id", "message_id", "lead_id", "opened_at", "user_agent"],
+      order: "opened_at.asc",
+      limit: 5000,
+    });
     return snap.docs
       .map((d) => mapOpen(d.id, d.data()))
-      .sort((a, b) => a.opened_at.localeCompare(b.opened_at))
-      .slice();
+      .sort((a, b) => a.opened_at.localeCompare(b.opened_at));
   } catch (err) {
     handleDataError(err, OperationType.LIST, path);
     return [];
@@ -1480,7 +1583,13 @@ export function subscribeOpenEvents(
 
   const tick = () => {
     if (!active) return;
-    getDocs(query(collection(db, "tracking"), where("ownerId", "==", uid)))
+    if (typeof document !== "undefined" && document.hidden) return;
+    getDocs(query(collection(db, "tracking"), where("ownerId", "==", uid)), {
+      columns: ["id", "message_id", "lead_id", "opened_at"],
+      order: "opened_at.desc",
+      limit: 200,
+      force: true,
+    })
       .then((snap) =>
         snap.docs
           .map((d) => mapOpen(d.id, d.data()))
@@ -1500,26 +1609,54 @@ export function subscribeOpenEvents(
       });
   };
 
-  // Prime the baseline immediately, then poll.
+  // Prime the baseline immediately, then poll once a minute while visible.
   tick();
-  const timer = setInterval(tick, 15_000);
+  const timer = setInterval(tick, 60_000);
+  const onVisible = () => {
+    if (!document.hidden) tick();
+  };
+  if (typeof document !== "undefined") document.addEventListener("visibilitychange", onVisible);
 
   return () => {
     active = false;
     clearInterval(timer);
+    if (typeof document !== "undefined") document.removeEventListener("visibilitychange", onVisible);
   };
 }
 
+/**
+ * True when the workspace has no knowledge at all.
+ *
+ * The dashboard only needs to know whether knowledge exists, and the master
+ * document can be hundreds of kilobytes. Reading its content to render a
+ * checkmark was the single heaviest query on the home screen.
+ */
+export async function getKnowledgePresence(uid: string): Promise<boolean> {
+  try {
+    const [entries, sources] = await Promise.all([
+      getDocs(query(collection(db, `users/${uid}/knowledge`), where("ownerId", "==", uid)), {
+        columns: ["id", "is_master"],
+      }),
+      getDocs(query(collection(db, `users/${uid}/knowledgeSources`), where("ownerId", "==", uid)), {
+        columns: ["id"],
+      }),
+    ]);
+    return entries.docs.length === 0 && sources.docs.length === 0;
+  } catch (err) {
+    handleDataError(err, OperationType.LIST, `users/${uid}/knowledge`);
+  }
+}
+
 export async function loadDashboardBundle(uid: string) {
-  const [leads, campaigns, messages, replies, sendLogs, auditLogs, knowledge, settings, opens] =
+  const [leads, campaigns, messages, replies, sendLogs, auditLogs, knowledgeEmpty, settings, opens] =
     await Promise.all([
-      listLeads(uid),
+      listLeadIndex(uid),
       listCampaigns(uid),
-      listMessages(uid),
-      listReplies(uid),
+      listMessageIndex(uid),
+      listReplyIndex(uid),
       listSendLogs(uid),
       listAuditLogs(uid),
-      getKnowledgeBundle(uid),
+      getKnowledgePresence(uid),
       getSettings(uid),
       listOpenEvents(uid),
     ]);
@@ -1533,9 +1670,6 @@ export async function loadDashboardBundle(uid: string) {
     auditLogs,
   });
 
-  const knowledgeEmpty =
-    !knowledge.master.trim() && knowledge.entries.length === 0 && knowledge.sources.length === 0;
-
   return {
     ...stats,
     settings,
@@ -1546,10 +1680,10 @@ export async function loadDashboardBundle(uid: string) {
 
 export async function loadAnalyticsBundle(uid: string) {
   const [leads, campaigns, messages, replies] = await Promise.all([
-    listLeads(uid),
+    listLeadIndex(uid),
     listCampaigns(uid),
-    listMessages(uid),
-    listReplies(uid),
+    listMessageIndex(uid),
+    listReplyIndex(uid),
   ]);
   return computeAnalyticsMetrics({ leads, campaigns, messages, replies });
 }
@@ -1616,6 +1750,8 @@ export function subscribeBadgeCounts(
     onChange({ review, replies, followups });
   };
 
+  // Counters only need the light columns: polling email bodies every minute
+  // just to show a badge number is what exhausted the disk IO budget.
   const unsubMsgs = onSnapshot(
     query(collection(db, `users/${uid}/messages`), where("ownerId", "==", uid)),
     (snap) => {
@@ -1623,6 +1759,23 @@ export function subscribeBadgeCounts(
       emit();
     },
     (err) => handleDataError(err, OperationType.LIST, `users/${uid}/messages`),
+    {
+      // Reply notification is driven by the inbox sync (manual or every ten
+      // minutes), so badge counters do not need a minute-by-minute read.
+      pollMs: 3 * 60_000,
+      columns: [
+        "id",
+        "lead_id",
+        "campaign_id",
+        "step",
+        "kind",
+        "status",
+        "sent_at",
+        "approved_at",
+        "created_at",
+        "updated_at",
+      ],
+    },
   );
 
   const unsubReplies = onSnapshot(
@@ -1632,6 +1785,7 @@ export function subscribeBadgeCounts(
       emit();
     },
     (err) => handleDataError(err, OperationType.LIST, `users/${uid}/replies`),
+    { pollMs: 3 * 60_000, columns: ["id", "lead_id", "classification", "handled", "created_at"] },
   );
 
   const unsubLeads = onSnapshot(
@@ -1641,6 +1795,20 @@ export function subscribeBadgeCounts(
       emit();
     },
     (err) => handleDataError(err, OperationType.LIST, `users/${uid}/leads`),
+    {
+      pollMs: 3 * 60_000,
+      columns: [
+        "id",
+        "campaign_id",
+        "status",
+        "score",
+        "priority",
+        "research_at",
+        "last_contacted_at",
+        "created_at",
+        "updated_at",
+      ],
+    },
   );
 
   const unsubCamps = onSnapshot(
@@ -1650,6 +1818,7 @@ export function subscribeBadgeCounts(
       emit();
     },
     (err) => handleDataError(err, OperationType.LIST, `users/${uid}/campaigns`),
+    { pollMs: 3 * 60_000 },
   );
 
   return () => {

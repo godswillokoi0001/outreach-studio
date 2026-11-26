@@ -13,7 +13,8 @@ import {
   type BatchResult,
 } from "@/lib/pipeline-client";
 import { useAuth } from "./AuthProvider";
-import { useTaskDock, type TaskHandle } from "./Loading";
+import { useTaskDock, type TaskHandle } from "./Loading";
+import { confirmDialog } from "./Feedback";
 
 let activeRunner: string | null = null;
 
@@ -126,7 +127,15 @@ export function BatchRunner({
       const ok = await reconnectWorkspace();
       if (!ok) return;
     }
-    if (confirmText && !window.confirm(confirmText)) return;
+    if (confirmText) {
+      const proceed = await confirmDialog({
+        title: type === "send" ? "Send these emails?" : "Confirm this action",
+        message: confirmText,
+        confirmLabel: type === "send" ? "Send now" : "Continue",
+        tone: type === "send" ? "bad" : "info",
+      });
+      if (!proceed) return;
+    }
 
     activeRunner = `${type}:${campaignId ?? "all"}`;
     stopRef.current = false;

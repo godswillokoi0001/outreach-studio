@@ -8,8 +8,10 @@ import "./brand.css";
 import "./ui-kit.css";
 import "./features.css";
 import "./dark.css";
+import "./feedback.css";
 import { THEME_SCRIPT } from "@/lib/theme";
 import { AuthProvider } from "@/components/AuthProvider";
+import { FeedbackProvider } from "@/components/Feedback";
 import { MotionProvider } from "@/components/motion/MotionProvider";
 
 const manrope = Manrope({
@@ -63,7 +65,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       </head>
       <body>
         <MotionProvider>
-          <AuthProvider>{children}</AuthProvider>
+          <FeedbackProvider>
+            <AuthProvider>{children}</AuthProvider>
+          </FeedbackProvider>
         </MotionProvider>
       </body>
     </html>

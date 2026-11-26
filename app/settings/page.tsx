@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import { useAuth } from "@/components/AuthProvider";
-import { Banner, Card, Empty, Field, Progress } from "@/components/ui";
+import { Banner, Card, Empty, Field, Progress, Toggle } from "@/components/ui";
+import { useConfirm, useToast } from "@/components/Feedback";
 import { errorMessage } from "@/lib/client";
 import {
   addSuppression,
@@ -15,8 +16,30 @@ import { fmtDate } from "@/lib/format";
 import { DEFAULT_SETTINGS, type Settings, type Suppression } from "@/lib/types";
 import { ModelProvidersCard } from "@/components/ModelProvidersCard";
 
+const DEVELOPER_MODE_KEY = "os:developer-mode";
+
+function subscribeDeveloperMode(onChange: () => void) {
+  window.addEventListener(DEVELOPER_MODE_KEY, onChange);
+  window.addEventListener("storage", onChange);
+  return () => {
+    window.removeEventListener(DEVELOPER_MODE_KEY, onChange);
+    window.removeEventListener("storage", onChange);
+  };
+}
+
+function readDeveloperMode(): boolean {
+  try {
+    return window.localStorage.getItem(DEVELOPER_MODE_KEY) === "true";
+  } catch {
+    return false;
+  }
+}
+
 export default function SettingsPage() {
   const { user } = useAuth();
+  const confirmDialog = useConfirm();
+  const toast = useToast();
+  const developerMode = useSyncExternalStore(subscribeDeveloperMode, readDeveloperMode, () => false);
   const [form, setForm] = useState<Settings>(DEFAULT_SETTINGS);
   const [suppressions, setSuppressions] = useState<Suppression[]>([]);
   const [loading, setLoading] = useState(true);
@@ -25,6 +48,19 @@ export default function SettingsPage() {
   const [failure, setFailure] = useState<string | null>(null);
   const [email, setEmail] = useState("");
   const [reason, setReason] = useState("");
+
+  const changeDeveloperMode = (on: boolean) => {
+    try {
+      window.localStorage.setItem(DEVELOPER_MODE_KEY, on ? "true" : "false");
+      window.dispatchEvent(new Event(DEVELOPER_MODE_KEY));
+    } catch {
+      /* storage unavailable */
+    }
+    toast.info(
+      on ? "Developer mode enabled" : "Developer mode disabled",
+      on ? "The Developer option now appears in the operator's mode switch." : "The operator keeps Chat and Agent only.",
+    );
+  };
 
   useEffect(() => {
     let active = true;
@@ -62,8 +98,11 @@ export default function SettingsPage() {
       const saved = await saveSettings(user.uid, form);
       setForm(saved);
       setNotice("Settings saved.");
+      toast.success("Settings saved", "Your sending rules are in effect.");
     } catch (err) {
-      setFailure(errorMessage(err));
+      const message = errorMessage(err);
+      setFailure(message);
+      toast.error("Settings were not saved", message);
     } finally {
       setBusy(false);
     }
@@ -78,19 +117,31 @@ export default function SettingsPage() {
       setReason("");
       setSuppressions(await listSuppressions(user.uid));
       setNotice("Address suppressed. It will never be contacted.");
+      toast.success("Address suppressed", "It will never be contacted.");
     } catch (err) {
-      setFailure(errorMessage(err));
+      const message = errorMessage(err);
+      setFailure(message);
+      toast.error("Could not suppress that address", message);
     }
   };
 
   const unblock = async (value: string) => {
-    if (!window.confirm(`Allow contact with ${value} again?`)) return;
+    const ok = await confirmDialog({
+      title: `Allow contact with ${value} again?`,
+      message: "The address is removed from the suppression list and can be emailed again.",
+      confirmLabel: "Allow contact",
+      tone: "info",
+    });
+    if (!ok) return;
     setFailure(null);
     try {
       await removeSuppression(user.uid, value);
       setSuppressions(await listSuppressions(user.uid));
+      toast.success("Contact allowed again", value);
     } catch (err) {
-      setFailure(errorMessage(err));
+      const message = errorMessage(err);
+      setFailure(message);
+      toast.error("Could not update the suppression list", message);
     }
   };
 
@@ -141,13 +192,6 @@ export default function SettingsPage() {
                 placeholder="you@gmail.com"
               />
             </Field>
-            <Field label="Unsubscribe address (optional)" hint="Adds a List-Unsubscribe header for compliance.">
-              <input
-                className="input"
-                value={form.unsubscribe_email}
-                onChange={(e) => set("unsubscribe_email", e.target.value)}
-              />
-            </Field>
           </div>
           <Field label="Physical address (optional)" hint="Some jurisdictions require a postal address in cold email.">
             <input
@@ -163,6 +207,18 @@ export default function SettingsPage() {
             <ModelProvidersCard uid={user.uid} settings={form} onSaved={(saved) => setForm(saved)} />
           )}
         </div>
+
+        <Card
+          title="Operator"
+          sub="How the assistant behaves in your workspace."
+        >
+          <Toggle
+            checked={developerMode}
+            onChange={changeDeveloperMode}
+            label="Developer mode"
+            hint="Adds a Developer option to the operator's mode switch for diagnosing problems and proposing fixes. Leave it off for day-to-day outreach."
+          />
+        </Card>
 
         <Card
           title="Sending controls"
@@ -270,7 +326,7 @@ export default function SettingsPage() {
           </div>
         </Card>
 
-        <Card title="Suppression list" sub="Contacts who must never be emailed again, including automatic unsubscribes.">
+        <Card title="Suppression list" sub="Contacts who must never be emailed again, including automatic opt-outs.">
           <div className="row" style={{ marginBottom: 12 }}>
             <input
               className="input"
@@ -292,7 +348,7 @@ export default function SettingsPage() {
           </div>
           {suppressions.length === 0 ? (
             <Empty title="No suppressed addresses">
-              Unsubscribes are added here automatically when replies are synced.
+              Addresses are added here automatically when replies are synced and a prospect asks you to stop.
             </Empty>
           ) : (
             <div className="table-wrap">

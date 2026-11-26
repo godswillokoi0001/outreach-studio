@@ -3,7 +3,64 @@
 import { getAccessToken } from "./auth";
 import { ensureWorkspaceToken, readWorkspaceToken } from "./workspace";
 import { extractErrorMessageFromJson } from "./gemini-utils";
-import { aiConfigHeader, ensureAiConfigLoaded } from "./ai-client";
+import { aiConfigHeader, ensureAiConfigLoaded, setActiveAiConfig } from "./ai-client";
+import { toast } from "@/components/Feedback";
+
+/**
+ * Turn anything the API can return into a readable sentence.
+ *
+ * Supabase and provider errors arrive as objects (`{ message, code, details }`),
+ * which used to reach the screen as the literal text "[object Object]".
+ */
+export function describeError(value: unknown): string | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+    const nested = extractErrorMessageFromJson(trimmed);
+    if (nested?.message) return nested.message;
+    if (trimmed === "[object Object]") return null;
+    return trimmed;
+  }
+  if (value instanceof Error) return describeError(value.message);
+  if (typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    for (const key of ["message", "error_description", "error", "details", "hint", "reason"]) {
+      const nested = describeError(record[key]);
+      if (nested) return nested;
+    }
+    try {
+      const json = JSON.stringify(value);
+      return json && json !== "{}" ? json : null;
+    } catch {
+      return null;
+    }
+  }
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  return null;
+}
+
+/**
+ * Move to the next enabled provider after a quota, outage or network failure.
+ * The vault is imported lazily so this module stays free of cycles.
+ */
+async function rotateAiProvider(): Promise<boolean> {
+  if (typeof window === "undefined") return false;
+  try {
+    const providers = await import("./ai/providers");
+    const list = providers.enabledProviders(providers.readProviders());
+    if (list.length < 2) return false;
+    const currentId = providers.readActiveProviderId();
+    const index = list.findIndex((provider) => provider.id === currentId);
+    const next = list[(index + 1 + list.length) % list.length];
+    if (!next || next.id === currentId) return false;
+    providers.setActiveProviderId(next.id);
+    setActiveAiConfig(providers.toAiConfig(next));
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 export async function authedPost<T>(
   path: string,
@@ -49,14 +106,29 @@ export async function authedPost<T>(
     Math.min(8_000, 900 * 2 ** attempt) + Math.round(Math.random() * 400);
   const serialized = body === undefined ? undefined : JSON.stringify(body);
 
+  let rotatedProvider = false;
+
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    const res = await fetch(path, {
-      method: "POST",
-      headers,
-      body: serialized,
-      cache: "no-store",
-      credentials: "same-origin",
-    });
+    let res: Response;
+    try {
+      res = await fetch(path, {
+        method: "POST",
+        headers,
+        body: serialized,
+        cache: "no-store",
+        credentials: "same-origin",
+      });
+    } catch (err) {
+      // A network failure on an AI call switches to the next saved model
+      // instead of failing the whole feature.
+      if (isAiRoute && !rotatedProvider && (await rotateAiProvider())) {
+        rotatedProvider = true;
+        headers["X-AI-Config"] = aiConfigHeader() ?? headers["X-AI-Config"];
+        attempt = -1;
+        continue;
+      }
+      throw err;
+    }
 
     const contentType = res.headers.get("content-type") ?? "";
     const text = await res.text();
@@ -87,12 +159,25 @@ export async function authedPost<T>(
         );
         continue;
       }
-      const message =
-        data && typeof data === "object" && "error" in data && (data as { error: unknown }).error
-          ? String((data as { error: unknown }).error)
-          : `Request failed (HTTP ${res.status}).`;
+      // The selected model is out of quota or down: try the next provider
+      // before giving up on the request.
+      if (isAiRoute && !rotatedProvider && (await rotateAiProvider())) {
+        rotatedProvider = true;
+        headers["X-AI-Config"] = aiConfigHeader() ?? headers["X-AI-Config"];
+        attempt = -1;
+        continue;
+      }
+      const rawError =
+        data && typeof data === "object" && "error" in data
+          ? (data as { error: unknown }).error
+          : null;
+      const message = describeError(rawError) ?? `Request failed (HTTP ${res.status}).`;
       const error = new Error(message) as Error & { status?: number };
       error.status = res.status;
+      // The operator renders its own inline errors, so AI failures stay in the panel.
+      if (!path.startsWith("/api/ai/")) {
+        toast({ tone: "bad", title: "Something went wrong", message });
+      }
       throw error;
     }
 
@@ -141,9 +226,10 @@ export async function authedUpload<T>(path: string, form: FormData): Promise<T> 
   }
   if (!res.ok) {
     const message =
-      data && typeof data === "object" && "error" in data
-        ? String((data as { error: unknown }).error)
-        : `Upload failed (HTTP ${res.status}).`;
+      describeError(
+        data && typeof data === "object" && "error" in data ? (data as { error: unknown }).error : null,
+      ) ?? `Upload failed (HTTP ${res.status}).`;
+    toast({ tone: "bad", title: "Upload failed", message });
     throw new Error(message);
   }
   return data as T;
@@ -158,13 +244,14 @@ export function errorMessage(err: unknown): string {
     if (nested?.message) return nested.message;
     try {
       const parsed = JSON.parse(err.message) as { error?: unknown };
-      if (parsed && typeof parsed.error === "string") return parsed.error;
+      const nestedError = describeError(parsed?.error);
+      if (nestedError) return nestedError;
     } catch {
       // ignore non-JSON error message
     }
-    return err.message;
+    return describeError(err.message) ?? err.message;
   }
-  return "Something went wrong.";
+  return describeError(err) ?? "Something went wrong.";
 }
 
 export function isQuotaError(err: unknown): boolean {

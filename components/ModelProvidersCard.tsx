@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   CheckCircle2,
   CircleSlash,
@@ -21,6 +21,8 @@ import { aiConfigFromSettings, setActiveAiConfig } from "@/lib/ai-client";
 import {
   guessCapabilities,
   newProviderDraft,
+  providersFromSettings,
+  providersPatchFor,
   readActiveProviderId,
   readProviders,
   seedFromSettings,
@@ -35,6 +37,7 @@ import { saveSettings } from "@/lib/store";
 import type { Settings } from "@/lib/types";
 import { Badge, Banner, Card, Field } from "./ui";
 import { BrandLoader } from "./BrandLoader";
+import { useConfirm, useToast } from "./Feedback";
 
 interface DetectResponse {
   provider: AiProviderId;
@@ -66,18 +69,38 @@ export function ModelProvidersCard({
   const [showKey, setShowKey] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [note, setNote] = useState<Note>(null);
+  const confirmDialog = useConfirm();
+  const toast = useToast();
 
-  // The vault is read during render; this card only mounts after the settings
-  // page has loaded its own document, so server and client agree.
-  const seeded = useMemo(() => seedFromSettings(readProviders(), settings), [settings]);
+  // The database is the source of truth. localStorage is only a fast cache, so
+  // a provider added here is still there after a refresh or on another device.
+  const seeded = useMemo(() => {
+    const stored = providersFromSettings(settings);
+    return seedFromSettings(stored.length > 0 ? stored : readProviders(), settings);
+  }, [settings]);
   const providers = overrides ?? seeded;
+  const listRef = useRef<SavedProvider[]>(providers);
+  useEffect(() => {
+    listRef.current = providers;
+  }, [providers]);
   const storedActive = readActiveProviderId();
   const activeId = activeOverride ?? (storedActive || providers.find((provider) => provider.enabled)?.id || "");
 
-  const persist = useCallback((list: SavedProvider[]) => {
-    setOverrides(list);
-    writeProviders(list);
-  }, []);
+  const persist = useCallback(
+    (updater: SavedProvider[] | ((current: SavedProvider[]) => SavedProvider[])) => {
+      const next = typeof updater === "function" ? updater(listRef.current) : updater;
+      // Update the ref immediately so a follow-up call in the same handler
+      // (save, then test) builds on the list that was just written instead of
+      // overwriting it with the previous render's copy.
+      listRef.current = next;
+      setOverrides(next);
+      writeProviders(next);
+      void saveSettings(uid, providersPatchFor(next)).catch((err) => {
+        toast.error("Provider saved on this browser only", errorMessage(err));
+      });
+    },
+    [toast, uid],
+  );
 
   const setActiveId = (id: string) => setActiveOverride(id);
 
@@ -104,10 +127,9 @@ export function ModelProvidersCard({
         text: `${provider.name || provider.model} is now used by the operator, research, campaigns and every other AI feature.`,
       });
     } catch (err) {
-      setNote({
-        tone: "info",
-        text: `Active for this browser session, but the settings save failed: ${errorMessage(err)}`,
-      });
+      const message = errorMessage(err);
+      setNote({ tone: "info", text: `Active for this browser session, but the settings save failed: ${message}` });
+      toast.error("Could not save the active model", message);
     }
   };
 
@@ -134,7 +156,7 @@ export function ModelProvidersCard({
           verifiedAt: new Date().toISOString(),
           lastError: "",
         };
-        persist(providers.map((item) => (item.id === provider.id ? next : item)));
+        persist((current) => current.map((item) => (item.id === provider.id ? next : item)));
         setEditing((draft) => (draft && draft.id === provider.id ? next : draft));
         setNote({
           tone: "ok",
@@ -148,15 +170,18 @@ export function ModelProvidersCard({
         }
       } catch (err) {
         const message = errorMessage(err);
-        persist(
-          providers.map((item) => (item.id === provider.id ? { ...item, lastError: message, verifiedAt: "" } : item)),
+        persist((current) =>
+          current.map((item) =>
+            item.id === provider.id ? { ...item, lastError: message, verifiedAt: "" } : item,
+          ),
         );
         setNote({ tone: "bad", text: message });
+        toast.error("Provider test failed", message);
       } finally {
         setBusy(null);
       }
     },
-    [activeId, persist, providers],
+    [activeId, persist, toast],
   );
 
   const saveDraft = async () => {
@@ -181,17 +206,25 @@ export function ModelProvidersCard({
       audio: editing.audio ?? caps.audio,
       tools: editing.tools ?? caps.tools,
     };
-    const exists = providers.some((provider) => provider.id === draft.id);
-    const next = exists ? providers.map((provider) => (provider.id === draft.id ? draft : provider)) : [...providers, draft];
+    const exists = listRef.current.some((provider) => provider.id === draft.id);
+    const next = exists
+      ? listRef.current.map((provider) => (provider.id === draft.id ? draft : provider))
+      : [...listRef.current, draft];
     persist(next);
     setEditing(null);
     await testProvider(draft);
     if (next.length === 1) await applyProvider(draft);
   };
 
-  const remove = (provider: SavedProvider) => {
-    if (!window.confirm(`Delete ${provider.name || provider.model}? Its key is removed from this browser.`)) return;
-    const next = providers.filter((item) => item.id !== provider.id);
+  const remove = async (provider: SavedProvider) => {
+    const ok = await confirmDialog({
+      title: `Delete ${provider.name || provider.model}?`,
+      message: "Its key is removed from your saved providers. This cannot be undone.",
+      confirmLabel: "Delete provider",
+      tone: "bad",
+    });
+    if (!ok) return;
+    const next = listRef.current.filter((item) => item.id !== provider.id);
     persist(next);
     if (provider.id === activeId) {
       const fallback = next.find((item) => item.enabled) ?? null;
@@ -206,7 +239,9 @@ export function ModelProvidersCard({
   };
 
   const toggle = (provider: SavedProvider) => {
-    const next = providers.map((item) => (item.id === provider.id ? { ...item, enabled: !item.enabled } : item));
+    const next = listRef.current.map((item) =>
+      item.id === provider.id ? { ...item, enabled: !item.enabled } : item,
+    );
     persist(next);
     if (provider.enabled && provider.id === activeId) {
       const fallback = next.find((item) => item.enabled && item.id !== provider.id) ?? null;
@@ -329,7 +364,7 @@ export function ModelProvidersCard({
                     <button
                       type="button"
                       className="btn btn-sm btn-ghost"
-                      onClick={() => remove(provider)}
+                      onClick={() => void remove(provider)}
                       title="Delete provider"
                       aria-label={`Delete ${provider.name}`}
                     >

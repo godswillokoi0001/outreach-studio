@@ -262,7 +262,7 @@ export function Landing({
               <li>
                 <MailCheck size={15} />
                 <span>
-                  <strong>Reply classification</strong> — interested, pricing, objection, unsubscribe or bounce.
+                  <strong>Reply classification</strong> — interested, pricing, objection, opt-out or bounce.
                 </span>
               </li>
               <li>
@@ -367,7 +367,7 @@ export function Landing({
               </li>
               <li>
                 <Check size={15} />
-                <span>Suppression, unsubscribe and bounce handling built in.</span>
+                <span>Suppression and bounce handling built in.</span>
               </li>
             </ul>
           </div>

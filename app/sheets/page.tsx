@@ -6,6 +6,7 @@ import { useAuth } from "@/components/AuthProvider";
 import { Banner, Card, Empty, Field } from "@/components/ui";
 import { LoadingPanel } from "@/components/Loading";
 import { BrandLoader } from "@/components/BrandLoader";
+import { confirmDialog } from "@/components/Feedback";
 import { authedPost, errorMessage } from "@/lib/client";
 import { LEAD_FIELDS } from "@/lib/columns";
 import { importSheetRows, listCampaigns } from "@/lib/store";
@@ -131,13 +132,14 @@ export default function SheetsPage() {
   const writeback = async () => {
     if (!writeCampaign) return;
     if (!(await ensureWorkspace())) return;
-    if (
-      !window.confirm(
-        "Write current prospect statuses to the Status column in your Google Sheet? Existing columns will not be overwritten.",
-      )
-    ) {
-      return;
-    }
+    const proceed = await confirmDialog({
+      title: "Write statuses to Google Sheets?",
+      message:
+        "Current prospect statuses are written to the Status column. Existing columns are not overwritten.",
+      confirmLabel: "Write statuses",
+      tone: "info",
+    });
+    if (!proceed) return;
     setBusy("writeback");
     setError(null);
     try {
