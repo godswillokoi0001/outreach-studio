@@ -337,7 +337,7 @@ export function ModelProvidersCard({
                       onClick={() => void testProvider(provider)}
                       disabled={busy !== null}
                     >
-                      {busy === `test:${provider.id}` ? <BrandLoader variant="inline" size={12} /> : <TestTube2 size={12} />}
+                      {busy === `test:${provider.id}` ? <BrandLoader size={12} /> : <TestTube2 size={12} />}
                       <span>Test connection</span>
                     </button>
                     <button
@@ -467,7 +467,7 @@ export function ModelProvidersCard({
                     disabled={busy !== null || !editing.apiKey.trim()}
                     title="Verify the key and load this provider's models"
                   >
-                    {busy === `test:${editing.id}` ? <BrandLoader variant="inline" size={12} /> : <RefreshCw size={12} />}
+                    {busy === `test:${editing.id}` ? <BrandLoader size={12} /> : <RefreshCw size={12} />}
                     <span>Fetch models</span>
                   </button>
                 </div>
@@ -512,7 +512,7 @@ export function ModelProvidersCard({
 
             <div className="row">
               <button type="button" className="btn btn-sm btn-primary" onClick={() => void saveDraft()} disabled={busy !== null}>
-                {busy === `test:${editing.id}` ? <BrandLoader variant="inline" size={12} /> : null}
+                {busy === `test:${editing.id}` ? <BrandLoader size={12} /> : null}
                 <span>Save &amp; test</span>
               </button>
               <button type="button" className="btn btn-sm" onClick={() => setEditing(null)}>

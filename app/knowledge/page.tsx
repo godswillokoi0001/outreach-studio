@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { FileUp, Paperclip } from "lucide-react";
 import { useAuth } from "@/components/AuthProvider";
-import { Badge, Banner, Card, Empty, Field, Progress } from "@/components/ui";
+import { Badge, Banner, Card, Empty, Field } from "@/components/ui";
 import { BrandLoader } from "@/components/BrandLoader";
 import { authedUpload, errorMessage } from "@/lib/client";
 import {
@@ -215,7 +215,7 @@ export default function KnowledgePage() {
 
       {error && <Banner tone="bad">{error}</Banner>}
       {note && <Banner tone={note.tone}>{note.text}</Banner>}
-      {loading && !data && <Progress label="Loading your knowledge…" />}
+      {loading && !data && <BrandLoader size="sm" />}
 
       {data && (
         <div className="stack">
@@ -295,7 +295,7 @@ Rules: Never discount below $2,000. Always mention the 3-week timeline.`}
               }}
             >
               <span className="upload-icon">
-                {uploading ? <BrandLoader variant="inline" size={18} /> : <FileUp size={18} />}
+                {uploading ? <BrandLoader size={18} /> : <FileUp size={18} />}
               </span>
               <div className="upload-copy">
                 <strong>{uploading ? `Reading ${uploading}…` : "Drop files here, or choose them"}</strong>

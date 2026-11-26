@@ -4,7 +4,6 @@ import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { useAuth } from "@/components/AuthProvider";
 import { Banner, Card, Empty, Field } from "@/components/ui";
-import { LoadingPanel } from "@/components/Loading";
 import { BrandLoader } from "@/components/BrandLoader";
 import { confirmDialog } from "@/components/Feedback";
 import { authedPost, errorMessage } from "@/lib/client";
@@ -205,7 +204,7 @@ export default function SheetsPage() {
             >
               {busy === "tabs" ? (
                 <>
-                  <BrandLoader variant="inline" size={12} />
+                  <BrandLoader size={12} />
                   <span>Loading worksheets…</span>
                 </>
               ) : (
@@ -215,12 +214,7 @@ export default function SheetsPage() {
           </div>
           {busy === "tabs" && (
             <div style={{ marginTop: 12 }}>
-              <LoadingPanel
-                label="Reading your spreadsheet"
-                hint="Asking Google Sheets for its worksheets…"
-                estimateMs={4_000}
-                compact
-              />
+              <BrandLoader size="sm" />
             </div>
           )}
         </Card>
@@ -254,12 +248,7 @@ export default function SheetsPage() {
             </div>
             {busy === "preview" && (
               <div style={{ marginTop: 12 }}>
-                <LoadingPanel
-                  label="Previewing and mapping columns"
-                  hint="Matching your headers to prospect fields…"
-                  estimateMs={5_500}
-                  compact
-                />
+                <BrandLoader size="sm" />
               </div>
             )}
             {sheet.tabs.length === 0 && (
@@ -311,12 +300,7 @@ export default function SheetsPage() {
                 </div>
                 {busy === "import" && (
                   <div style={{ marginBottom: 14 }}>
-                    <LoadingPanel
-                      label={`Importing ${limit} prospects`}
-                      hint="Saving and skipping duplicate email addresses…"
-                      estimateMs={Math.min(60_000, 1_500 + limit * 120)}
-                      compact
-                    />
+                    <BrandLoader size="sm" />
                   </div>
                 )}
                 <div className="row">
@@ -381,12 +365,7 @@ export default function SheetsPage() {
           </div>
           {busy === "writeback" && (
             <div style={{ marginTop: 12 }}>
-              <LoadingPanel
-                label="Writing statuses back to your sheet"
-                hint="Only the Status column is touched."
-                estimateMs={6_000}
-                compact
-              />
+              <BrandLoader size="sm" />
             </div>
           )}
         </Card>

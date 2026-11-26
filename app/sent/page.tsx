@@ -1,9 +1,11 @@
 "use client";
 
+import { BrandLoader } from "@/components/BrandLoader";
+
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { RotateCcw } from "lucide-react";
 import { useAuth } from "@/components/AuthProvider";
-import { Badge, Banner, Card, Empty, Modal, Pager, Progress } from "@/components/ui";
+import { Badge, Banner, Card, Empty, Modal, Pager } from "@/components/ui";
 import { useConfirm, useToast } from "@/components/Feedback";
 import { errorMessage } from "@/lib/client";
 import { listLeads, listMessages, listOpenEvents, updateLeadFields, updateMessageStatus } from "@/lib/store";
@@ -208,7 +210,7 @@ export default function SentPage() {
 
           {loading && messages.length === 0 ? (
             <div style={{ padding: 18 }}>
-              <Progress label="Loading sent emails…" />
+              <BrandLoader size="sm" />
             </div>
           ) : paged.length === 0 ? (
             <div style={{ padding: 18 }}>

@@ -5,19 +5,13 @@ import { useEffect, useMemo, useState } from "react";
 import { ArrowRight, ArrowUpRight, Check, RotateCcw } from "lucide-react";
 import { useAuth } from "@/components/AuthProvider";
 import { Badge, Banner, Card, Empty, Stat } from "@/components/ui";
-import { BrandLoadingPanel } from "@/components/BrandLoader";
+import { BrandLoader } from "@/components/BrandLoader";
 import { CountUp } from "@/components/motion/CountUp";
 import { errorMessage } from "@/lib/client";
 import { loadDashboardBundle } from "@/lib/store";
 import { label, statusTone } from "@/lib/format";
 
 type DashboardData = Awaited<ReturnType<typeof loadDashboardBundle>>;
-
-const LOAD_STEPS = [
-  { label: "Opening your Knowrevo workspace", ms: 700 },
-  { label: "Loading prospects and campaigns", ms: 900 },
-  { label: "Tallying emails, replies and activity", ms: 700 },
-];
 
 export default function DashboardPage() {
   const { user, workspaceToken, reconnectWorkspace } = useAuth();
@@ -192,21 +186,7 @@ export default function DashboardPage() {
     <main className="page">
       {error && <Banner tone="bad">{error}</Banner>}
 
-      {loading && !data && (
-        <div className="stack">
-          <BrandLoadingPanel label="Preparing your workspace" steps={LOAD_STEPS} />
-          <div className="skel" style={{ height: 120 }} />
-          <div className="grid grid-auto">
-            {[0, 1, 2, 3, 4].map((index) => (
-              <div key={index} className="skel" style={{ height: 82 }} />
-            ))}
-          </div>
-          <div className="grid grid-2">
-            <div className="skel" style={{ height: 240 }} />
-            <div className="skel" style={{ height: 240 }} />
-          </div>
-        </div>
-      )}
+      {loading && !data && <BrandLoader fullScreen />}
 
       {data && derived && (
         <div className="wk">

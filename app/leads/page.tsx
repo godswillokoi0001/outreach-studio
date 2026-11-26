@@ -1,9 +1,11 @@
 "use client";
 
+import { BrandLoader } from "@/components/BrandLoader";
+
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Plus } from "lucide-react";
 import { useAuth } from "@/components/AuthProvider";
-import { Badge, Banner, Card, Empty, Field, Modal, Pager, Progress } from "@/components/ui";
+import { Badge, Banner, Card, Empty, Field, Modal, Pager } from "@/components/ui";
 import { confirmDialog } from "@/components/Feedback";
 import { errorMessage } from "@/lib/client";
 import {
@@ -266,7 +268,7 @@ export default function LeadsPage() {
 
           {loading && allLeads.length === 0 ? (
             <div style={{ padding: 18 }}>
-              <Progress label="Loading leads…" />
+              <BrandLoader size="sm" />
             </div>
           ) : paged.length === 0 ? (
             <div style={{ padding: 18 }}>

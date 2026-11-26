@@ -1424,14 +1424,6 @@
   color: #a3b0c1;
 }
 
-.auth-loading {
-  width: min(420px, 100%);
-  background: #fff;
-  border: 1px solid var(--site-line);
-  border-radius: 14px;
-  padding: 26px;
-}
-
 /* ---------- responsive ---------- */
 
 @media (max-width: 1080px) {

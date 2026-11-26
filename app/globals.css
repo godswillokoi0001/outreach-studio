@@ -247,13 +247,6 @@ tr.clickable:hover td { background: #f8faf8; }
 .banner[data-tone="bad"] { background: var(--bad-soft); border-color: #eccdca; color: #7f2222; }
 .banner[data-tone="info"] { background: var(--info-soft); border-color: #cfdcef; color: #1f3c64; }
 
-.progress { display: flex; align-items: center; gap: 10px; font-size: 12.6px; color: var(--ink-2); }
-.spinner {
-  width: 13px; height: 13px; border-radius: 50%; border: 2px solid var(--line);
-  border-top-color: var(--accent); animation: spin 0.8s linear infinite; flex: 0 0 13px;
-}
-@keyframes spin { to { transform: rotate(360deg); } }
-
 .mono { font-family: var(--mono); font-size: 12.3px; }
 .pre {
   white-space: pre-wrap; word-wrap: break-word; font-family: var(--font); font-size: 13.4px;
@@ -351,10 +344,6 @@ tr.clickable:hover td { background: #f8faf8; }
   display: inline-flex;
   align-items: center;
   justify-content: center;
-}
-
-.spin-icon {
-  animation: spin 0.9s linear infinite;
 }
 
 /* ---------- file upload ---------- */
@@ -649,15 +638,6 @@ tr.clickable:hover td { background: #f8faf8; }
   box-shadow: 0 20px 40px -22px rgba(15, 42, 33, 0.75);
 }
 
-.agent-mini-spinner {
-  flex: none;
-  width: 13px;
-  height: 13px;
-  border-radius: 50%;
-  border: 2px solid rgba(238, 247, 241, 0.3);
-  border-top-color: #9fe3c5;
-  animation: agent-mini-spin 0.8s linear infinite;
-}
 
 @keyframes agent-mini-spin {
   to { transform: rotate(360deg); }

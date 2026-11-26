@@ -172,14 +172,6 @@ tr.clickable:hover td { background: #f4fbfb; }
 
 .tab.active { border-bottom-color: var(--color-teal); color: var(--ink); font-weight: 600; }
 .tab:hover { background: rgba(8, 22, 37, 0.04); }
-.spinner { border-top-color: var(--color-teal); }
-
-.load-panel { background: linear-gradient(180deg, #ffffff 0%, #f8fbfd 100%); }
-.load-track > span { background: linear-gradient(90deg, #0e7c7a, var(--color-teal)); }
-.load-steps li[data-state="current"] .load-step-dot { background: var(--color-teal); box-shadow: 0 0 0 3px rgba(32, 204, 200, 0.18); }
-.load-steps li[data-state="done"] .load-step-dot { background: #6fd9d5; }
-
-.skel { background: linear-gradient(90deg, #e9eef4 25%, #f4f7fb 50%, #e9eef4 75%); background-size: 200% 100%; }
 .upload-zone { border-color: #cfe2e8; background: linear-gradient(160deg, #fbfeff, #f4fafb); }
 .upload-zone[data-active="true"] { border-color: var(--color-teal); background: var(--accent-soft); }
 .upload-icon { color: var(--teal-ink); }

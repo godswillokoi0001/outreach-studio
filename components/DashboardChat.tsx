@@ -1494,7 +1494,7 @@ export function DashboardChat({
     if (!busy) return null;
     return (
       <div className="agent-mini" role="status" aria-live="polite" aria-label="Operator is working">
-        <BrandLoader variant="thinking" size={16} />
+        <BrandLoader size={16} />
         <span className="agent-mini-text">{liveLine}</span>
         <span className="agent-mini-elapsed">{elapsed}s</span>
         <button
@@ -1852,7 +1852,7 @@ export function DashboardChat({
                 {recent.map((entry) => (
                   <div key={entry.id} className="agent-history-row" data-status={entry.status}>
                     <span className="agent-history-icon">
-                      {entry.status === "running" && <BrandLoader variant="inline" size={12} />}
+                      {entry.status === "running" && <BrandLoader size={12} />}
                       {entry.status === "done" && <CheckCircle2 size={12} />}
                       {entry.status === "error" && <AlertCircle size={12} />}
                       {entry.status === "cancelled" && <X size={12} />}
@@ -1933,7 +1933,7 @@ export function DashboardChat({
                       {msg.steps.map((step) => (
                         <div key={step.id} className={`chat-step chat-step-${step.status}`}>
                           <div className="chat-step-head">
-                            {step.status === "running" && <BrandLoader variant="inline" size={13} />}
+                            {step.status === "running" && <BrandLoader size={13} />}
                             {step.status === "done" && <CheckCircle2 size={13} className="chat-step-icon ok" />}
                             {step.status === "error" && <AlertCircle size={13} className="chat-step-icon bad" />}
                             {step.status === "cancelled" && <X size={13} className="chat-step-icon muted" />}
@@ -2040,7 +2040,7 @@ export function DashboardChat({
 
         {busy && statusLabel && (
           <div className="chat-working">
-            <BrandLoader variant="inline" size={13} />
+            <BrandLoader size={13} />
             <span>{statusLabel}</span>
           </div>
         )}
@@ -2132,7 +2132,7 @@ export function DashboardChat({
                       </span>
                       {transcribing ? (
                         <span className="tiny chat-voice-status">
-                          <BrandLoader variant="inline" size={11} /> Transcribing…
+                          <BrandLoader size={11} /> Transcribing…
                         </span>
                       ) : (
                         <input

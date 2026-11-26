@@ -1,8 +1,10 @@
 "use client";
 
+import { BrandLoader } from "@/components/BrandLoader";
+
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useAuth } from "@/components/AuthProvider";
-import { Badge, Banner, Card, Empty, Pager, Progress } from "@/components/ui";
+import { Badge, Banner, Card, Empty, Pager } from "@/components/ui";
 import { confirmDialog } from "@/components/Feedback";
 import { authedPost, errorMessage } from "@/lib/client";
 import {
@@ -336,7 +338,7 @@ export default function ConversationsPage() {
 
           {loading && replies.length === 0 ? (
             <div style={{ padding: 18 }}>
-              <Progress label="Loading conversations…" />
+              <BrandLoader size="sm" />
             </div>
           ) : paged.length === 0 ? (
             <div style={{ padding: 18 }}>

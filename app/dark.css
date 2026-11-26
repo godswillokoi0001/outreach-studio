@@ -275,12 +275,6 @@ html[data-theme="dark"] .wk-chart-bar {
 }
 
 /* ---------- loading, skeletons, operator --------------------------------- */
-
-html[data-theme="dark"] .skel {
-  background: linear-gradient(90deg, var(--surface-2) 25%, var(--surface-3) 37%, var(--surface-2) 63%);
-  background-size: 400% 100%;
-}
-html[data-theme="dark"] .load-panel,
 html[data-theme="dark"] .taskdock-item,
 html[data-theme="dark"] .signal-toast,
 html[data-theme="dark"] .agent-label {

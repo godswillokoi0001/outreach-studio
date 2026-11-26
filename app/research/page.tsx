@@ -15,7 +15,7 @@ import {
 } from "lucide-react";
 import { useAuth } from "@/components/AuthProvider";
 import { BatchRunner } from "@/components/Runner";
-import { BrandLoadingPanel } from "@/components/BrandLoader";
+import { BrandLoader } from "@/components/BrandLoader";
 import { CriteriaForm } from "@/components/CriteriaForm";
 import { LocationPicker } from "@/components/LocationPicker";
 import { Badge, Banner, Card, Empty } from "@/components/ui";
@@ -558,17 +558,8 @@ export default function ResearchPage() {
           </div>
 
           {busy === "discover" && (
-            <div style={{ marginTop: 12 }}>
-              <BrandLoadingPanel
-                label="Searching for real businesses"
-                hint="Search runs first, then each candidate is checked for contact details and concrete weaknesses."
-                steps={[
-                  { label: "Building the search queries", ms: 5_000 },
-                  { label: "Reading search results", ms: 16_000 },
-                  { label: "Checking websites and contacts", ms: 12_000 },
-                  { label: "Mapping issues to your services", ms: 6_000 },
-                ]}
-              />
+            <div style={{ marginTop: 12, display: "grid", placeItems: "center", padding: "12px 0" }}>
+              <BrandLoader size="sm" />
             </div>
           )}
 

@@ -3,7 +3,6 @@
 import type { ReactNode } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { CountUp } from "./motion/CountUp";
-import { LoadingPanel } from "./Loading";
 
 export function Card({
   title,
@@ -83,24 +82,6 @@ export function Banner({ tone, children }: { tone?: string; children: ReactNode 
     <div className="banner" data-tone={tone}>
       <div>{children}</div>
     </div>
-  );
-}
-
-export function Progress({
-  label,
-  hint,
-  estimateMs = 2000,
-}: {
-  label: string;
-  hint?: string;
-  estimateMs?: number;
-}) {
-  return (
-    <LoadingPanel
-      label={label.replace(/[\u2026.]+$/, "")}
-      hint={hint}
-      estimateMs={estimateMs}
-    />
   );
 }
 

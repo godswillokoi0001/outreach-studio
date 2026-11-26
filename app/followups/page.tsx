@@ -1,10 +1,12 @@
 "use client";
 
+import { BrandLoader } from "@/components/BrandLoader";
+
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { useAuth } from "@/components/AuthProvider";
 import { BatchRunner } from "@/components/Runner";
-import { Badge, Banner, Card, Empty, Progress, Stat } from "@/components/ui";
+import { Badge, Banner, Card, Empty, Stat } from "@/components/ui";
 import { errorMessage } from "@/lib/client";
 import { loadFollowupsBundle } from "@/lib/store";
 import { fmtDate, label, statusTone } from "@/lib/format";
@@ -97,7 +99,7 @@ export default function FollowupsPage() {
 
         <Card title="Due prospects" sub="Eligible for the next message right now">
           {loading && !data ? (
-            <Progress label="Checking follow-up schedule…" />
+            <BrandLoader size="sm" />
           ) : (data?.due.length ?? 0) === 0 ? (
             <Empty title="Nothing due">
               Prospects become eligible after the first follow-up gap in the campaign (for example 4 days with no

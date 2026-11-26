@@ -7,7 +7,7 @@ import { useAuth } from "@/components/AuthProvider";
 import { BatchRunner } from "@/components/Runner";
 import { CriteriaForm } from "@/components/CriteriaForm";
 import { LocationPicker } from "@/components/LocationPicker";
-import { LoadingPanel, Skeleton } from "@/components/Loading";
+import { BrandLoader } from "@/components/BrandLoader";
 import { DEFAULT_CRITERIA, INDUSTRY_OPTIONS, criteriaToFocus, type ResearchCriteria } from "@/lib/criteria";
 import { EMPTY_GEO, geoSummary, rememberLocation, type GeoSelection } from "@/lib/geo";
 import { Badge, Banner, Card, Empty, Field } from "@/components/ui";
@@ -407,17 +407,8 @@ export default function CampaignsPage() {
             </div>
 
             {busy === "plan" && (
-              <div style={{ marginTop: 14 }}>
-                <LoadingPanel
-                  label="Drafting your campaign plan"
-                  hint="Reading your knowledge base and available prospects…"
-                  estimateMs={22_000}
-                  steps={[
-                    { label: "Reading your knowledge base", ms: 5_000 },
-                    { label: "Checking available prospects", ms: 9_000 },
-                    { label: "Writing the plan and warnings", ms: 8_000 },
-                  ]}
-                />
+              <div style={{ marginTop: 14, display: "grid", placeItems: "center", padding: "12px 0" }}>
+                <BrandLoader size="sm" />
               </div>
             )}
 
@@ -450,13 +441,8 @@ export default function CampaignsPage() {
         )}
 
         {loading && enriched.length === 0 && (
-          <div className="camp-layout">
-            <div className="stack" style={{ gap: 6 }}>
-              {[0, 1, 2].map((index) => (
-                <Skeleton key={index} height={78} radius={12} />
-              ))}
-            </div>
-            <Skeleton height={320} radius={14} />
+          <div style={{ display: "grid", placeItems: "center", padding: "60px 0" }}>
+            <BrandLoader size="lg" />
           </div>
         )}
 

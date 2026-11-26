@@ -1,9 +1,11 @@
 "use client";
 
+import { BrandLoader } from "@/components/BrandLoader";
+
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useAuth } from "@/components/AuthProvider";
 import { BatchRunner } from "@/components/Runner";
-import { Badge, Banner, Card, Empty, Modal, Pager, Progress } from "@/components/ui";
+import { Badge, Banner, Card, Empty, Modal, Pager } from "@/components/ui";
 import { authedPost, errorMessage } from "@/lib/client";
 import type { ComposedEmail } from "@/lib/compose";
 import {
@@ -333,7 +335,7 @@ export default function ReviewPage() {
 
           {loading && messages.length === 0 ? (
             <div style={{ padding: 18 }}>
-              <Progress label="Loading emails…" />
+              <BrandLoader size="sm" />
             </div>
           ) : paged.length === 0 ? (
             <div style={{ padding: 18 }}>

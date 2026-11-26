@@ -11,7 +11,6 @@ import {
   type ReactNode,
 } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { BrandLoader } from "./BrandLoader";
 
 /* ------------------------------------------------------------------ *
  * Formatting helpers
@@ -42,102 +41,6 @@ export function useElapsed(active: boolean): number {
     return () => clearInterval(timer);
   }, [active]);
   return ms;
-}
-
-export interface LoadingStep {
-  label: string;
-  ms: number;
-}
-
-export function Skeleton({
-  height = 16,
-  radius = 10,
-  width,
-  className,
-}: {
-  height?: number | string;
-  radius?: number | string;
-  width?: number | string;
-  className?: string;
-}) {
-  return (
-    <div
-      className={`skel${className ? ` ${className}` : ""}`}
-      style={{ height, borderRadius: radius, width }}
-      aria-hidden="true"
-    />
-  );
-}
-
-export function LoadingPanel({
-  label,
-  hint,
-  estimateMs = 2000,
-  steps,
-  compact = false,
-}: {
-  label: string;
-  hint?: string;
-  estimateMs?: number;
-  steps?: LoadingStep[];
-  compact?: boolean;
-}) {
-  const [elapsed, setElapsed] = useState(0);
-
-  useEffect(() => {
-    const startedAt = Date.now();
-    const id = window.setInterval(() => setElapsed(Date.now() - startedAt), 200);
-    return () => window.clearInterval(id);
-  }, [label, estimateMs]);
-
-  const progress = Math.min(0.97, elapsed / Math.max(800, estimateMs));
-  const percent = Math.max(3, Math.round(progress * 100));
-
-  const activeStep = useMemo(() => {
-    if (!steps || steps.length === 0) return -1;
-    let cumulative = 0;
-    for (let index = 0; index < steps.length; index += 1) {
-      cumulative += steps[index].ms;
-      if (elapsed < cumulative) return index;
-    }
-    return steps.length - 1;
-  }, [elapsed, steps]);
-
-  return (
-    <div
-      className={`load-panel${compact ? " compact" : ""}`}
-      role="status"
-      aria-live="polite"
-      aria-label={label}
-    >
-      <div className="load-head">
-        <BrandLoader variant="inline" size={22} />
-        <div className="load-copy">
-          <div className="load-title">{label}</div>
-          {hint && <div className="load-hint">{hint}</div>}
-        </div>
-        <span className="load-percent">{percent}%</span>
-      </div>
-
-      <div className="load-bar">
-        <span className="load-fill" style={{ width: `${percent}%` }} />
-      </div>
-
-      {steps && steps.length > 0 && !compact && (
-        <ul className="load-steps">
-          {steps.map((step, index) => {
-            const state = index < activeStep ? "done" : index === activeStep ? "active" : "waiting";
-            return (
-              <li key={`${step.label}-${index}`} className="load-step" data-state={state}>
-                <span className="load-dot" aria-hidden="true" />
-                <span className="load-step-label">{step.label}</span>
-              </li>
-            );
-          })}
-        </ul>
-      )}
-    </div>
-  );
 }
 
 export type TaskStatus = "running" | "done" | "error" | "stopped";

@@ -1,8 +1,10 @@
 "use client";
 
+import { BrandLoader } from "@/components/BrandLoader";
+
 import { useEffect, useState } from "react";
 import { useAuth } from "@/components/AuthProvider";
-import { Badge, Banner, Card, Empty, Progress, Stat } from "@/components/ui";
+import { Badge, Banner, Card, Empty, Stat } from "@/components/ui";
 import { authedPost, errorMessage } from "@/lib/client";
 import { getSettings, loadAnalyticsBundle } from "@/lib/store";
 import { label } from "@/lib/format";
@@ -100,7 +102,7 @@ export default function AnalyticsPage() {
       <div className="stack">
         {error && <Banner tone="bad">{error}</Banner>}
         {failure && <Banner tone="bad">{failure}</Banner>}
-        {loading && !data && <Progress label="Crunching numbers…" />}
+        {loading && !data && <BrandLoader size="sm" />}
 
         {data && (
           <>

@@ -20,7 +20,6 @@ import {
 import { clearWorkspaceToken, writeWorkspaceToken } from "@/lib/workspace-token";
 import { invalidateDataCache } from "@/lib/db-client";
 import { BrandLoader } from "./BrandLoader";
-import { BrandLockup } from "./BrandMark";
 import { PreAuth } from "./PreAuth";
 import { Shell } from "./Shell";
 
@@ -263,17 +262,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   if (isPublicLegalPage) return <>{children}</>;
 
   if (loading) {
-    return (
-      <div className="auth-shell">
-        <div className="auth-loading">
-          <BrandLockup subtitle="Checking your workspace session…" />
-          <div className="progress" style={{ justifyContent: "center", marginTop: 14 }}>
-            <BrandLoader variant="thinking" size={20} />
-            <span>Loading workspace…</span>
-          </div>
-        </div>
-      </div>
-    );
+    return <BrandLoader fullScreen />;
   }
 
   if (!user) {

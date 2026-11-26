@@ -1,8 +1,10 @@
 "use client";
 
+import { BrandLoader } from "@/components/BrandLoader";
+
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { useAuth } from "@/components/AuthProvider";
-import { Banner, Card, Empty, Field, Progress, Toggle } from "@/components/ui";
+import { Banner, Card, Empty, Field, Toggle } from "@/components/ui";
 import { useConfirm, useToast } from "@/components/Feedback";
 import { errorMessage } from "@/lib/client";
 import {
@@ -159,7 +161,7 @@ export default function SettingsPage() {
       <div className="stack">
         {failure && <Banner tone="bad">{failure}</Banner>}
         {notice && <Banner tone="ok">{notice}</Banner>}
-        {loading && <Progress label="Loading settings…" />}
+        {loading && <BrandLoader size="sm" />}
 
         <Card title="Sender identity" sub="Used in every email and in the signature.">
           <div className="grid grid-3">

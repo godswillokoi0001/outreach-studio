@@ -421,7 +421,7 @@ function ShellInner({ children }: { children: ReactNode }) {
                 aria-label={syncing ? "Syncing replies" : "Sync replies"}
                 title="Sync replies from Gmail"
               >
-                {syncing ? <BrandLoader variant="button" size={13} /> : <RefreshCw size={13} aria-hidden="true" />}
+                {syncing ? <BrandLoader size={13} /> : <RefreshCw size={13} aria-hidden="true" />}
                 <span className="topbar-collapse">{syncing ? "Syncing…" : "Sync"}</span>
               </button>
             </div>
