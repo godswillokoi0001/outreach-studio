@@ -1,4 +1,5 @@
 import { Type, type Schema } from "@google/genai";
+import { buildOrchestratedSystemPrompt } from "./ai/orchestrator";
 import { normalizeWebsite } from "./columns";
 import { geminiJSON } from "./gemini";
 import { isFetchableUrl } from "./outreach-utils";
@@ -225,6 +226,20 @@ const RESEARCH_SCHEMA: Schema = {
     confidence: { type: Type.INTEGER },
     insufficient_data: { type: Type.BOOLEAN },
     notes: { type: Type.STRING },
+    score: { type: Type.INTEGER, description: "0-100 Module 1 quantitative fit score" },
+    tier: { type: Type.STRING, enum: ["A", "B", "C", "DISQUALIFIED"] },
+    kill_switch_triggered: { type: Type.BOOLEAN },
+    disqualification_reason: { type: Type.STRING, description: "Reason if disqualified, otherwise empty" },
+    missing_data: { type: Type.ARRAY, items: { type: Type.STRING } },
+    awareness_level: {
+      type: Type.STRING,
+      enum: ["Unaware", "Problem-Aware", "Solution-Aware", "Product-Aware", "Most-Aware"],
+    },
+    recommended_template_id: {
+      type: Type.STRING,
+      enum: ["T1", "T2", "T3", "T4", "T5", "T6", "T7", "T8", "T9", "T10", "T11", "T12"],
+    },
+    personalized_hook_candidates: { type: Type.ARRAY, items: { type: Type.STRING } },
   },
   required: [
     "business_name_confirmed",
@@ -240,29 +255,30 @@ const RESEARCH_SCHEMA: Schema = {
     "confidence",
     "insufficient_data",
     "notes",
+    "score",
+    "tier",
+    "kill_switch_triggered",
+    "missing_data",
+    "awareness_level",
+    "recommended_template_id",
+    "personalized_hook_candidates",
   ],
 };
 
-const RESEARCH_SYSTEM = `You are a B2B prospect researcher working for the business described in the knowledge base you are given.
+const RESEARCH_TASK = `Analyze this prospect strictly using Module 1 (Signal-Based Prospecting, Research Waterfall, Quantitative Scoring, Buyer Awareness & Anti-Hallucination Firewall) and the Active User Business Profile.
 
-Your job is to establish what is actually true about a prospect business, using only the material provided. You are honest about the limits of the evidence.
-
-Hard rules:
-- Never invent facts. If the provided website data does not show something, do not claim it.
-- Only state a website problem when the provided website data shows it. Quote or point to the specific evidence in the evidence field.
-- If no website HTML was supplied, website_status must be "no_site_known" (never seen one) or "not_checked". Never claim the site is broken, outdated, slow or insecure without evidence.
-- Separate verified facts (seen in the data) from inferences (your reasoning).
-- Findings must be about communication, clarity, credibility and customer acquisition - the kinds of problem the sender's services can fix.
-- Do not comment on prices, revenue, staff, ownership or anything personal.
-- If there is not enough information to say anything useful, set insufficient_data to true and keep confidence below 40.
-- confidence is 0-100 and reflects the quality of evidence available, not how promising the prospect is.
-- recommended_angle is one sentence: the specific, evidence-backed reason to contact this business.
-- services must be named using the sender's own service names from the knowledge base where possible.`;
+Mandatory Output Rules:
+- Never invent facts, emails, names, social links, stats, or technical/DOM defects not verified in the supplied raw website snapshot or owner notes.
+- If no website HTML was supplied, website_status must be "no_site_known" or "not_checked".
+- Evaluate ALL Hard Kill-Switches (KILL-1 scope/exclusion trap, KILL-2 inactive/abandoned, KILL-3 invalid/opted-out channel, KILL-4 zero verifiable facts). If ANY triggers, set kill_switch_triggered=true, score=0, tier="DISQUALIFIED", and explain in disqualification_reason.
+- Score honestly 0-100 across Fit (0-25), WTP/Budget Proof (0-30), Trigger Timing (0-25), Reachability/Depth (0-20), mapping tier to A (80-100), B (65-79), C (50-64), or DISQUALIFIED (<50).
+- List verified facts separately from missing_data (what is still unknown) and inferences.
+- Pick exact awareness_level ("Unaware" | "Problem-Aware" | "Solution-Aware" | "Product-Aware" | "Most-Aware"), recommended_template_id ("T1"-"T12"), and 1-3 sharp personalized_hook_candidates grounded ONLY in verified facts.`;
 
 export async function researchLeadServer(
   lead: Lead,
   knowledge: string,
-  options?: { model?: string },
+  options?: { model?: string; ownerId?: string },
 ): Promise<ResearchResult> {
   const snapshot = await fetchSite(lead.website);
   const manual = (lead.manual_research ?? "").trim();
@@ -290,7 +306,14 @@ PAGE TEXT (truncated to 8000 characters):
 ${snapshot.text.slice(0, 8000)}`
     : `WEBSITE CHECK: none available. ${lead.website ? "The stored URL could not be fetched." : "No website URL is stored for this prospect."}`;
 
-  const user = `${knowledge ? `BUSINESS KNOWLEDGE BASE\n${knowledge}\n\n` : ""}PROSPECT RECORD
+  const orchestrated = await buildOrchestratedSystemPrompt({
+    workflow: "research_and_qualify",
+    ownerId: options?.ownerId ?? lead.ownerId ?? null,
+    knowledgeDigest: knowledge,
+    taskInstructions: RESEARCH_TASK,
+  });
+
+  const user = `PROSPECT RECORD
 Business: ${lead.business ?? "(unknown)"}
 Contact: ${lead.contact_name ?? "(unknown)"} ${lead.role ? `(${lead.role})` : ""}
 Email: ${lead.email ?? "(none)"}
@@ -303,17 +326,32 @@ ${siteBlock}
 
 ${manual ? `OWNER-SUPPLIED RESEARCH (treat as reliable observations from the business owner):\n${manual}` : ""}
 
-Research this business for a web design / digital services outreach decision.`;
+Run Workflow A (research_and_qualify) and return the complete structured JSON.`;
 
   const result = await geminiJSON<ResearchResult>({
-    system: RESEARCH_SYSTEM,
+    system: orchestrated.system,
     user,
     schema: RESEARCH_SCHEMA,
     model: options?.model,
   });
 
+  const killSwitch = Boolean(result.kill_switch_triggered);
+  const clampedScore = killSwitch ? 0 : Math.max(0, Math.min(100, Number(result.score ?? result.confidence ?? 0)));
+
   return {
     ...result,
+    score: clampedScore,
+    kill_switch_triggered: killSwitch,
+    disqualification_reason: killSwitch ? (result.disqualification_reason || "Hard kill-switch triggered.") : null,
+    tier: killSwitch
+      ? "DISQUALIFIED"
+      : clampedScore >= 80
+        ? "A"
+        : clampedScore >= 65
+          ? "B"
+          : clampedScore >= 50
+            ? "C"
+            : "DISQUALIFIED",
     checked_at: new Date().toISOString(),
     technical_signals: snapshot
       ? { ...snapshot.signals, status: snapshot.status, reachable: snapshot.reachable }

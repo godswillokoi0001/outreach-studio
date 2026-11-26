@@ -1,4 +1,6 @@
 import { Type, type Schema } from "@google/genai";
+import { buildOrchestratedSystemPrompt, stripUnresolvedPlaceholders } from "./ai/orchestrator";
+import { checkSendingTierDeliverability } from "./guardrails";
 import { geminiJSON } from "./gemini";
 import { cleanEmailText } from "./outreach-utils";
 import type { CampaignConfig, Lead, Message, ResearchResult, Settings } from "./types";
@@ -10,8 +12,10 @@ export interface ComposedEmail {
   rationale: string;
   service: string;
   evidence: string[];
-  /** Result of the knowledge-base self-check that runs before the draft is shown. */
+  template_id?: string;
+  /** Result of Module 2's 8-point & knowledge-base self-check before display. */
   check?: DraftCheck;
+  deliverability_warnings?: string[];
 }
 
 export interface DraftCheck {
@@ -29,19 +33,18 @@ const CHECK_SCHEMA: Schema = {
     kb_items_used: {
       type: Type.ARRAY,
       items: { type: Type.STRING },
-      description: "The exact knowledge base items (service names, tone rules, CTA rules) this draft relies on",
+      description: "The exact knowledge base & Global Brain rules/items this draft relies on",
     },
   },
   required: ["passed", "issues", "kb_items_used"],
 };
 
 /**
- * The checklist is built from the knowledge base and the owner's instruction so
- * a draft that invents an offer, uses the wrong tone or ignores the CTA is
- * caught before the operator ever sees it.
+ * Combines Module 2's Mandatory 8-Point Quality Gate with the active user's
+ * Business Profile, Knowledge Base, and Sending Tier limits.
  */
-function checklist(campaign: CampaignConfig, knowledge: string, draft: ComposedEmail): string {
-  return `KNOWLEDGE BASE (source of truth)
+function checklist(campaign: CampaignConfig, knowledge: string, draft: ComposedEmail, sendingTier: string): string {
+  return `USER KNOWLEDGE BASE (source of truth)
 ${knowledge || "(empty)"}
 
 OWNER INSTRUCTION FOR THIS CAMPAIGN
@@ -49,35 +52,38 @@ Objective: ${campaign.objective}
 Services in focus: ${campaign.services.join(", ") || "(none specified)"}
 Tone: ${campaign.tone || "(not specified)"}
 Extra instructions: ${campaign.extra_instructions || "(none)"}
+Sending tier: ${sendingTier}
 
 DRAFT UNDER REVIEW
+Template ID: ${draft.template_id || "auto"}
 Subject: ${draft.subject}
 ${draft.body}
 
-CHECK EVERY POINT
-1. Every service, offer, price, claim and proof point appears in the knowledge base. Flag anything invented.
-2. The tone matches the knowledge base tone rules and the campaign tone.
-3. There is exactly one clear call to action, and it matches the knowledge base CTA guidance.
-4. Length is 80-150 words for a first email (45-90 for a follow-up), plain text, no markdown, no emoji.
-5. Banned phrases are absent: "hope this email finds you well", "came across your website", "wanted to reach out", "just following up", "revolutionise", "cutting-edge", "synergy", "game-changing", "elevate your brand".
-6. No invented facts, names, clients, awards or results; nothing presented as fact that the research did not verify.
-7. The owner's extra instructions are followed exactly (format, length, structure, what to avoid).
-8. No prices, budgets or timelines are mentioned unless the knowledge base states them.
+AUDIT AGAINST MODULE 2'S 8-POINT QUALITY GATE & USER KB:
+1. [WORD COUNT]: Touch 1 is ~45-95 words (follow-ups 25-65 words), short 1-2 sentence mobile-friendly paragraphs, plain text.
+2. [FIRST LINE]: Opens with a verified 1-2 sentence observation passing the Face-to-Face test (no generic flattery).
+3. [ZERO FABRICATION & ZERO RAW TAGS]: Every fact/metric is grounded in verified prospect data or user proof, and ZERO unresolved {{...}} tags exist.
+4. [YOU-FIRST / WIIFM]: "You/Your" outnumbers "I/We" by ~2:1+, translating features into concrete buyer outcomes.
+5. [ZERO AI SLOP]: ZERO banned openings ("hope this email finds you well", "came across your website"), buzzwords ("game-changer", "elevate", "synergy", "bespoke", "delve"), or service laundry lists.
+6. [SINGLE CLEAR CTA]: One low-friction, interest-based question (never a pushy 30-min call request on cold Touch 1 or vague "thoughts?").
+7. [DELIVERABILITY SAFE]: Subject is 2-5 words, lowercase/sentence case, no Re:/Fwd: clickbait; links/formatting respect Sending Tier (${sendingTier}).
+8. [HUMAN VOICE & SCOPE]: Respects USER_EXCLUSIONS and campaign extra instructions cleanly.
 
-Return passed=true only when all eight points hold. List every failure in issues with the exact phrase to change. In kb_items_used list the knowledge base entries the draft actually used (service names, tone rules, CTA rules); return an empty list if the draft used none.`;
+Return passed=true only when all eight gates hold. List exact issues to fix if any fail.`;
 }
 
 async function reviewDraft(
   campaign: CampaignConfig,
   knowledge: string,
   draft: ComposedEmail,
+  sendingTier: string,
   model?: string,
 ): Promise<{ passed: boolean; issues: string[]; kb_items_used: string[] }> {
   try {
     const result = await geminiJSON<{ passed: boolean; issues: string[]; kb_items_used: string[] }>({
       system:
-        "You are a strict reviewer for cold outreach. You judge a draft only against the supplied knowledge base, the owner's instruction and the listed rules. You never rewrite the email; you only report failures.",
-      user: checklist(campaign, knowledge, draft),
+        "You are a strict Module 2 Direct-Response Quality Gate reviewer. Judge the draft against the 8-point gate, user knowledge base, and campaign instructions. Report failures concisely; never rewrite.",
+      user: checklist(campaign, knowledge, draft, sendingTier),
       schema: CHECK_SCHEMA,
       model,
     });
@@ -89,7 +95,6 @@ async function reviewDraft(
         : [],
     };
   } catch {
-    // A reviewer failure must never block sending a draft the owner can check.
     return { passed: true, issues: [], kb_items_used: [] };
   }
 }
@@ -98,10 +103,11 @@ async function withKnowledgeCheck(
   draft: ComposedEmail,
   campaign: CampaignConfig,
   knowledge: string,
+  sendingTier: string,
   regenerate: (issues: string[]) => Promise<ComposedEmail>,
   model?: string,
 ): Promise<ComposedEmail> {
-  const first = await reviewDraft(campaign, knowledge, draft, model);
+  const first = await reviewDraft(campaign, knowledge, draft, sendingTier, model);
   if (first.passed) {
     return {
       ...draft,
@@ -120,7 +126,7 @@ async function withKnowledgeCheck(
       check: { ...first, regenerated: false },
     };
   }
-  const recheck = await reviewDraft(campaign, knowledge, second, model);
+  const recheck = await reviewDraft(campaign, knowledge, second, sendingTier, model);
   return {
     ...second,
     rationale: withKbLine(second.rationale, recheck.kb_items_used.length ? recheck.kb_items_used : first.kb_items_used),
@@ -130,50 +136,42 @@ async function withKnowledgeCheck(
 
 function withKbLine(rationale: string, items: string[]): string {
   if (items.length === 0) return rationale;
-  return `${rationale.trim()}\n\nKnowledge base used: ${items.join("; ")}`;
+  return `${rationale.trim()}\n\nKnowledge & rules applied: ${items.join("; ")}`;
 }
 
 const SCHEMA: Schema = {
   type: Type.OBJECT,
   properties: {
-    subject: { type: Type.STRING, description: "3-7 words, specific to this business" },
-    body: { type: Type.STRING, description: "Plain text email body, 80-150 words, greeting and sign-off included" },
+    template_id: {
+      type: Type.STRING,
+      enum: ["T1", "T2", "T3", "T4", "T5", "T6", "T7", "T8", "T9", "T10", "T11", "T12"],
+      description: "The Module 3 template scenario selected by deterministic routing",
+    },
+    subject: { type: Type.STRING, description: "2-5 words, lowercase or natural sentence case, zero clickbait" },
+    body: {
+      type: Type.STRING,
+      description: "Plain text email body (45-95 words for Touch 1, 20-65 words for follow-ups), short paragraphs, zero {{...}} placeholders",
+    },
     angle: { type: Type.STRING, description: "The outreach angle in one short phrase" },
-    rationale: { type: Type.STRING, description: "Why this approach was chosen, 2-3 sentences for the operator" },
+    rationale: { type: Type.STRING, description: "Why this template & angle fit verified research (2-3 sentences)" },
     service: { type: Type.STRING },
-    evidence: { type: Type.ARRAY, items: { type: Type.STRING }, description: "Research facts this email relies on" },
+    evidence: { type: Type.ARRAY, items: { type: Type.STRING }, description: "Verified research facts relied upon" },
   },
-  required: ["subject", "body", "angle", "rationale", "service", "evidence"],
+  required: ["template_id", "subject", "body", "angle", "rationale", "service", "evidence"],
 };
 
-const STRATEGIST_SYSTEM = `You are an experienced B2B sales strategist and cold email copywriter writing on behalf of the business described in the knowledge base. You write like one business professional emailing another - specific, calm, credible, and short.
+const COMPOSE_INITIAL_TASK = `Execute Workflow B (draft_outreach — Touch 1 Initial Cold Email):
+- Deterministic Template Routing (Module 3 Step B): evaluate the prospect's verified hook, awareness level, and inbox type to select the SINGLE best template (T1-T12). If researched recommended_template_id is supplied, prioritize it unless inbox type forces T10.
+- Apply Anti-Fingerprint Adaptation: use natural Voice-of-Customer phrasing, 45-95 words total, Grade 3-5 reading level, max 1-2 sentences per paragraph, >=2:1 You-to-I ratio.
+- Strictly follow USER_SENDING_TIER deliverability rules:
+  * If free_gmail_starter: 0 links ideal (max 1 clean signature link only if verified in USER_PROOF/USER_LEAD_MAGNET), never calendar links, plain text only.
+- NEVER emit unresolved {{...}} placeholders or banned AI slop. Pass ALL 8 Module 2 Quality Gate points.`;
 
-Before writing you decide: what is the one evidenced observation about this business, why it matters to their customers, which service addresses it, and what single question starts a conversation.
-
-Non-negotiable writing rules:
-- 80-150 words in the body. Plain text only: no markdown, no bold, no bullets, no emojis, no images.
-- Open with the specific observation, not with an introduction of yourself and not with a compliment.
-- Never use: "I hope this email finds you well", "I came across your website", "I wanted to reach out", "Just reaching out", "revolutionise", "cutting-edge", "synergy", "in today's digital landscape", "I am confident", "game-changing", "unlock potential", "elevate your brand".
-- Never claim the business has no website, poor rankings or lost customers unless the research states it as verified.
-- Never invent facts, metrics, awards, clients or past relationships with the prospect. Never imply an existing conversation.
-- Never mention prices, budgets or timelines.
-- One reference to relevant work at most, and only if the knowledge base or sources actually list work relevant to this industry. At most one link.
-- Address the contact by first name if a contact name is known; otherwise use a neutral greeting ("Hello,").
-- End with exactly one easy question. No calendar links, no attachments, no PS lines.
-- Sign off with the sender's first name (and company only if the campaign identity is the company).
-- The subject line is 3-7 words, specific to this business, no clickbait, no emojis, sentence case.
-- Write in the sender's authentic voice, following the tone and writing rules in the knowledge base: practical, honest, relationship-driven. No hype.
-
-If the research is too thin to say anything specific, still write the most honest short email you can, and note the limitation in rationale.`;
-
-const FOLLOWUP_SYSTEM = `${STRATEGIST_SYSTEM}
-
-This email is a follow-up. Additional rules:
-- 45-90 words. Shorter than the first email.
-- Reference the earlier message naturally without repeating the same pitch or the same observation.
-- Add one genuinely new, useful reason to reply (a relevant angle, a concrete observation, or a relevant example of work).
-- Never guilt the prospect, never say "just following up", "bumping this", or "did you get my last email".
-- Keep the same sender identity and sign-off as the first email.`;
+const COMPOSE_FOLLOWUP_TASK = `Execute Workflow B (draft_outreach — Same-Thread Follow-Up):
+- Follow Module 3's 5-Touch Execution Matrix and Follow-Up Laws strictly.
+- Keep it shorter than Touch 1 (20-65 words) and stay on the same thread without copy-pasting the same pitch.
+- Use Touch 2 frictionless bump, Touch 3 fresh proof/insight nudge, Touch 4 short binary check, or Touch 5 clean zero-pressure breakup as step dictates.
+- Zero guilt-tripping, zero "just following up", zero unresolved {{...}} tags, and respect USER_SENDING_TIER.`;
 
 function identity(settings: Settings, campaign: CampaignConfig): string {
   const name = settings.sender_name || "the sender";
@@ -181,20 +179,41 @@ function identity(settings: Settings, campaign: CampaignConfig): string {
   if (campaign.identity === "personal" || !settings.sender_company) {
     return `The sender is ${name}${settings.sender_role ? `, ${settings.sender_role}` : ""}, writing as an independent professional. Sign off as "${firstName}". Do not present them as a company.`;
   }
-  return `The sender is ${name}${settings.sender_role ? `, ${settings.sender_role}` : ""} at ${settings.sender_company}. Sign off with "${firstName}" and the company name on the next line. They are writing on behalf of the company.`;
+  return `The sender is ${name}${settings.sender_role ? `, ${settings.sender_role}` : ""} at ${settings.sender_company}. Sign off with "${firstName}" and the company name cleanly.`;
 }
 
 function researchBlock(research: ResearchResult): string {
-  return `VERIFIED RESEARCH
+  return `VERIFIED RESEARCH JSON
 Summary: ${research.summary}
 Website status: ${research.website_status}
-Verified facts: ${research.verified_facts.map((f) => f.fact).join(" | ") || "(none)"}
+Awareness level: ${research.awareness_level || "(infer from facts)"}
+Recommended template ID: ${research.recommended_template_id || "(route via Module 3 Step B)"}
+Hook candidates: ${(research.personalized_hook_candidates ?? []).join(" | ") || "(none)"}
+Verified facts: ${research.verified_facts.map((f) => `${f.fact} [${f.source}]`).join(" | ") || "(none)"}
 Website observations: ${research.website_facts.join(" | ") || "(none)"}
 Findings: ${research.findings.map((f) => `[${f.severity}] ${f.area}: ${f.observation} (evidence: ${f.evidence})`).join(" | ") || "(none)"}
-Inferences (do not present as fact): ${research.inferences.join(" | ") || "(none)"}
+Missing data (DO NOT GUESS): ${(research.missing_data ?? []).join(" | ") || "(none)"}
 Best opportunity: ${research.opportunities.map((o) => `${o.opportunity} (${o.service})`).join(" | ") || "(none)"}
-Previous recommended angle: ${research.recommended_angle}
-Research confidence: ${research.confidence}/100${research.insufficient_data ? " - INSUFFICIENT DATA, stay cautious and avoid specific claims" : ""}`;
+Recommended angle: ${research.recommended_angle}
+Research confidence: ${research.confidence}/100${research.insufficient_data ? " - INSUFFICIENT DATA, stay honest and ultra-brief (no invented claims)" : ""}`;
+}
+
+function sanitizeComposedDraft(raw: ComposedEmail, isColdTouch1: boolean, sendingTier: "free_gmail_starter" | "authenticated_custom_domain"): ComposedEmail {
+  const cleanBody = cleanEmailText(stripUnresolvedPlaceholders(raw.body));
+  const cleanSubject = cleanEmailText(stripUnresolvedPlaceholders(raw.subject)).split("\n")[0];
+  const deliv = checkSendingTierDeliverability({
+    tier: sendingTier,
+    subject: cleanSubject,
+    body: cleanBody,
+    isColdTouch1,
+  });
+
+  return {
+    ...raw,
+    subject: cleanSubject,
+    body: cleanBody,
+    deliverability_warnings: deliv.warnings.length > 0 ? deliv.warnings : undefined,
+  };
 }
 
 export async function composeInitialServer(
@@ -204,20 +223,26 @@ export async function composeInitialServer(
   settings: Settings,
   knowledge: string,
   model?: string,
+  options?: { ownerId?: string },
 ): Promise<ComposedEmail> {
-  const user = `SENDER IDENTITY
-${identity(settings, campaign)}
-Sender name: ${settings.sender_name}
-Sender role: ${settings.sender_role}
-Company: ${settings.sender_company}
+  const orchestrated = await buildOrchestratedSystemPrompt({
+    workflow: "draft_outreach",
+    ownerId: options?.ownerId ?? lead.ownerId ?? null,
+    settings,
+    campaign,
+    knowledgeDigest: knowledge,
+    taskInstructions: COMPOSE_INITIAL_TASK,
+  });
 
-BUSINESS KNOWLEDGE BASE
-${knowledge}
+  const sendingTier = orchestrated.variables.USER_SENDING_TIER;
+  const user = `SENDER IDENTITY OVERRIDE
+${identity(settings, campaign)}
 
 PROSPECT
 Business: ${lead.business ?? "(unknown)"}
 Contact: ${lead.contact_name ?? "(unknown)"}
 Role: ${lead.role ?? "(unknown)"}
+Email: ${lead.email ?? "(unknown)"}
 Location: ${lead.location ?? "(unknown)"}
 Industry: ${lead.industry ?? "(unknown)"}
 
@@ -229,39 +254,31 @@ Services in focus: ${campaign.services.join(", ")}
 Tone: ${campaign.tone}
 Extra instructions from the owner: ${campaign.extra_instructions || "(none)"}
 
-Write the first cold email for this prospect. It must be built on the specific research above.`;
+Select the optimal Module 3 template (T1-T12) and write the Touch 1 email passing all 8 Module 2 gates with ZERO raw {{...}} tags.`;
 
   const draft = await geminiJSON<ComposedEmail>({
-    system: STRATEGIST_SYSTEM,
+    system: orchestrated.system,
     user,
     schema: SCHEMA,
     model,
   });
-  const cleaned: ComposedEmail = {
-    ...draft,
-    body: cleanEmailText(draft.body),
-    subject: cleanEmailText(draft.subject).split("\n")[0],
-  };
+  const cleaned = sanitizeComposedDraft(draft, true, sendingTier);
 
-  // Self-check against the knowledge base before the draft is ever shown.
   return withKnowledgeCheck(
     cleaned,
     campaign,
     knowledge,
+    sendingTier,
     async (issues) => {
       const revised = await geminiJSON<ComposedEmail>({
-        system: STRATEGIST_SYSTEM,
-        user: `${user}\n\nYOUR PREVIOUS DRAFT FAILED THE KNOWLEDGE-BASE CHECK\n${issues
+        system: orchestrated.system,
+        user: `${user}\n\nYOUR PREVIOUS DRAFT FAILED THE 8-POINT QUALITY / KB CHECK:\n${issues
           .map((issue) => `- ${issue}`)
-          .join("\n")}\n\nRewrite the email so every point is fixed. Keep what was already compliant.`,
+          .join("\n")}\n\nRewrite the email cleanly so every issue is fixed and ZERO {{...}} tags exist.`,
         schema: SCHEMA,
         model,
       });
-      return {
-        ...revised,
-        body: cleanEmailText(revised.body),
-        subject: cleanEmailText(revised.subject).split("\n")[0],
-      };
+      return sanitizeComposedDraft(revised, true, sendingTier);
     },
     model,
   );
@@ -276,15 +293,20 @@ export async function composeFollowUpServer(
   original: Message,
   step: number,
   model?: string,
+  options?: { ownerId?: string },
 ): Promise<ComposedEmail> {
-  const user = `SENDER IDENTITY
-${identity(settings, campaign)}
-Sender name: ${settings.sender_name}
-Sender role: ${settings.sender_role}
-Company: ${settings.sender_company}
+  const orchestrated = await buildOrchestratedSystemPrompt({
+    workflow: "draft_outreach",
+    ownerId: options?.ownerId ?? lead.ownerId ?? null,
+    settings,
+    campaign,
+    knowledgeDigest: knowledge,
+    taskInstructions: COMPOSE_FOLLOWUP_TASK,
+  });
 
-BUSINESS KNOWLEDGE BASE
-${knowledge}
+  const sendingTier = orchestrated.variables.USER_SENDING_TIER;
+  const user = `SENDER IDENTITY OVERRIDE
+${identity(settings, campaign)}
 
 PROSPECT
 Business: ${lead.business ?? "(unknown)"}
@@ -304,38 +326,31 @@ ORIGINAL EMAIL SENT
 Subject: ${original.subject}
 ${original.body}
 
-This is follow-up number ${step}. The prospect has not replied. Write a shorter follow-up that adds a new reason to respond.`;
+This is Touch #${step} in the Module 3 Follow-Up Matrix. Write a shorter same-thread follow-up adding a fresh angle or binary check with zero guilt-tripping and zero {{...}} placeholders.`;
 
   const draft = await geminiJSON<ComposedEmail>({
-    system: FOLLOWUP_SYSTEM,
+    system: orchestrated.system,
     user,
     schema: SCHEMA,
     model,
   });
-  const cleaned: ComposedEmail = {
-    ...draft,
-    body: cleanEmailText(draft.body),
-    subject: cleanEmailText(draft.subject).split("\n")[0],
-  };
+  const cleaned = sanitizeComposedDraft(draft, false, sendingTier);
 
   return withKnowledgeCheck(
     cleaned,
     campaign,
     knowledge,
+    sendingTier,
     async (issues) => {
       const revised = await geminiJSON<ComposedEmail>({
-        system: FOLLOWUP_SYSTEM,
-        user: `${user}\n\nYOUR PREVIOUS DRAFT FAILED THE KNOWLEDGE-BASE CHECK\n${issues
+        system: orchestrated.system,
+        user: `${user}\n\nYOUR PREVIOUS DRAFT FAILED THE 8-POINT QUALITY / KB CHECK:\n${issues
           .map((issue) => `- ${issue}`)
-          .join("\n")}\n\nRewrite the follow-up so every point is fixed.`,
+          .join("\n")}\n\nRewrite the follow-up cleanly so every point is fixed.`,
         schema: SCHEMA,
         model,
       });
-      return {
-        ...revised,
-        body: cleanEmailText(revised.body),
-        subject: cleanEmailText(revised.subject).split("\n")[0],
-      };
+      return sanitizeComposedDraft(revised, false, sendingTier);
     },
     model,
   );

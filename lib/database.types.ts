@@ -53,6 +53,8 @@ export type Database = {
       knowledge: LooseTable;
       knowledge_sources: LooseTable;
       email_opens: LooseTable;
+      global_knowledge_modules: LooseTable;
+      user_business_profiles: LooseTable;
     };
     views: Record<string, unknown>;
     functions: Record<string, unknown>;

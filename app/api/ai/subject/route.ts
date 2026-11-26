@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { Type } from "@google/genai";
 import { handleApiError } from "@/lib/api-helpers";
 import { resolveAiConfigForRequest } from "@/lib/ai/context";
+import { buildOrchestratedSystemPrompt, stripUnresolvedPlaceholders } from "@/lib/ai/orchestrator";
 import { providerJSON } from "@/lib/ai/chat";
 import { verifyRequest } from "@/lib/server-auth";
 
@@ -11,22 +12,22 @@ const MAX_BODY = 8_000;
 
 function cleanSubject(raw: unknown): string {
   if (typeof raw !== "string") return "";
-  return raw
-    .replace(/^\s*(subject|re)\s*:\s*/i, "")
-    .replace(/^["'“”]+|["'“”]+$/g, "")
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, 120);
+  return stripUnresolvedPlaceholders(
+    raw
+      .replace(/^\s*(subject|re)\s*:\s*/i, "")
+      .replace(/^["'“”]+|["'“”]+$/g, "")
+      .replace(/\s+/g, " ")
+      .trim(),
+  ).slice(0, 120);
 }
 
 /**
- * Suggests subject lines for a message the user is about to send, either a cold
- * email or a reply. The body is the source of truth: the model may only draw on
- * what is already written, never invent an offer or a number.
+ * Suggests subject lines grounded in the Global Knowledge Subject Line Architecture
+ * (Module 3 Section 2) and the supplied body text.
  */
 export async function POST(req: NextRequest) {
   try {
-    await verifyRequest(req);
+    const user = await verifyRequest(req);
     const payload = (await req.json().catch(() => ({}))) as {
       body?: unknown;
       kind?: unknown;
@@ -54,21 +55,26 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const system = [
-      "You write subject lines for outreach email sent by a real businessperson from their own inbox.",
-      "Suggest exactly three subject lines, each under 60 characters, no emojis, no clickbait, no ALL CAPS, no exclamation marks.",
-      "Every subject must be grounded in the message: name the specific thing it is about. Never invent an offer, discount, number or urgency.",
+    const taskInstructions = [
+      "Suggest exactly three subject lines following Module 3 Subject Line Architecture (2-5 words, under 40 chars preferred, all-lowercase or natural sentence case, zero emojis, zero clickbait, zero ALL CAPS, zero exclamation marks).",
+      "Every subject must stay strictly grounded in the message: never invent offers, numbers, or urgency, and never include raw {{...}} tags.",
       isReply
-        ? "This is a reply to a prospect, so the subjects should read like a natural answer in an ongoing conversation."
-        : "This is a cold or follow-up email, so the subjects should be specific and easy to open.",
+        ? "This is a reply to a prospect, so keep the subject conversational and thread-native."
+        : "This is a cold or follow-up email: never fake Re:/Fwd: prefixes on a new cold touch.",
       original ? `Their original subject was: ${original}` : "",
       business ? `The prospect is: ${business}.` : "",
     ]
       .filter(Boolean)
       .join("\n");
 
+    const orchestrated = await buildOrchestratedSystemPrompt({
+      workflow: isReply ? "handle_reply" : "draft_outreach",
+      ownerId: user.ownerId,
+      taskInstructions,
+    });
+
     const result = await providerJSON<{ subjects?: unknown }>(aiConfig, {
-      system,
+      system: orchestrated.system,
       user: `MESSAGE\n${text}`,
       schema: {
         type: Type.OBJECT,

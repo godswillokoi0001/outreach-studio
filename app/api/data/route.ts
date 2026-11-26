@@ -57,6 +57,9 @@ const TIMESTAMP_COLUMNS = new Set([
 type Row = Record<string, unknown>;
 
 function resolveTable(name: string | null): string {
+  if (name === "global_knowledge_modules" || name === "user_business_profiles") {
+    throw new AuthError("Access to restricted global intelligence or system profile tables is denied.", 403);
+  }
   if (!name || !COLUMNS[name]) {
     throw new AuthError(`Unknown data table: ${name ?? "(none)"}.`, 400);
   }

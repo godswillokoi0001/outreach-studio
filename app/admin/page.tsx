@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { Activity, BarChart3, CheckSquare, Cpu, Lock, Shield, Users } from "lucide-react";
+import { Activity, BarChart3, Brain, CheckSquare, Cpu, Lock, Shield, Users } from "lucide-react";
 import { useAuth } from "@/components/AuthProvider";
 import { BrandLoader } from "@/components/BrandLoader";
 import { Badge, Banner, Card } from "@/components/ui";
@@ -10,10 +10,11 @@ import { Admin2faGate, AdminReauthModal, type TwoFaStatusPayload } from "@/compo
 import { AdminOverviewTab } from "@/components/admin/AdminOverviewTab";
 import { AdminUsersTab } from "@/components/admin/AdminUsersTab";
 import { AdminProvidersTab } from "@/components/admin/AdminProvidersTab";
+import { AdminGlobalKnowledgeTab } from "@/components/admin/AdminGlobalKnowledgeTab";
 import { AdminAuditAndNoticesTab } from "@/components/admin/AdminAuditAndNoticesTab";
 import { AdminSystemCheckTab } from "@/components/admin/AdminSystemCheckTab";
 
-type AdminTab = "overview" | "users" | "providers" | "audit" | "system_check";
+type AdminTab = "overview" | "users" | "providers" | "global_knowledge" | "audit" | "system_check";
 
 export default function AdminPage() {
   const { user } = useAuth();
@@ -140,6 +141,13 @@ export default function AdminPage() {
         )}
         <button
           type="button"
+          className={`btn btn-sm ${activeTab === "global_knowledge" ? "btn-primary" : ""}`}
+          onClick={() => setActiveTab("global_knowledge")}
+        >
+          <Brain size={13} /> Global Brain
+        </button>
+        <button
+          type="button"
           className={`btn btn-sm ${activeTab === "audit" ? "btn-primary" : ""}`}
           onClick={() => setActiveTab("audit")}
         >
@@ -167,6 +175,14 @@ export default function AdminPage() {
       )}
       {activeTab === "providers" && canManageProviders && (
         <AdminProvidersTab
+          role={role}
+          sessionToken={sessionToken}
+          reauthToken={reauthToken}
+          onNeedReauth={handleNeedReauth}
+        />
+      )}
+      {activeTab === "global_knowledge" && (
+        <AdminGlobalKnowledgeTab
           role={role}
           sessionToken={sessionToken}
           reauthToken={reauthToken}

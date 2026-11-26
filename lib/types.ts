@@ -40,6 +40,15 @@ export interface ResearchResult {
   notes: string;
   checked_at?: string;
   technical_signals?: Record<string, unknown>;
+  /** Module 1 Workflow A structured extensions */
+  score?: number;
+  tier?: "A" | "B" | "C" | "DISQUALIFIED";
+  kill_switch_triggered?: boolean;
+  disqualification_reason?: string | null;
+  missing_data?: string[];
+  awareness_level?: string;
+  recommended_template_id?: string;
+  personalized_hook_candidates?: string[];
 }
 
 export interface QualificationResult {
@@ -50,6 +59,15 @@ export interface QualificationResult {
   value_tier: "high" | "medium" | "low" | "unknown";
   recommended_service: string;
   disqualify_reason?: string;
+  /** Module 1 Workflow A structured extensions */
+  tier?: "A" | "B" | "C" | "DISQUALIFIED";
+  kill_switch_triggered?: boolean;
+  disqualification_reason?: string | null;
+  verified_facts?: string[];
+  missing_data?: string[];
+  awareness_level?: string;
+  recommended_template_id?: string;
+  personalized_hook_candidates?: string[];
 }
 
 export interface Lead {
@@ -164,6 +182,9 @@ export interface Reply {
   recommended_action: string | null;
   draft_reply: string | null;
   handled: boolean;
+  reply_class?: "R1" | "R2" | "R3" | "R4" | "R5" | "R6" | "R7" | "R8";
+  sequence_action?: "PAUSE" | "SNOOZE" | "STOP" | "GLOBAL_SUPPRESS";
+  snooze_until?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -274,7 +295,7 @@ export const DEFAULT_SETTINGS: Settings = {
   send_days: "1,2,3,4,5",
   timezone_offset: 60,
   followup_days: 4,
-  min_score: 55,
+  min_score: 65,
   unsubscribe_email: "",
   physical_address: "",
   model: "gemini-3.5-flash",

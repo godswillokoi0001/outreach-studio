@@ -1,8 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
 import { extractWorkspaceToken, handleApiError } from "@/lib/api-helpers";
 import { fromB64url } from "@/lib/crypto";
+import {
+  checkSendingTierDeliverability,
+  evaluateLeadSendEligibility,
+  isSelfSendEmail,
+  resolveUserSendingTier,
+} from "@/lib/guardrails";
 import { verifyRequest } from "@/lib/server-auth";
 import { buildOpenPixelUrl, buildRawEmail, encodeBase64Url, type RawEmailInput } from "@/lib/outreach-utils";
+import { supabaseServer } from "@/lib/supabase-server";
+import type { Campaign, Lead } from "@/lib/types";
 
 const GMAIL_API = "https://gmail.googleapis.com/gmail/v1/users/me";
 
@@ -134,6 +142,107 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ error: "Email payload is required." }, { status: 400 });
       }
       const tracking = body.email.tracking;
+
+      // 1. Self-Send Guard: prevent sending from X -> X
+      let resolvedFrom = String(body.email.from ?? "").trim();
+      if (!resolvedFrom) {
+        try {
+          const profile = await gmailFetch<{ emailAddress: string }>(token, "/profile");
+          resolvedFrom = profile.emailAddress;
+        } catch {
+          /* ignore */
+        }
+      }
+      if (isSelfSendEmail(resolvedFrom, body.email.to)) {
+        return NextResponse.json(
+          {
+            error: `Self-send blocked: sender (${resolvedFrom}) and recipient (${body.email.to}) are identical. Test deliverability using a separate external inbox.`,
+          },
+          { status: 400 },
+        );
+      }
+
+      // 2. Hard Qualification, Kill-Switch & Suppression Firewall when linked to a campaign/lead
+      let isColdTouch = true;
+      if (supabaseServer && (tracking?.leadId || tracking?.messageId)) {
+        let leadRow: Partial<Lead> | null = null;
+        let campRow: Partial<Campaign> | null = null;
+        let msgKind = "initial";
+
+        if (tracking.messageId) {
+          const { data: msgData } = await supabaseServer
+            .from("messages")
+            .select("lead_id, campaign_id, kind")
+            .eq("owner_id", user.ownerId)
+            .eq("id", tracking.messageId)
+            .maybeSingle();
+          const msgObj = msgData as { lead_id?: string; campaign_id?: string; kind?: string } | null;
+          if (msgObj?.kind) msgKind = msgObj.kind;
+          const targetLeadId = tracking.leadId ?? msgObj?.lead_id;
+          if (targetLeadId) {
+            const { data: lData } = await supabaseServer
+              .from("leads")
+              .select("*")
+              .eq("owner_id", user.ownerId)
+              .eq("id", targetLeadId)
+              .maybeSingle();
+            leadRow = (lData as Partial<Lead> | null) ?? null;
+          }
+          const campId = msgObj?.campaign_id ?? leadRow?.campaign_id;
+          if (campId) {
+            const { data: cData } = await supabaseServer
+              .from("campaigns")
+              .select("id, config, status")
+              .eq("owner_id", user.ownerId)
+              .eq("id", campId)
+              .maybeSingle();
+            campRow = (cData as Partial<Campaign> | null) ?? null;
+          }
+        } else if (tracking.leadId) {
+          const { data: lData } = await supabaseServer
+            .from("leads")
+            .select("*")
+            .eq("owner_id", user.ownerId)
+            .eq("id", tracking.leadId)
+            .maybeSingle();
+          leadRow = (lData as Partial<Lead> | null) ?? null;
+        }
+
+        isColdTouch = msgKind !== "reply";
+        const { data: supRows } = await supabaseServer
+          .from("suppressions")
+          .select("email")
+          .eq("owner_id", user.ownerId);
+        const supList = ((supRows ?? []) as { email: string }[]).map((r) => r.email);
+
+        if (leadRow && isColdTouch) {
+          const gate = evaluateLeadSendEligibility({
+            lead: leadRow,
+            campaign: campRow,
+            senderEmail: resolvedFrom,
+            suppressedEmails: supList,
+          });
+          if (!gate.eligible) {
+            return NextResponse.json(
+              { error: gate.reason || "Prospect failed qualification or deliverability gate.", code: gate.code },
+              { status: 400 },
+            );
+          }
+        }
+      }
+
+      // 3. Sending-Tier Deliverability Enforcement
+      const sendingTier = resolveUserSendingTier(resolvedFrom);
+      const delivCheck = checkSendingTierDeliverability({
+        tier: sendingTier,
+        subject: body.email.subject,
+        body: body.email.body,
+        isColdTouch1: isColdTouch,
+      });
+
+      const enforcePlainText =
+        Boolean(body.email.plainTextOnly) || (delivCheck.preferPlainText && isColdTouch);
+
       // The pixel has to point at a public origin. A leftover localhost value
       // in NEXT_PUBLIC_APP_URL (common when copying .env.example) would embed
       // an unreachable URL in every email and no open would ever be recorded.
@@ -141,14 +250,18 @@ export async function POST(req: NextRequest) {
       const usableOrigin = /^https?:\/\//i.test(configuredOrigin) && !/localhost|127\.0\.0\.1|0\.0\.0\.0/i.test(configuredOrigin);
       const publicOrigin = (usableOrigin ? configuredOrigin : req.nextUrl.origin).replace(/\/$/, "");
       const pixelUrl =
-        tracking?.enabled !== false && tracking?.messageId
+        !enforcePlainText && tracking?.enabled !== false && tracking?.messageId
           ? buildOpenPixelUrl(publicOrigin, {
               ownerId: user.ownerId,
               messageId: tracking.messageId,
               leadId: tracking.leadId ?? null,
             })
           : null;
-      const raw = buildRawEmail({ ...body.email, openPixelUrl: pixelUrl });
+      const raw = buildRawEmail({
+        ...body.email,
+        openPixelUrl: pixelUrl,
+        plainTextOnly: enforcePlainText,
+      });
       const sent = await gmailFetch<{ id: string; threadId: string }>(token, "/messages/send", {
         method: "POST",
         body: JSON.stringify({
@@ -156,7 +269,12 @@ export async function POST(req: NextRequest) {
           ...(body.email.threadId ? { threadId: body.email.threadId } : {}),
         }),
       });
-      return NextResponse.json(sent);
+      return NextResponse.json({
+        ...sent,
+        sendingTier,
+        plainTextOnly: enforcePlainText,
+        deliverabilityWarnings: delivCheck.warnings,
+      });
     }
 
     if (body.action === "findSentByRfc") {

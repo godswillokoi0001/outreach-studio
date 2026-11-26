@@ -10,7 +10,7 @@ export const maxDuration = 60;
 
 export async function POST(req: NextRequest) {
   try {
-    await verifyRequest(req);
+    const user = await verifyRequest(req);
     const aiConfig = await resolveAiConfigForRequest(req);
     const body = (await req.json()) as {
       recommendation?: GrowthRecommendation | null;
@@ -24,6 +24,7 @@ export async function POST(req: NextRequest) {
 
     const blueprint = await runWithAiConfig(aiConfig, () =>
       executeRecommendationServer({
+        ownerId: user.ownerId,
         recommendation: body.recommendation ?? null,
         overallStrategy: body.overallStrategy,
         profile: body.profile,

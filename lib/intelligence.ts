@@ -1,8 +1,15 @@
 import { Type, type Schema } from "@google/genai";
+import { buildOrchestratedSystemPrompt, stripUnresolvedPlaceholders } from "./ai/orchestrator";
+import { addBusinessDaysIso, mapReplyClassMeta, type ReplyClassCode, type ReplySequenceAction } from "./guardrails";
 import { geminiGroundedJSON, geminiJSON } from "./gemini";
-import type { CampaignConfig, Lead, Settings } from "./types";
+import { cleanEmailText } from "./outreach-utils";
+import type { CampaignConfig, Lead, Message, Settings } from "./types";
 
 export interface ReplyAnalysis {
+  reply_class: ReplyClassCode;
+  sequence_action: ReplySequenceAction;
+  snooze_until: string | null;
+  suggested_reply: string;
   classification:
     | "interested"
     | "more_info"
@@ -22,27 +29,45 @@ export interface ReplyAnalysis {
 const REPLY_SCHEMA: Schema = {
   type: Type.OBJECT,
   properties: {
-    classification: {
+    reply_class: {
       type: Type.STRING,
-      enum: [
-        "interested",
-        "more_info",
-        "pricing",
-        "objection",
-        "not_interested",
-        "referral",
-        "out_of_office",
-        "unsubscribe",
-        "other",
-      ],
+      enum: ["R1", "R2", "R3", "R4", "R5", "R6", "R7", "R8"],
+      description: "Module 4 8-Class Reply Routing Matrix category",
+    },
+    sequence_action: {
+      type: Type.STRING,
+      enum: ["PAUSE", "SNOOZE", "STOP", "GLOBAL_SUPPRESS"],
+    },
+    snooze_until: {
+      type: Type.STRING,
+      description: "ISO date YYYY-MM-DD (Return Date + 2 business days) for R5 OOO, or empty string",
+    },
+    suggested_reply: {
+      type: Type.STRING,
+      description: "Short same-thread response following Module 4 (A-C-A or Voss empathy) & Module 2 plain-English rules, or empty string for R5 OOO",
     },
     summary: { type: Type.STRING },
     recommended_action: { type: Type.STRING },
-    draft_reply: { type: Type.STRING, description: "A short suggested reply in the sender's voice, or empty string" },
-    suppress: { type: Type.BOOLEAN, description: "True only for an opt-out or hostile request to stop contact" },
   },
-  required: ["classification", "summary", "recommended_action", "draft_reply", "suppress"],
+  required: [
+    "reply_class",
+    "sequence_action",
+    "snooze_until",
+    "suggested_reply",
+    "summary",
+    "recommended_action",
+  ],
 };
+
+const REPLY_TASK = `Execute Workflow C (handle_reply) using Module 4 (8-Class Reply Triage, A-C-A Conversion, Voss Tactical Empathy, Objection Playbooks, Quoting Ethics, and Platform Governance) and Module 2 (Voice, Plain English, Zero AI-Slop, Zero Fabrication).
+
+Strict Output Rules:
+1. Classify into ONE strict Module 4 class: R1 (Hot/Positive), R2 (Curiosity/Question), R3 (Soft Objection/Stall), R4 (Referral/Redirect), R5 (Out-of-Office auto-responder), R6 (Peer/Non-buyer/Reverse pitch), R7 (Polite Decline "No"), R8 (Hard Opt-Out/Hostile).
+2. Enforce sequence_action: R1-R4 & R6 -> PAUSE; R5 -> SNOOZE; R7 -> STOP; R8 -> GLOBAL_SUPPRESS.
+3. For R5 (OOO): set snooze_until to Return Date + 2 business days (YYYY-MM-DD) and set suggested_reply = "" (empty string).
+4. For R1: use Hormozi's A-C-A framework (Acknowledge, Compliment, Ask 2-3 micro-questions max) on the same thread.
+5. For R3: use Chris Voss Tactical Empathy (Label calmly + calibrated What/How question or Phase-1 scope adjustment; never slash price arbitrarily or argue).
+6. Never fabricate pricing or deliverables not in USER_OFFER / Knowledge Base. Strip/omit any {{...}} placeholders — ZERO raw tags allowed.`;
 
 export async function analyseReplyServer(
   replyText: string,
@@ -50,31 +75,75 @@ export async function analyseReplyServer(
   settings: Settings,
   knowledge: string,
   model?: string,
+  options?: { ownerId?: string; threadMessages?: Message[] },
 ): Promise<ReplyAnalysis> {
-  const system = `You classify replies to B2B cold outreach for a web design and digital services business, then draft the operator's next answer.
+  const orchestrated = await buildOrchestratedSystemPrompt({
+    workflow: "handle_reply",
+    ownerId: options?.ownerId ?? lead.ownerId ?? null,
+    settings,
+    knowledgeDigest: knowledge,
+    taskInstructions: REPLY_TASK,
+  });
 
-BUSINESS KNOWLEDGE BASE
-${knowledge}
+  const threadHistory = (options?.threadMessages ?? [])
+    .filter((m) => m.status === "sent" || m.kind === "reply")
+    .sort((a, b) => (a.sent_at ?? a.created_at).localeCompare(b.sent_at ?? b.created_at))
+    .slice(-10)
+    .map(
+      (m) =>
+        `[${m.sent_at?.slice(0, 10) || m.created_at.slice(0, 10)} | ${m.kind.toUpperCase()}]\nSubject: ${m.subject ?? "(no subject)"}\n${m.body ?? ""}`,
+    )
+    .join("\n\n---\n\n");
 
-Rules for the suggested reply:
-- Write as ${settings.sender_name || "the sender"} in a calm, professional, relationship-first voice. 40-90 words.
-- Never state or estimate prices. The knowledge base contains no confirmed pricing. If they ask about cost, explain you will scope it properly after understanding their needs, and suggest a short call.
-- If they are not interested, be gracious, leave the door open, and keep it to two sentences.
-- If they refer you to someone else, thank them and ask whether you may contact that person.
-- If it is an out-of-office, draft_reply must be an empty string.
-- Never invent facts about their business. Never promise results.`;
+  const user = `PROSPECT: ${lead.business ?? "unknown business"} (contact: ${lead.contact_name ?? "unknown"}; role: ${lead.role ?? "unknown"}; industry: ${lead.industry ?? "unknown"}; email: ${lead.email ?? "unknown"})
+SENDER IDENTITY: ${settings.sender_name || "the sender"}${settings.sender_role ? `, ${settings.sender_role}` : ""}${settings.sender_company ? ` at ${settings.sender_company}` : ""}
 
-  const user = `PROSPECT: ${lead.business ?? "unknown business"} (contact: ${lead.contact_name ?? "unknown"}; industry: ${lead.industry ?? "unknown"})
+${threadHistory ? `PRIOR CONVERSATION THREAD\n${threadHistory}\n\n` : ""}LATEST INCOMING REPLY RECEIVED
+${replyText.slice(0, 6000)}
 
-REPLY RECEIVED
-${replyText.slice(0, 6000)}`;
+Run Workflow C (handle_reply) and return JSON with reply_class, sequence_action, snooze_until, suggested_reply, summary, and recommended_action.`;
 
-  return geminiJSON<ReplyAnalysis>({
-    system,
+  const raw = await geminiJSON<{
+    reply_class?: ReplyClassCode;
+    sequence_action?: ReplySequenceAction;
+    snooze_until?: string | null;
+    suggested_reply?: string;
+    summary?: string;
+    recommended_action?: string;
+  }>({
+    system: orchestrated.system,
     user,
     schema: REPLY_SCHEMA,
     model,
   });
+
+  const validClass: ReplyClassCode =
+    raw.reply_class && /^R[1-8]$/.test(raw.reply_class) ? raw.reply_class : "R2";
+  const mapped = mapReplyClassMeta(validClass);
+  const rawSnooze = typeof raw.snooze_until === "string" ? raw.snooze_until.trim() : "";
+  const snoozeUntil =
+    validClass === "R5"
+      ? /^\d{4}-\d{2}-\d{2}/.test(rawSnooze)
+        ? rawSnooze.slice(0, 10)
+        : addBusinessDaysIso(new Date().toISOString().slice(0, 10), 4)
+      : null;
+
+  const cleanedReply =
+    validClass === "R5"
+      ? ""
+      : cleanEmailText(stripUnresolvedPlaceholders(String(raw.suggested_reply ?? "")));
+
+  return {
+    reply_class: validClass,
+    sequence_action: mapped.sequence_action,
+    snooze_until: snoozeUntil,
+    suggested_reply: cleanedReply,
+    classification: mapped.legacy_classification,
+    summary: String(raw.summary ?? "").trim() || `Classified as ${validClass}`,
+    recommended_action: String(raw.recommended_action ?? "").trim() || mapped.sequence_action,
+    draft_reply: cleanedReply,
+    suppress: mapped.suppress,
+  };
 }
 
 export interface CampaignPlan {
@@ -134,6 +203,7 @@ const PLAN_SCHEMA: Schema = {
 export async function planCampaignServer(
   instruction: string,
   context: {
+    ownerId?: string;
     settings: Settings;
     knowledge: string;
     availableLeads: { total: number; byStatus: Record<string, number>; industries: string[] };
@@ -141,22 +211,30 @@ export async function planCampaignServer(
   },
   model?: string,
 ): Promise<CampaignPlan> {
-  const system = `You turn a business owner's plain-English instruction into a precise outreach campaign configuration for a web design / digital services business.
+  const taskInstructions = `Turn the operator's plain-English instruction into a structured outreach campaign configuration grounded in the Global Brain and Active User Business Profile.
 
 Decide sensibly, never invent requirements:
 - lead_count: how many prospects to process (default 25, cap 200).
 - send_limit: never above the owner's campaign limit of ${context.settings.campaign_limit} and never above the daily limit of ${context.settings.daily_limit}.
-- interval_seconds: at least 30 for cold outreach; respect Gmail limits.
-- min_score: 55 by default; raise it when the operator asks for the strongest opportunities, lower it to 45 when they want volume.
-- services: choose from website redesign, business website development, landing page, e-commerce website, brand identity, graphic design, video editing, social media content, digital presence audit, website maintenance.
-- identity: "company" when the operator speaks as the business ("we", "our team"); "personal" when they speak as an individual ("I", "my work").
-- auto_approve_initial must stay false unless the operator explicitly says emails may be sent without review.
+- interval_seconds: at least 30 for cold outreach; respect Gmail limits and USER_SENDING_TIER.
+- min_score: 65 by default (Module 1 Tier B+ threshold); raise to 75-80 when asking for top targets, lower only if explicitly requested.
+- services: align strictly with USER_OFFER and USER_EXCLUSIONS (never recommend excluded work).
+- identity: "company" when speaking as the business ("we", "our team"); "personal" when speaking as an individual ("I", "my work").
+- auto_approve_initial must stay false unless explicitly waived.
 - require_approval true unless explicitly waived.
-- followup_days: sensible gaps in days, e.g. [4, 9].
-- extra_instructions: any specific guidance worth carrying into copywriting (industry nuance, tone, what to avoid). Never include secrets.
-- warnings: mention anything ambiguous, unsupported or risky.
+- followup_days: sensible gaps in days matching Module 3 cadence, e.g. [4, 9].
+- extra_instructions: concrete copy/targeting nuance without secrets.
+- warnings: flag anything ambiguous, excluded, or risky.
 
 The summary must state the plan concretely: how many prospects, which segment, what research, what service, who signs, and that nothing sends without approval.`;
+
+  const orchestrated = await buildOrchestratedSystemPrompt({
+    workflow: "plan_campaign",
+    ownerId: context.ownerId ?? null,
+    settings: context.settings,
+    knowledgeDigest: context.knowledge,
+    taskInstructions,
+  });
 
   const user = `OPERATOR INSTRUCTION
 "${instruction}"
@@ -167,13 +245,10 @@ Daily sending limit: ${context.settings.daily_limit}. Campaign limit: ${context.
 Leads in database: ${context.availableLeads.total}
 Leads by status: ${JSON.stringify(context.availableLeads.byStatus)}
 Known industries in the database: ${context.availableLeads.industries.slice(0, 25).join(", ") || "(none)"}
-Recent campaigns: ${context.recentCampaigns.map((c) => `${c.name} (${c.status})`).join(", ") || "(none)"}
-
-BUSINESS KNOWLEDGE BASE
-${context.knowledge}`;
+Recent campaigns: ${context.recentCampaigns.map((c) => `${c.name} (${c.status})`).join(", ") || "(none)"}`;
 
   return geminiJSON<CampaignPlan>({
-    system,
+    system: orchestrated.system,
     user,
     schema: PLAN_SCHEMA,
     model,
@@ -288,6 +363,7 @@ export interface DiscoveryCandidate {
 }
 
 export async function discoverProspectsServer(input: {
+  ownerId?: string;
   industry: string;
   location: string;
   count: number;
@@ -296,47 +372,48 @@ export async function discoverProspectsServer(input: {
   model?: string;
 }): Promise<{ candidates: DiscoveryCandidate[]; notes: string; groundingUrls: { uri: string; title: string }[] }> {
   const today = new Date().toISOString().slice(0, 10);
-  const system = `You find real businesses that could plausibly need web design, redesign, branding, SEO or video services, using Google Search.
+  const taskInstructions = `Find real businesses matching USER_OFFER, USER_ICP, and USER_EXCLUSIONS using Google Search grounding and Module 1 (Signal-Based Prospecting, Research Waterfall & Anti-Hallucination Firewall).
 
 STRICT RESEARCH & QUALIFICATION RULES:
 1. THOROUGH RESEARCH:
    - Search for the company's official website and verified social media handles (LinkedIn, Instagram, X/Twitter, Facebook, TikTok, YouTube, and niche-specific profiles).
-   - Search for the names and job titles of real decision-makers (Owner, Founder, CEO, Managing Director, Head of Marketing, etc.).
-   - Search for verifiable business email addresses, direct/WhatsApp phone numbers, and physical business location.
-   - For every contact detail, record the exact source URL and date found (${today}).
+   - Search for the names and job titles of real decision-makers (Owner, Founder, CEO, Managing Director, Head of Marketing, etc.) per Module 1 Decision-Maker Protocol.
+   - Search for verifiable business email addresses (prefer direct individual email over role inbox), phone numbers, and location.
+   - For every contact detail, record exact source URL and date found (${today}).
 
 2. TRUTHFUL, EVIDENCE-BASED DISCOVERY:
    - NEVER invent, guess, pad, or hallucinate any data (no fake emails, phone numbers, handles, or claims).
    - If a detail cannot be verified in search results, leave it empty. The interface displays "Not found".
    - Assign verification_status: "Verified" (confirmed on official website or primary profile), "Unverified" (secondary directory), or "Not found".
-   - Every issue listed in "issues" must be concrete and directly visible from search evidence (e.g. no mobile responsiveness, broken SSL, no contact form, outdated copyright, dead social links).
+   - Every issue listed in "issues" must be concrete and directly visible from search evidence.
 
-3. STRICT QUALIFICATION & CANDID REVIEW:
-   - Evaluate against 5 core criteria:
-     1. Offer Fit: Does the business match what the sender sells?
-     2. Observed Need: Is there clear, verified evidence of a digital problem or gap?
-     3. Budget Indicators: Is this a legitimate commercial business that can pay for services?
-     4. Decision-Maker Access: Is a direct decision-maker or verified direct channel reachable?
-     5. Location & Activity: Is the business active and operating in the requested area?
-   - Each prospect must include a qualification_review:
-     - verdict: "qualified" (meets all criteria with strong evidence), "not_qualified" (failed criteria or competitor), or "uncertain" (borderline / needs review).
+3. STRICT QUALIFICATION & KILL-SWITCH REVIEW:
+   - Evaluate against Module 1 pillars: Offer Fit & Scope Safety (respect USER_EXCLUSIONS), Willingness/Ability to Pay (WTP proof), Trigger Timing, Decision-Maker Access, and Activity.
+   - Each prospect must include qualification_review:
+     - verdict: "qualified" (Tier A/B >=65 with zero kill-switches), "not_qualified" (failed criteria, low WTP, or competitor/exclusion), or "uncertain" (Tier C borderline / needs review).
      - criteria: array of { name: string, status: "met" | "not_met" | "unknown", evidence: string }.
-     - weaknesses_and_risks: list of all weaknesses, red flags, or risks stated candidly.
+     - weaknesses_and_risks: list of weaknesses, red flags, or risks stated candidly.
      - missing_information: list of unverified details or missing data.
-   - Do NOT lower standards to reach the requested count. If fewer qualified prospects exist in search results, return only those found and explain in "notes".
+   - Do NOT lower standards to reach the requested count.
 
 Output strictly valid JSON:
 {"candidates":[{"business":string,"website":string,"location":string,"industry":string,"why":string,"source_url":string,"research_notes":string,"contact":{"decision_maker":string,"role":string,"email":string,"phone":string,"whatsapp":string,"address":string,"socials":[{"platform":string,"url":string,"verification_status":"Verified"|"Unverified"|"Not found"}],"sources":[{"field":string,"url":string,"confidence":"high"|"medium"|"low","verification_status":"Verified"|"Unverified"|"Not found","date_found":string}]},"issues":[{"area":string,"problem":string,"evidence":string,"severity":"high"|"medium"|"low"}],"how_we_help":[{"issue":string,"service":string,"angle":string}],"qualification_review":{"verdict":"qualified"|"not_qualified"|"uncertain","criteria":[{"name":string,"status":"met"|"not_met"|"unknown","evidence":string}],"weaknesses_and_risks":[string],"missing_information":[string]}}],"notes":string}`;
 
+  const orchestrated = await buildOrchestratedSystemPrompt({
+    workflow: "research_and_qualify",
+    ownerId: input.ownerId ?? null,
+    knowledgeDigest: input.knowledge,
+    taskInstructions,
+  });
+
   const user = `Find ${input.count} realistic prospects.
-Industry/segment: ${input.industry || "any business with a weak or missing website"}
-Location: ${input.location || "Nigeria"}
+Industry/segment: ${input.industry || "matching the active user's ICP and offer"}
+Location: ${input.location || "target market"}
 Additional focus: ${input.focus || "(none)"}
-${input.knowledge ? `\nBUSINESS KNOWLEDGE BASE (source of truth for services, offers and how we help)\n${input.knowledge.slice(0, 6000)}` : ""}
 
-Return ONLY valid JSON with a "candidates" array and short "notes" about how reliable the results are and which fields could not be verified.`;
+Return ONLY valid JSON with a "candidates" array and short "notes" about verification and gaps.`;
 
-  const cacheKey = JSON.stringify([input.industry, input.location, input.count, input.focus]);
+  const cacheKey = JSON.stringify([input.ownerId ?? "anon", input.industry, input.location, input.count, input.focus]);
   const cached = discoveryCache.get(cacheKey);
   if (cached && Date.now() - cached.at < DISCOVERY_CACHE_MS) {
     return cached.value;
@@ -346,7 +423,7 @@ Return ONLY valid JSON with a "candidates" array and short "notes" about how rel
     candidates: unknown[];
     notes: string;
   }>({
-    system,
+    system: orchestrated.system,
     user,
     model: input.model,
   });

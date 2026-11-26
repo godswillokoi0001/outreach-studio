@@ -11,7 +11,7 @@ export const maxDuration = 60;
 
 export async function POST(req: NextRequest) {
   try {
-    await verifyRequest(req);
+    const user = await verifyRequest(req);
     const aiConfig = await resolveAiConfigForRequest(req);
     const body = (await req.json()) as {
       profile: GrowthProfile;
@@ -25,6 +25,7 @@ export async function POST(req: NextRequest) {
 
     const report = await runWithAiConfig(aiConfig, () =>
       generateGrowthAdvisorReportServer({
+        ownerId: user.ownerId,
         profile: body.profile,
         knowledgeDigest: body.knowledgeDigest ?? "",
         settings: body.settings,

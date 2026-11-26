@@ -89,7 +89,10 @@ export function cleanEmailText(text: string): string {
     .replace(/\u00a0/g, " ")
     .replace(/^#{1,6}\s*/gm, "")
     .replace(/^\s*[•*]\s+/gm, "- ")
-    .replace(/\[(your|insert|company|name)[^\]]*\]/gi, "")
+    .replace(/\{\{\s*[^{}\r\n]{1,100}\s*\}\}/g, "")
+    .replace(/\[(your|insert|company|name|prospect_[^\]]*|user_[^\]]*)[^\]]*\]/gi, "")
+    .replace(/[ \t]{2,}/g, " ")
+    .replace(/ +([,.;:!?])/g, "$1")
     .replace(/[ \t]+$/gm, "")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
@@ -98,7 +101,10 @@ export function cleanEmailText(text: string): string {
 export function validateEmail(subject: string, body: string): string | null {
   if (!subject || subject.trim().length < 3) return "Subject line is missing or too short.";
   if (subject.length > 120) return "Subject line is too long.";
-  if (!body || body.trim().split(/\s+/).length < 25) return "Email body is too short.";
+  if (/\{\{[^}]+\}\}/.test(subject) || /\{\{[^}]+\}\}/.test(body)) {
+    return "Draft contains an unresolved {{...}} placeholder tag.";
+  }
+  if (!body || body.trim().split(/\s+/).length < 15) return "Email body is too short.";
   if (body.trim().split(/\s+/).length > 400) return "Email body is too long for cold outreach.";
   if (/\[[^\]]{2,40}\]/.test(body)) return "Email still contains an unfilled placeholder.";
   return null;
@@ -127,8 +133,10 @@ export interface RawEmailInput {
   body: string;
   rfcMessageId: string;
   inReplyTo?: string | null;
-  /** Absolute URL of the 1x1 open-tracking pixel. Omit to send plain text only. */
+  /** Absolute URL of the 1x1 open-tracking pixel. Omit to disable tracking pixel. */
   openPixelUrl?: string | null;
+  /** True for Free Gmail / Starter cold outreach to send pure text/plain. */
+  plainTextOnly?: boolean;
 }
 
 
@@ -155,6 +163,13 @@ export function buildRawEmail(input: RawEmailInput): string {
     `X-Outreach-Message-Id: ${input.rfcMessageId.replace(/[<>]/g, "")}`,
   ];
   if (input.inReplyTo) headers.push(`In-Reply-To: ${input.inReplyTo}`);
+
+  if (input.plainTextOnly) {
+    headers.push(`Content-Type: text/plain; charset="UTF-8"`);
+    headers.push(`Content-Transfer-Encoding: base64`);
+    const plain = wrapBase64(btoa(bytesToBinary(new TextEncoder().encode(formatEmailText(body)))));
+    return `${headers.join("\r\n")}\r\n\r\n${plain}`;
+  }
 
   const pixel = input.openPixelUrl
     ? `<img src="${escapeEmailHtml(input.openPixelUrl)}" width="1" height="1" alt="" style="display:block;width:1px;height:1px;border:0;opacity:0;" />`

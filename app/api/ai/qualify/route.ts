@@ -7,7 +7,7 @@ import type { CampaignConfig, Lead, ResearchResult } from "@/lib/types";
 
 export async function POST(req: NextRequest) {
   try {
-    await verifyRequest(req);
+    const user = await verifyRequest(req);
     const aiConfig = await resolveAiConfigForRequest(req);
     const body = (await req.json()) as {
       lead?: Lead;
@@ -25,9 +25,10 @@ export async function POST(req: NextRequest) {
         body.lead!,
         body.research ?? null,
         body.campaign!,
-        Number(body.minScore ?? body.campaign!.min_score ?? 55),
+        Number(body.minScore ?? body.campaign!.min_score ?? 65),
         body.knowledge ?? "",
         body.model,
+        { ownerId: user.ownerId },
       ),
     );
     return NextResponse.json({ qualification });

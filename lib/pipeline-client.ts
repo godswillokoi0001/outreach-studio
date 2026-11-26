@@ -22,9 +22,17 @@ import {
   recordReply,
   recordSendSuccess,
   updateLeadFields,
+  updateMessageStatus,
   writeAuditLog,
   writeLeadEvent,
 } from "./store";
+import {
+  checkSendingTierDeliverability,
+  DEFAULT_CAMPAIGN_MIN_SCORE,
+  evaluateLeadSendEligibility,
+  findCancellableFollowupMessageIds,
+  resolveUserSendingTier,
+} from "./guardrails";
 import { checkSendWindow, createRfcMessageId, findFollowupCandidatesFromData } from "./outreach-utils";
 import type { ComposedEmail } from "./compose";
 import type { ReplyAnalysis } from "./intelligence";
@@ -162,7 +170,7 @@ export async function runQualifyBatch(
         identity: "company",
         extra_instructions: "",
       };
-      const minScore = cfg.min_score ?? settings.min_score;
+      const minScore = cfg.min_score ?? settings.min_score ?? DEFAULT_CAMPAIGN_MIN_SCORE;
       const { qualification } = await authedPost<{ qualification: QualificationResult }>(
         "/api/ai/qualify",
         {
@@ -174,12 +182,18 @@ export async function runQualifyBatch(
           model: settings.model,
         },
       );
+      const killSwitchHit =
+        Boolean(qualification.kill_switch_triggered) ||
+        qualification.tier === "DISQUALIFIED" ||
+        qualification.category === "not_qualified";
       const nextStatus =
-        qualification.category === "needs_research"
-          ? "needs_research"
-          : qualification.score >= minScore && qualification.category !== "not_qualified"
-            ? "qualified"
-            : "disqualified";
+        killSwitchHit
+          ? "disqualified"
+          : qualification.category === "needs_research"
+            ? "needs_research"
+            : qualification.score >= minScore
+              ? "qualified"
+              : "disqualified";
 
       await updateLeadFields(uid, lead.id, {
         score: qualification.score,
@@ -254,6 +268,21 @@ export async function runComposeBatch(
     const campaign = lead.campaign_id ? campaignMap.get(lead.campaign_id) : undefined;
     if (!campaign) {
       errors.push(`${lead.business ?? lead.id}: assign prospect to a campaign first.`);
+      continue;
+    }
+    // Phase 5 Hard Qualification Gate before drafting/queuing
+    const gate = evaluateLeadSendEligibility({
+      lead,
+      campaign,
+      minScore: campaign.config.min_score ?? settings.min_score ?? DEFAULT_CAMPAIGN_MIN_SCORE,
+      senderEmail: settings.sender_email,
+      suppressedEmails: suppressedSet,
+    });
+    if (!gate.eligible) {
+      errors.push(`${lead.business ?? lead.email ?? lead.id}: ${gate.reason}`);
+      if (gate.code === "SUPPRESSED") {
+        await updateLeadFields(uid, lead.id, { status: "suppressed" });
+      }
       continue;
     }
     try {
@@ -500,6 +529,22 @@ export async function runSendBatch(
     { requireWorkspace: true },
   );
   const senderEmail = settings.sender_email?.trim() || profile.emailAddress;
+  const sendingTier = resolveUserSendingTier(senderEmail);
+  const tierQuotaCheck = checkSendingTierDeliverability({
+    tier: sendingTier,
+    configuredDailyLimit: settings.daily_limit,
+    sendsTodayCount: quota.sendsTodayCount,
+  });
+  const effectiveRemainingDaily = tierQuotaCheck.effectiveDailyCap - quota.sendsTodayCount;
+  if (effectiveRemainingDaily <= 0) {
+    return {
+      processed: 0,
+      remaining: queue.length,
+      details: [],
+      errors: [],
+      info: `Daily send limit reached (${tierQuotaCheck.effectiveDailyCap}/day for ${sendingTier === "free_gmail_starter" ? "Free Gmail Starter" : "Custom Domain"}).`,
+    };
+  }
 
   const sentPerCampaign = new Map<string, number>();
   for (const m of messages) {
@@ -508,7 +553,7 @@ export async function runSendBatch(
     }
   }
 
-  const batch = queue.slice(0, Math.min(limit, remainingDaily));
+  const batch = queue.slice(0, Math.min(limit, effectiveRemainingDaily));
   const details: string[] = [];
   const errors: string[] = [];
   let processed = 0;
@@ -521,20 +566,37 @@ export async function runSendBatch(
       errors.push(`${lead?.business ?? msg.lead_id}: missing email address.`);
       continue;
     }
-    if (suppressedSet.has(lead.email.toLowerCase())) {
-      await markMessageFailed(uid, msg.id, "Email address is on suppression list.");
-      await updateLeadFields(uid, lead.id, { status: "suppressed" });
+    const camp = msg.campaign_id ? campaignMap.get(msg.campaign_id) ?? null : null;
+    const gate = evaluateLeadSendEligibility({
+      lead,
+      campaign: camp,
+      minScore: camp?.config.min_score ?? settings.min_score ?? DEFAULT_CAMPAIGN_MIN_SCORE,
+      senderEmail,
+      suppressedEmails: suppressedSet,
+    });
+    if (!gate.eligible) {
+      await markMessageFailed(uid, msg.id, gate.reason ?? "Blocked by qualification/deliverability guardrail.");
+      if (gate.code === "SUPPRESSED") {
+        await updateLeadFields(uid, lead.id, { status: "suppressed" });
+      }
+      errors.push(`${lead.business ?? lead.email}: ${gate.reason}`);
       continue;
     }
-    if (msg.campaign_id) {
-      const camp = campaignMap.get(msg.campaign_id);
-      const cap = camp?.config.send_limit ?? settings.campaign_limit;
-      const used = sentPerCampaign.get(msg.campaign_id) ?? 0;
+    if (camp) {
+      const cap = camp.config.send_limit ?? settings.campaign_limit;
+      const used = sentPerCampaign.get(msg.campaign_id!) ?? 0;
       if (used >= cap) {
-        errors.push(`Campaign limit (${cap}) reached for ${camp?.name ?? msg.campaign_id}.`);
+        errors.push(`Campaign limit (${cap}) reached for ${camp.name ?? msg.campaign_id}.`);
         continue;
       }
     }
+
+    const msgDeliv = checkSendingTierDeliverability({
+      tier: sendingTier,
+      subject: msg.subject,
+      body: msg.body,
+      isColdTouch1: msg.kind === "initial",
+    });
 
     const rfcMessageId = createRfcMessageId(msg.id, senderEmail);
     const previousSent = messages
@@ -543,7 +605,7 @@ export async function runSendBatch(
 
     try {
       await markMessageSending(uid, msg.id, rfcMessageId);
-      const sent = await authedPost<{ id: string; threadId: string }>(
+      const sent = await authedPost<{ id: string; threadId: string; deliverabilityWarnings?: string[] }>(
         "/api/workspace/gmail",
         {
           action: "send",
@@ -556,7 +618,8 @@ export async function runSendBatch(
             rfcMessageId,
             inReplyTo: msg.kind === "followup" ? previousSent?.rfc_message_id ?? null : null,
             threadId: msg.kind === "followup" ? previousSent?.thread_id ?? null : null,
-            tracking: { enabled: true, messageId: msg.id, leadId: lead.id },
+            plainTextOnly: msgDeliv.preferPlainText,
+            tracking: { enabled: !msgDeliv.preferPlainText, messageId: msg.id, leadId: lead.id },
           },
         },
         { requireWorkspace: true },
@@ -566,7 +629,8 @@ export async function runSendBatch(
         sentPerCampaign.set(msg.campaign_id, (sentPerCampaign.get(msg.campaign_id) ?? 0) + 1);
       }
       processed += 1;
-      details.push(`Sent to ${lead.email}`);
+      const warnSuffix = msgDeliv.warnings.length ? ` (Warning: ${msgDeliv.warnings[0]})` : "";
+      details.push(`Sent to ${lead.email}${warnSuffix}`);
       if (i < batch.length - 1) {
         await sleep(settings.interval_seconds * 1000);
       }
@@ -611,10 +675,8 @@ export async function sendMessageNow(
 
   const lead = leads.find((l) => l.id === msg.lead_id);
   if (!lead?.email) throw new Error("This prospect has no email address.");
-  if (suppressions.some((s) => s.email.toLowerCase() === lead.email!.toLowerCase())) {
-    throw new Error("This address is on the suppression list.");
-  }
 
+  let sendCamp: Campaign | null = null;
   if (msg.campaign_id) {
     const camp = campaigns.find((c) => c.id === msg.campaign_id);
     if (camp && camp.status !== "approved" && camp.status !== "running") {
@@ -622,11 +684,7 @@ export async function sendMessageNow(
         `Campaign "${camp.name}" is ${camp.status}. Approve or resume it before sending its emails.`,
       );
     }
-  }
-
-  const quota = await getSendQuotaState(uid, settings);
-  if (settings.daily_limit - quota.sendsTodayCount <= 0) {
-    throw new Error(`Daily send limit reached (${settings.daily_limit}/day).`);
+    sendCamp = camp ?? null;
   }
 
   const profile = await authedPost<{ emailAddress: string }>(
@@ -635,6 +693,32 @@ export async function sendMessageNow(
     { requireWorkspace: true },
   );
   const senderEmail = settings.sender_email?.trim() || profile.emailAddress;
+
+  const gate = evaluateLeadSendEligibility({
+    lead,
+    campaign: sendCamp,
+    minScore: sendCamp?.config.min_score ?? settings.min_score ?? DEFAULT_CAMPAIGN_MIN_SCORE,
+    senderEmail,
+    suppressedEmails: suppressions.map((s) => s.email),
+  });
+  if (!gate.eligible) {
+    throw new Error(gate.reason || "Prospect is blocked from sending by qualification/deliverability guardrails.");
+  }
+
+  const quota = await getSendQuotaState(uid, settings);
+  const sendingTier = resolveUserSendingTier(senderEmail);
+  const delivCheck = checkSendingTierDeliverability({
+    tier: sendingTier,
+    subject: msg.subject,
+    body: msg.body,
+    configuredDailyLimit: settings.daily_limit,
+    sendsTodayCount: quota.sendsTodayCount,
+    isColdTouch1: msg.kind === "initial",
+  });
+  if (delivCheck.dailyCapExceeded) {
+    throw new Error(`Daily send limit reached (${delivCheck.effectiveDailyCap}/day).`);
+  }
+
   const rfcMessageId = createRfcMessageId(msg.id, senderEmail);
   const previousSent = messages
     .filter((m) => m.lead_id === lead.id && m.status === "sent")
@@ -655,13 +739,15 @@ export async function sendMessageNow(
           rfcMessageId,
           inReplyTo: msg.kind === "followup" ? previousSent?.rfc_message_id ?? null : null,
           threadId: msg.kind === "followup" ? previousSent?.thread_id ?? null : null,
-          tracking: { enabled: true, messageId: msg.id, leadId: lead.id },
+          plainTextOnly: delivCheck.preferPlainText,
+          tracking: { enabled: !delivCheck.preferPlainText, messageId: msg.id, leadId: lead.id },
         },
       },
       { requireWorkspace: true },
     );
     await recordSendSuccess(uid, msg, lead, sent.id, sent.threadId);
-    return { processed: 1, info: `Sent to ${lead.email}.` };
+    const warnNote = delivCheck.warnings.length ? ` Deliverability note: ${delivCheck.warnings[0]}` : "";
+    return { processed: 1, info: `Sent to ${lead.email}.${warnNote}` };
   } catch (err) {
     const text = errorMessage(err);
     await markMessageFailed(uid, msg.id, text);
@@ -772,13 +858,19 @@ export async function runSyncBatch(uid: string, limit = 15): Promise<BatchResult
         leadByThread.get(full.threadId);
       if (!matchedLead) continue;
 
+      const leadThreadMsgs = messages.filter((m) => m.lead_id === matchedLead.id);
       const { analysis } = await authedPost<{ analysis: ReplyAnalysis }>("/api/ai/analyse-reply", {
         replyText: full.body || full.snippet,
         lead: matchedLead,
         settings,
         knowledge,
         model: settings.model,
+        threadMessages: leadThreadMsgs,
       });
+
+      const actionTag = `[${analysis.reply_class} · ${analysis.sequence_action}${
+        analysis.snooze_until ? ` until ${analysis.snooze_until}` : ""
+      }]`;
 
       await recordReply(uid, {
         lead_id: matchedLead.id,
@@ -791,22 +883,39 @@ export async function runSyncBatch(uid: string, limit = 15): Promise<BatchResult
         received_at: receivedAt,
         classification: analysis.classification,
         summary: analysis.summary,
-        recommended_action: analysis.recommended_action,
-        draft_reply: analysis.draft_reply,
+        recommended_action: `${actionTag} ${analysis.recommended_action}`.trim(),
+        draft_reply: analysis.suggested_reply ?? analysis.draft_reply,
       });
 
-      const isUnsub = analysis.suppress || analysis.classification === "unsubscribe";
+      // Halt or snooze unsent active follow-ups for this prospect immediately
+      const cancellableIds = findCancellableFollowupMessageIds(messages, matchedLead.id);
+      for (const msgId of cancellableIds) {
+        await updateMessageStatus(uid, msgId, "cancelled", {
+          error:
+            analysis.sequence_action === "SNOOZE" && analysis.snooze_until
+              ? `Snoozed until ${analysis.snooze_until} (${analysis.reply_class})`
+              : `Stopped by reply triage (${analysis.reply_class} -> ${analysis.sequence_action})`,
+        });
+      }
+
+      const isUnsub =
+        analysis.sequence_action === "GLOBAL_SUPPRESS" ||
+        analysis.suppress ||
+        analysis.classification === "unsubscribe";
       await updateLeadFields(uid, matchedLead.id, {
         status: isUnsub ? "unsubscribed" : "replied",
       });
       if (isUnsub && matchedLead.email_norm) {
-        await addSuppression(uid, matchedLead.email_norm, "Unsubscribed via reply");
+        await addSuppression(uid, matchedLead.email_norm, `Opt-out (${analysis.reply_class})`);
       }
       await writeLeadEvent(uid, matchedLead.id, "reply_received", {
         classification: analysis.classification,
+        reply_class: analysis.reply_class,
+        sequence_action: analysis.sequence_action,
+        snooze_until: analysis.snooze_until,
       });
       processed += 1;
-      details.push(`Reply from ${matchedLead.business ?? matchedLead.email} (${analysis.classification})`);
+      details.push(`Reply from ${matchedLead.business ?? matchedLead.email} (${analysis.reply_class} -> ${analysis.sequence_action})`);
     } catch (err) {
       errors.push(errorMessage(err));
       if (isQuotaError(err)) break;

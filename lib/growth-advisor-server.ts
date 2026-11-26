@@ -1,3 +1,4 @@
+import { buildOrchestratedSystemPrompt, stripUnresolvedPlaceholders } from "./ai/orchestrator";
 import { geminiGroundedJSON } from "./gemini";
 import {
   type ExecutedCampaignBlueprint,
@@ -38,6 +39,7 @@ function normalizeImpact(raw: unknown): ImpactRating {
 }
 
 export async function generateGrowthAdvisorReportServer(input: {
+  ownerId?: string;
   profile: GrowthProfile;
   knowledgeDigest: string;
   settings: Settings;
@@ -49,36 +51,31 @@ export async function generateGrowthAdvisorReportServer(input: {
   const today = new Date().toISOString().slice(0, 10);
   const hasAnalytics = Boolean(input.analyticsInsight);
 
-  const system = `You are a Principal B2B Growth Advisor and Market Intelligence Strategist.
+  const taskInstructions = `You are a Principal B2B Growth Advisor and Market Intelligence Strategist.
 Today's date is ${today}.
-Your job is to search the live web using Google Search grounding and deliver actionable, evidence-backed growth recommendations specifically tailored to the user's business profile, price point, location, and real past campaign performance.
+Search the live web using Google Search grounding and deliver actionable, evidence-backed growth recommendations specifically tailored to the Active User's business profile, price point, location, and past campaign performance — following Modules 1-3 strictly (signal-based WTP, copywriting psychology, and routing cadence).
 
 MANDATORY RESEARCH RULES:
-1. Search the web for what is actually working right now in ${today.slice(0, 4)} for businesses matching the user's profile and offer (e.g., demand trends by city/region, high-intent buyer segments, outreach angles/subject lines getting replies, best outreach channels & send timing).
+1. Search the web for what is actually working right now in ${today.slice(0, 4)} for businesses matching the user's profile and offer.
 2. Ground every recommendation in real reasoning AND include a real, verifiable sourceUrl + sourceTitle from your search results. Never fabricate URLs.
-3. Cover ALL 5 recommendation categories:
-   - "location": High-demand target cities, regions, or markets for this specific offer & price tier.
-   - "niche": Specific buyer niches & micro-segments showing active demand and budget.
-   - "messaging": High-converting outreach angles, hooks, subject lines, and value offers.
-   - "channels_timing": Best channels (Email, LinkedIn, Phone, Multi-channel) and optimal days/times.
-   - "offer_strategy": Offer positioning, pricing adjustments, risk-reversal guarantees, or lead magnets that increase conversion.
-4. Rate each recommendation honestly with impact ("high" | "medium" | "low") and confidence (0-100), and assign priorityOrder (1 = highest impact & confidence to execute first).
+3. Cover ALL 5 recommendation categories: location, niche, messaging, channels_timing, offer_strategy.
+4. Rate each recommendation honestly with impact ("high" | "medium" | "low") and confidence (0-100), and assign priorityOrder.
 5. ${
     hasAnalytics
-      ? "The user has just run or has campaign analytics. Populate postAnalysisInsights summarizing what worked, what didn't work in the measured numbers, and concrete next moves, and flag relevant recommendations with basedOnAnalytics: true."
+      ? "Populate postAnalysisInsights summarizing what worked, what didn't work in the measured numbers, and concrete next moves, flagging relevant recommendations with basedOnAnalytics: true."
       : "If past campaigns exist in metricsSummary, factor them in honestly. Do not invent metrics."
   }
 
 Return ONLY valid JSON matching this exact structure (no markdown wrapper):
 {
-  "overallStrategy": "string (2-3 crisp sentences summarizing the overarching market thesis & immediate game plan)",
+  "overallStrategy": "string",
   "recommendations": [
     {
       "id": "rec_1",
       "category": "location | niche | messaging | channels_timing | offer_strategy",
       "title": "Actionable recommendation headline",
       "summary": "Specific recommendation tailored to their offer and price range",
-      "reason": "Short explanation of why this works for this user right now",
+      "reason": "Short explanation of why this works right now",
       "evidence": "Specific market signal, benchmark, or trend discovered from search",
       "sourceUrl": "https://...",
       "sourceTitle": "Source publication or page title",
@@ -92,11 +89,11 @@ Return ONLY valid JSON matching this exact structure (no markdown wrapper):
         "targetAudience": "Decision-maker role & company profile",
         "angle": "Core outreach pitch angle",
         "hook": "Opening personalized hook",
-        "subjectLine": "Compelling email subject line",
-        "offer": "Specific CTA / low-friction offer",
-        "channel": "Primary & secondary channels (e.g. Cold Email + LinkedIn)",
+        "subjectLine": "Compelling 2-5 word lowercase email subject line",
+        "offer": "Specific CTA / low-friction lead magnet",
+        "channel": "Primary & secondary channels",
         "timing": "Best days & time window",
-        "goal": "Measurable campaign outcome (e.g. Book 5 qualified discovery calls)"
+        "goal": "Measurable campaign outcome"
       }
     }
   ],
@@ -107,6 +104,14 @@ Return ONLY valid JSON matching this exact structure (no markdown wrapper):
   }
 }`;
 
+  const orchestrated = await buildOrchestratedSystemPrompt({
+    workflow: "growth_advisor",
+    ownerId: input.ownerId ?? null,
+    settings: input.settings,
+    knowledgeDigest: input.knowledgeDigest,
+    taskInstructions,
+  });
+
   const user = `USER BUSINESS PROFILE:
 - Who they are: ${input.profile.whoYouAre || input.settings.sender_company || input.settings.sender_name || "Not specified"} (${input.settings.sender_role || "Founder/Operator"})
 - What they sell / do: ${input.profile.whatYouSell || "See knowledge base"}
@@ -115,9 +120,6 @@ Return ONLY valid JSON matching this exact structure (no markdown wrapper):
 - Price Range: ${input.profile.priceRange || "Not specified"}
 - Base / Target Location: ${input.profile.location || input.settings.physical_address || "Not specified"}
 - Ideal Customer Profile: ${input.profile.idealCustomer || "Not specified"}
-
-MASTER KNOWLEDGE & CONTEXT:
-${input.knowledgeDigest.slice(0, 6000) || "None provided"}
 
 PAST CAMPAIGN & ANALYTICS METRICS:
 ${JSON.stringify(input.metricsSummary, null, 2).slice(0, 4000)}
@@ -139,7 +141,7 @@ Generate 6 to 8 high-precision, diverse recommendations covering location, niche
       nextMoves?: unknown[];
     };
   }>({
-    system,
+    system: orchestrated.system,
     user,
     model: input.model,
   });
@@ -214,6 +216,7 @@ Generate 6 to 8 high-precision, diverse recommendations covering location, niche
 }
 
 export async function executeRecommendationServer(input: {
+  ownerId?: string;
   recommendation?: GrowthRecommendation | null;
   overallStrategy?: string;
   profile: GrowthProfile;
@@ -247,67 +250,27 @@ Target Location: ${input.profile.location}
 Ideal Customer: ${input.profile.idealCustomer}
 Core Offer: ${input.profile.offer}`;
 
-  const system = `You are an Elite Revenue & Outbound Execution Engine. Today is ${today}.
+  const taskInstructions = `Today is ${today}.
 The user clicked "Execute" on a Growth Advisor recommendation.
-Using live Google Search grounding, you MUST:
+Using live Google Search grounding and Modules 1-3 strictly:
 1. Build a complete, ready-to-review Campaign Plan tailored to their offer, price point (${input.profile.priceRange || "B2B"}), and target region.
 2. Search the public web right now for 5 to 8 REAL, LAWFUL, PUBLICLY LISTED B2B prospects matching this recommendation's target niche & location.
 3. For EVERY prospect:
-   - Provide ONLY factual, publicly available business details (company name, website, public email/phone if verified on their site/directory—never invent emails!, decision-maker name & role if publicly listed, sourceUrl, sourceDate = "${today}"). If email/contact name cannot be verified, leave "" (empty string) rather than guessing!
+   - Provide ONLY factual, publicly available business details (company name, website, public email/phone if verified—never invent emails!, decision-maker name & role if publicly listed, sourceUrl, sourceDate = "${today}"). Leave missing fields as ""!
    - Never include any of these already-existing emails: ${input.existingEmails.slice(0, 40).join(", ") || "none"}.
-   - Score **Buying Intent (0-100)** based on concrete signals:
-     * Budget fit (does company size/revenue match the user's price tier?)
-     * Active need (visible pain point, outdated site, missing capability, or hiring/growth gap)
-     * Recent buying behaviour / trigger (expansion, new funding, hiring, seasonal demand, tech change)
-     * Decision-maker access (publicly listed founder/owner/director contact)
-   - State the buyingIntentScore (0-100), buyingIntentLevel ("high" | "medium" | "low"), buyingIntentReasoning, and itemized signals[].
-   - Include a clear regional privacy/anti-spam complianceNote (e.g., B2B legitimate interest / CAN-SPAM / GDPR opt-out notice) and complianceChecklist for the campaign.
-4. Draft a personalized, compliant sampleEmailBody with merge fields like {{first_name}} / {{company}} and an explicit unsubscribe/opt-out instruction.
+   - Score **Buying Intent (0-100)** strictly per Module 1 WTP + Fit + Timing + Reachability.
+   - Include regional privacy/anti-spam complianceNote and complianceChecklist.
+4. Draft short, personalized Module 2/3 emails (45-95 words, plain text, zero AI slop, zero unresolved {{...}} tags when specific prospect details exist, explicit opt-out note).
 
-Return ONLY valid JSON matching this schema:
-{
-  "campaignName": "string",
-  "targetAudience": "string",
-  "targetLocation": "string",
-  "targetIndustry": "string",
-  "messagingAngle": "string",
-  "hook": "string",
-  "subjectLine": "string",
-  "sampleEmailBody": "string",
-  "channel": "string",
-  "schedule": {
-    "sendDays": "mon,tue,wed,thu,fri",
-    "windowStart": 9,
-    "windowEnd": 17,
-    "followupDays": [3, 7],
-    "dailyLimit": 25
-  },
-  "goal": "string",
-  "complianceChecklist": ["string"],
-  "prospects": [
-    {
-      "business": "Real Company Name",
-      "contactName": "Publicly listed decision maker or empty string",
-      "role": "Owner / CEO / Director or empty string",
-      "email": "Publicly verified business email or empty string",
-      "phone": "Publicly listed phone or empty string",
-      "website": "https://...",
-      "location": "City, Country",
-      "industry": "Niche",
-      "sourceUrl": "https://...",
-      "sourceDate": "${today}",
-      "buyingIntentScore": 88,
-      "buyingIntentLevel": "high | medium | low",
-      "buyingIntentReasoning": "Clear explanation of why this business is likely to buy now",
-      "signals": [
-        { "signal": "Active website gap / expansion / budget indicator", "strength": "strong | moderate | weak", "evidence": "Observed public evidence" }
-      ],
-      "complianceNote": "Public business directory / official site listing; include B2B opt-out link",
-      "draftSubject": "Personalized subject line for this prospect",
-      "draftBody": "Personalized email tailored to this prospect's observed need & offer, ending with opt-out line"
-    }
-  ]
-}`;
+Return ONLY valid JSON matching the ExecutedCampaignBlueprint schema.`;
+
+  const orchestrated = await buildOrchestratedSystemPrompt({
+    workflow: "growth_advisor",
+    ownerId: input.ownerId ?? null,
+    settings: input.settings,
+    knowledgeDigest: input.knowledgeDigest,
+    taskInstructions,
+  });
 
   const user = `USER PROFILE:
 Company/Sender: ${input.profile.whoYouAre || input.settings.sender_company || input.settings.sender_name || "Operator"} (${input.settings.sender_role || "Founder"})
@@ -318,10 +281,9 @@ Base Location: ${input.profile.location || input.settings.physical_address || "N
 Sender Physical Address (for compliance footer): ${input.settings.physical_address || "Required before sending"}
 Unsubscribe Email: ${input.settings.unsubscribe_email || input.settings.sender_email || "reply to opt out"}
 
-KNOWLEDGE BASE SUMMARY:
-${input.knowledgeDigest.slice(0, 4000) || "None"}
+${targetContext}
 
-${targetContext}`;
+Output strictly JSON with keys: campaignName, targetAudience, targetLocation, targetIndustry, messagingAngle, hook, subjectLine, sampleEmailBody, channel, schedule { sendDays, windowStart, windowEnd, followupDays, dailyLimit }, goal, complianceChecklist[], prospects[].`;
 
   const { data, groundingUrls } = await geminiGroundedJSON<{
     campaignName?: string;
@@ -344,7 +306,7 @@ ${targetContext}`;
     complianceChecklist?: unknown[];
     prospects?: Record<string, unknown>[];
   }>({
-    system,
+    system: orchestrated.system,
     user,
     model: input.model,
   });
@@ -397,8 +359,8 @@ ${targetContext}`;
         signals,
         complianceNote:
           cleanStr(raw.complianceNote, 240) || "Publicly listed B2B directory / official website; include opt-out link.",
-        draftSubject: cleanStr(raw.draftSubject, 180),
-        draftBody: cleanStr(raw.draftBody, 3000),
+        draftSubject: stripUnresolvedPlaceholders(cleanStr(raw.draftSubject, 180)),
+        draftBody: stripUnresolvedPlaceholders(cleanStr(raw.draftBody, 3000)),
       };
     })
     .filter((p) => {

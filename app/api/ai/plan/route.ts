@@ -7,7 +7,7 @@ import type { Settings } from "@/lib/types";
 
 export async function POST(req: NextRequest) {
   try {
-    await verifyRequest(req);
+    const user = await verifyRequest(req);
     const aiConfig = await resolveAiConfigForRequest(req);
     const body = (await req.json()) as {
       instruction?: string;
@@ -25,6 +25,7 @@ export async function POST(req: NextRequest) {
       planCampaignServer(
         instruction,
         {
+          ownerId: user.ownerId,
           settings: body.settings,
           knowledge: body.knowledge ?? "",
           availableLeads: body.availableLeads,

@@ -1503,17 +1503,42 @@ export async function recordSendSuccess(
 }
 
 export async function approveAllMessagesInCampaign(uid: string, campaignId: string): Promise<number> {
-  const messages = await listMessages(uid);
+  const { evaluateLeadSendEligibility } = await import("./guardrails");
+  const [messages, leads, campaigns, suppressions, settings] = await Promise.all([
+    listMessages(uid),
+    listLeads(uid),
+    listCampaigns(uid),
+    listSuppressions(uid),
+    getSettings(uid),
+  ]);
+  const leadMap = new Map(leads.map((l) => [l.id, l]));
+  const campaign = campaigns.find((c) => c.id === campaignId) ?? null;
+  const supSet = new Set(suppressions.map((s) => s.email.toLowerCase()));
+
   const pending = messages.filter((m) => m.campaign_id === campaignId && m.status === "pending_approval");
   const nowIso = new Date().toISOString();
+  let approvedCount = 0;
+
   for (const m of pending) {
+    const lead = leadMap.get(m.lead_id);
+    if (!lead) continue;
+    const gate = evaluateLeadSendEligibility({
+      lead,
+      campaign,
+      minScore: campaign?.config.min_score ?? settings.min_score,
+      senderEmail: settings.sender_email,
+      suppressedEmails: supSet,
+    });
+    if (!gate.eligible) continue;
+
     await updateMessageStatus(uid, m.id, "approved", { approved_at: nowIso });
     await updateLeadFields(uid, m.lead_id, { status: "approved" });
+    approvedCount += 1;
   }
-  if (pending.length) {
-    await writeAuditLog(uid, "messages_approved_bulk", "campaign", campaignId, { count: pending.length });
+  if (approvedCount > 0) {
+    await writeAuditLog(uid, "messages_approved_bulk", "campaign", campaignId, { count: approvedCount });
   }
-  return pending.length;
+  return approvedCount;
 }
 
 // ---------------------------------------------------------------------------
@@ -2240,7 +2265,7 @@ export async function commitExecutedCampaign(
       target_industry: blueprint.targetIndustry || "General",
       objective: blueprint.goal,
       tone: "consultative",
-      min_score: 55,
+      min_score: 65,
       lead_count: selectedProspects.length,
       send_limit: blueprint.schedule.dailyLimit,
       followup_days: blueprint.schedule.followupDays,

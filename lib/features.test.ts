@@ -405,3 +405,311 @@ test("Platform model catalog excludes disabled providers and disabled models", a
   assert.equal(list.length, 1);
   assert.equal(list[0].model, "gemini-2.5-flash");
 });
+
+test("Phase 7 (1 & 2): GlobalKnowledgeService caches in RAM across requests (1 DB read) & falls back safely", async () => {
+  const {
+    __configureGlobalKnowledgeForTest,
+    getGlobalKnowledgeCacheStats,
+    getGlobalKnowledgeModules,
+    invalidateGlobalKnowledgeCache,
+    publishGlobalKnowledgeVersion,
+    rollbackGlobalKnowledgeVersion,
+  } = await import("./global-knowledge/service");
+  const { GLOBAL_KNOWLEDGE_SEED } = await import("./global-knowledge/seed");
+  type StoreAdapter = import("./global-knowledge/service").GlobalKnowledgeStoreAdapter;
+  type GlobalMod = import("./global-knowledge/types").GlobalKnowledgeModule;
+
+  // Mock PostgreSQL store tracking exact reads & immutable version history
+  let dbFetchCount = 0;
+  const rows: GlobalMod[] = GLOBAL_KNOWLEDGE_SEED.map((s) => ({
+    id: `uuid_${s.module_key}_v1`,
+    module_key: s.module_key,
+    title: s.title,
+    version: 1,
+    content: s.content,
+    is_active: true,
+    updated_by: "seed",
+    created_at: "2026-11-26T00:00:00Z",
+    updated_at: "2026-11-26T00:00:00Z",
+  }));
+
+  const mockAdapter: StoreAdapter = {
+    async fetchActiveModules() {
+      dbFetchCount += 1;
+      return rows.filter((r) => r.is_active);
+    },
+    async fetchAllVersions() {
+      return [...rows];
+    },
+    async insertSeedModules() {
+      return { inserted: 0, skipped: rows.length, updated: 0 };
+    },
+    async publishVersion({ moduleKey, title, content, updatedBy }) {
+      const nextVer =
+        Math.max(...rows.filter((r) => r.module_key === moduleKey).map((r) => r.version), 0) + 1;
+      for (const r of rows) {
+        if (r.module_key === moduleKey && r.is_active) r.is_active = false;
+      }
+      const created: GlobalMod = {
+        id: `uuid_${moduleKey}_v${nextVer}`,
+        module_key: moduleKey,
+        title: title || "Updated Title",
+        version: nextVer,
+        content,
+        is_active: true,
+        updated_by: updatedBy ?? "admin",
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+      rows.push(created);
+      return created;
+    },
+    async rollbackVersion({ moduleKey, version, updatedBy }) {
+      for (const r of rows) {
+        if (r.module_key === moduleKey) {
+          r.is_active = r.version === version;
+          if (r.is_active && updatedBy) r.updated_by = updatedBy;
+        }
+      }
+      return rows.find((r) => r.module_key === moduleKey && r.is_active)!;
+    },
+  };
+
+  __configureGlobalKnowledgeForTest({ adapter: mockAdapter, ttlMs: 20 * 60 * 1000, resetStats: true });
+
+  // 5 consecutive reads (including parallel calls) trigger only ONE DB read
+  const [m1, m2] = await Promise.all([getGlobalKnowledgeModules(), getGlobalKnowledgeModules()]);
+  const m3 = await getGlobalKnowledgeModules();
+  const m4 = await getGlobalKnowledgeModules();
+  const m5 = await getGlobalKnowledgeModules();
+  assert.equal(dbFetchCount, 1);
+  assert.equal(m1.size, 4);
+  assert.equal(m2.size, 4);
+  assert.equal(m5.get("module_1_prospecting_research_qualification")?.version, 1);
+  assert.ok(getGlobalKnowledgeCacheStats().hits >= 3);
+
+  // Admin publish invalidates RAM cache -> next read sees v2
+  await publishGlobalKnowledgeVersion({
+    moduleKey: "module_2_copywriting_psychology_deliverability",
+    content: "# MODULE 2 UPDATED V2\nCustom updated copywriting guidance.",
+    updatedBy: "super_admin@knowrevo",
+  });
+  const afterPublish = await getGlobalKnowledgeModules();
+  assert.equal(dbFetchCount, 2);
+  assert.equal(afterPublish.get("module_2_copywriting_psychology_deliverability")?.version, 2);
+
+  // Rollback reverts to v1 and invalidates cache
+  await rollbackGlobalKnowledgeVersion({
+    moduleKey: "module_2_copywriting_psychology_deliverability",
+    version: 1,
+    updatedBy: "super_admin@knowrevo",
+  });
+  const afterRollback = await getGlobalKnowledgeModules();
+  assert.equal(dbFetchCount, 3);
+  assert.equal(afterRollback.get("module_2_copywriting_psychology_deliverability")?.version, 1);
+
+  // Cold-start unreachable DB falls back gracefully to local seed constants
+  __configureGlobalKnowledgeForTest({
+    adapter: {
+      ...mockAdapter,
+      async fetchActiveModules() {
+        throw new Error("Simulated ECONNREFUSED");
+      },
+    },
+    resetStats: true,
+  });
+  invalidateGlobalKnowledgeCache();
+  const fallbackMods = await getGlobalKnowledgeModules();
+  assert.equal(fallbackMods.size, 4);
+  assert.match(
+    fallbackMods.get("module_4_replies_objections_closing_compliance")?.content ?? "",
+    /AUTOMATED REPLY TRIAGE/,
+  );
+
+  __configureGlobalKnowledgeForTest({ adapter: null, ttlMs: null, resetStats: true });
+});
+
+test("Phase 7 (1, 2 & 3): Zero-setup new user routing, LLM prefix caching & tenant isolation", async () => {
+  const { GLOBAL_PROMPT_CACHE_SEPARATOR, WORKFLOW_MODULES, buildOrchestratedSystemPrompt } = await import(
+    "./ai/orchestrator"
+  );
+  const { buildEmptyUserBusinessProfile, resolveUserBusinessVariables } = await import(
+    "./global-knowledge/user-context"
+  );
+
+  // Workflow task module isolation: strictly scoped per task
+  assert.deepEqual(WORKFLOW_MODULES.research_and_qualify, ["module_1_prospecting_research_qualification"]);
+  assert.deepEqual(WORKFLOW_MODULES.draft_outreach, [
+    "module_1_prospecting_research_qualification",
+    "module_2_copywriting_psychology_deliverability",
+    "module_3_routing_templates_cadence",
+  ]);
+  assert.deepEqual(WORKFLOW_MODULES.handle_reply, [
+    "module_2_copywriting_psychology_deliverability",
+    "module_4_replies_objections_closing_compliance",
+  ]);
+
+  // Tenant A: brand-new zero-setup user with minimal profile info
+  const tenantAVars = resolveUserBusinessVariables({
+    settings: { sender_name: "Sam", sender_email: "sam@gmail.com" },
+  });
+  assert.equal(tenantAVars.USER_NAME, "Sam");
+  assert.equal(tenantAVars.USER_SENDING_TIER, "free_gmail_starter");
+  assert.equal(tenantAVars.USER_PROOF, "Not provided — do not fabricate or mention");
+
+  // Tenant B: configured custom domain agency
+  const tenantBVars = resolveUserBusinessVariables({
+    profile: {
+      ...buildEmptyUserBusinessProfile("tenant_b"),
+      user_name: "Maya",
+      user_company: "Vanguard Dental Growth",
+      user_offer: "Dental Implant Booking System",
+      user_proof: "Increased Austin Implants Clinic by 19 bookings/mo",
+      user_exclusions: "No Shopify stores or salons",
+    },
+    settings: { sender_name: "Maya", sender_email: "maya@vanguardgrowth.io" },
+  });
+  assert.equal(tenantBVars.USER_SENDING_TIER, "authenticated_custom_domain");
+
+  const promptA = await buildOrchestratedSystemPrompt({
+    workflow: "draft_outreach",
+    settings: { sender_name: "Sam", sender_email: "sam@gmail.com" },
+    taskInstructions: "Draft cold email.",
+  });
+  const promptB = await buildOrchestratedSystemPrompt({
+    workflow: "draft_outreach",
+    settings: { sender_name: "Maya", sender_company: "Vanguard Dental Growth", sender_email: "maya@vanguardgrowth.io" },
+    knowledgeDigest: "Vanguard Dental Growth confidential client proof",
+    taskInstructions: "Draft cold email.",
+  });
+
+  // LLM Prompt Caching: static Global Modules appear FIRST and are byte-for-byte identical across tenants
+  assert.equal(promptA.staticPrefix, promptB.staticPrefix);
+  assert.ok(promptA.system.startsWith(promptA.staticPrefix));
+  assert.ok(promptA.system.includes(GLOBAL_PROMPT_CACHE_SEPARATOR));
+  assert.match(promptA.staticPrefix, /GLOBAL SALES & OUTREACH INTELLIGENCE — MODULE 1/);
+  assert.match(promptA.staticPrefix, /GLOBAL SALES & OUTREACH INTELLIGENCE — MODULE 3/);
+  assert.ok(!promptA.staticPrefix.includes("MODULE 4"), "draft_outreach must NOT inject Module 4");
+
+  // Strict tenant isolation: Tenant A prompt must NEVER see Tenant B's secrets/company
+  assert.ok(!promptA.system.includes("Vanguard Dental Growth"));
+  assert.ok(!promptA.system.includes("maya@vanguardgrowth.io"));
+  assert.ok(promptB.system.includes("Vanguard Dental Growth"));
+});
+
+test("Phase 7 (4 & 5): Hard qualification/self-send/sending-tier guardrails, reply hooks & zero placeholder leakage", async () => {
+  const {
+    DEFAULT_CAMPAIGN_MIN_SCORE,
+    checkSendingTierDeliverability,
+    evaluateLeadSendEligibility,
+    findCancellableFollowupMessageIds,
+    mapReplyClassMeta,
+    resolveUserSendingTier,
+  } = await import("./guardrails");
+  const { findUnresolvedPlaceholders, stripUnresolvedPlaceholders } = await import("./ai/orchestrator");
+  const { cleanEmailText, validateEmail } = await import("./outreach-utils");
+  type Lead = import("./types").Lead;
+
+  assert.equal(DEFAULT_CAMPAIGN_MIN_SCORE, 65);
+
+  const baseLead: Lead = {
+    id: "l1",
+    campaign_id: "c1",
+    business: "Apex Clinic",
+    contact_name: "Dr. Lee",
+    role: "Owner",
+    email: "lee@apexclinic.com",
+    email_norm: "lee@apexclinic.com",
+    website: "https://apexclinic.com",
+    phone: null,
+    location: "Austin",
+    industry: "Dental",
+    notes: null,
+    extra: null,
+    source: null,
+    source_ref: null,
+    sheet_row: null,
+    status: "qualified",
+    score: 15,
+    priority: "low",
+    score_reason: null,
+    research: null,
+    research_at: null,
+    research_ok: true,
+    manual_research: null,
+    last_contacted_at: null,
+    created_at: "",
+    updated_at: "",
+  };
+
+  // Below min_score (15 < 65) -> blocked at code level
+  const lowScore = evaluateLeadSendEligibility({ lead: baseLead, minScore: 65, senderEmail: "out@agency.io" });
+  assert.equal(lowScore.eligible, false);
+  assert.equal(lowScore.code, "BELOW_MIN_SCORE");
+
+  // Kill switch triggered even with score 85 -> blocked
+  const killLead: Lead = {
+    ...baseLead,
+    score: 85,
+    score_reason: {
+      score: 85,
+      category: "high",
+      kill_switch_triggered: true,
+      disqualification_reason: "Matches excluded niche",
+      reasons: [],
+      opportunity: "",
+      value_tier: "high",
+      recommended_service: "",
+    },
+  };
+  const killGate = evaluateLeadSendEligibility({ lead: killLead, minScore: 65, senderEmail: "out@agency.io" });
+  assert.equal(killGate.eligible, false);
+  assert.equal(killGate.code, "KILL_SWITCH");
+
+  // Self-send guard -> blocked
+  const validLead: Lead = { ...baseLead, score: 78, email: "alex@studio.io", email_norm: "alex@studio.io" };
+  const selfSend = evaluateLeadSendEligibility({ lead: validLead, minScore: 65, senderEmail: "ALEX@studio.io" });
+  assert.equal(selfSend.eligible, false);
+  assert.equal(selfSend.code, "SELF_SEND");
+
+  // Qualified external recipient -> allowed
+  const okGate = evaluateLeadSendEligibility({ lead: validLead, minScore: 65, senderEmail: "hello@otherdomain.io" });
+  assert.equal(okGate.eligible, true);
+
+  // Sending-tier deliverability enforcement
+  assert.equal(resolveUserSendingTier("founder@gmail.com"), "free_gmail_starter");
+  assert.equal(resolveUserSendingTier("founder@acmeagency.io"), "authenticated_custom_domain");
+  const freeCheck = checkSendingTierDeliverability({
+    tier: "free_gmail_starter",
+    subject: "quick question",
+    body: "See https://a.com and https://calendly.com/demo/30min plus attached deck",
+    configuredDailyLimit: 50,
+    isColdTouch1: true,
+  });
+  assert.equal(freeCheck.effectiveDailyCap, 20);
+  assert.equal(freeCheck.preferPlainText, true);
+  assert.ok(freeCheck.warnings.length >= 2);
+
+  // Reply-class automation hooks (R5 snooze + R8 global suppress + cancelling unsent followups)
+  assert.equal(mapReplyClassMeta("R8").sequence_action, "GLOBAL_SUPPRESS");
+  assert.equal(mapReplyClassMeta("R8").suppress, true);
+  assert.equal(mapReplyClassMeta("R5").sequence_action, "SNOOZE");
+  assert.equal(mapReplyClassMeta("R7").sequence_action, "STOP");
+  const toCancel = findCancellableFollowupMessageIds(
+    [
+      { id: "m1", lead_id: "l1", kind: "initial", status: "sent" },
+      { id: "m2", lead_id: "l1", kind: "followup", status: "pending_approval" },
+      { id: "m3", lead_id: "l1", kind: "followup", status: "approved" },
+    ],
+    "l1",
+  );
+  assert.deepEqual(toCancel, ["m2", "m3"]);
+
+  // Zero raw {{...}} placeholder leakage check
+  const leaked = "Hi {{PROSPECT_FIRST_NAME}}, see {{USER_PROOF}} and [INSERT_COMPANY] for details on your site.";
+  assert.ok(findUnresolvedPlaceholders(leaked).length >= 2);
+  assert.ok(validateEmail("Subject", leaked) !== null);
+  const sanitized = cleanEmailText(stripUnresolvedPlaceholders(leaked));
+  assert.equal(findUnresolvedPlaceholders(sanitized).length, 0);
+  assert.ok(!sanitized.includes("{{"));
+});

@@ -7,7 +7,7 @@ import type { Lead } from "@/lib/types";
 
 export async function POST(req: NextRequest) {
   try {
-    await verifyRequest(req);
+    const user = await verifyRequest(req);
     const aiConfig = await resolveAiConfigForRequest(req);
     const body = (await req.json()) as {
       lead?: Lead;
@@ -20,6 +20,7 @@ export async function POST(req: NextRequest) {
     const research = await runWithAiConfig(aiConfig, () =>
       researchLeadServer(body.lead!, body.knowledge ?? "", {
         model: body.model,
+        ownerId: user.ownerId,
       }),
     );
     return NextResponse.json({ research });

@@ -339,6 +339,26 @@ export async function POST(req: NextRequest) {
       }),
     );
 
+    // 8. Global Knowledge Brain & Server RAM Cache Check
+    items.push(
+      await timedCheck("global_brain", "Core Features", "Global AI Knowledge Brain (Modules 1-4) & Cache", async () => {
+        const { getGlobalKnowledgeCacheStats, getGlobalKnowledgeModules } = await import("@/lib/global-knowledge/service");
+        const modules = await getGlobalKnowledgeModules();
+        const stats = getGlobalKnowledgeCacheStats();
+        const hasAllFour = modules.size === 4;
+        if (!hasAllFour) {
+          return { status: "fail", detail: `Expected 4 active Global Knowledge Modules, got ${modules.size}.` };
+        }
+        return {
+          status: stats.source === "database" ? "pass" : "warning",
+          detail:
+            stats.source === "database"
+              ? `4/4 active modules loaded from PostgreSQL (${stats.hits} cache hits, ${stats.dbReads} DB reads).`
+              : `4/4 modules running on safe seed fallback (${stats.hits} cache hits). Apply 20251129000000_global_knowledge_and_profiles.sql to persist DB versions.`,
+        };
+      }),
+    );
+
     const finishedAt = new Date().toISOString();
     const run: SystemCheckRun = {
       id: `chk_${Date.now()}`,

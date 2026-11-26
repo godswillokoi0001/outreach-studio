@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { Type } from "@google/genai";
 import { handleApiError } from "@/lib/api-helpers";
 import { resolveAiConfigForRequest } from "@/lib/ai/context";
+import { buildOrchestratedSystemPrompt, stripUnresolvedPlaceholders } from "@/lib/ai/orchestrator";
 import { providerJSON } from "@/lib/ai/chat";
 import { verifyRequest } from "@/lib/server-auth";
 
@@ -11,13 +12,12 @@ const MAX_BODY = 14_000;
 const MAX_INSTRUCTION = 400;
 
 /**
- * Rewrites a message the user already wrote (or a suggestion they started from).
- * The only job is the change they asked for: every fact, name, number, link and
- * promise must survive untouched, so a refine can never invent a claim.
+ * Rewrites a message using the Global Copywriting/Reply Intelligence + strict
+ * anti-fabrication & zero-placeholder guarantees.
  */
 export async function POST(req: NextRequest) {
   try {
-    await verifyRequest(req);
+    const user = await verifyRequest(req);
     const payload = (await req.json().catch(() => ({}))) as {
       body?: unknown;
       instruction?: unknown;
@@ -50,21 +50,25 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const system = [
-      "You are a careful editor for outreach email that a real businessperson sends from their own inbox.",
-      "Rewrite the message the user supplies so it follows their instruction exactly.",
+    const taskInstructions = [
+      "Rewrite the message supplied by the user according to their edit instruction, while enforcing Module 2 plain-English copywriting, zero AI slop, and zero fabrication.",
       "Rules:",
-      "- Return the full rewritten message only, in the same light Markdown the user wrote (**bold**, *italic*, - list items, [text](url)). No subject line, no quotation marks around it, no commentary, no code fences.",
-      "- Keep every fact, name, number, price, date, link and promise exactly as written. Never invent specifics or new claims.",
-      "- Keep the greeting and signature when present, unless the instruction says otherwise.",
+      "- Return the rewritten message body only (light Markdown permitted if present). No subject line, no quotes around it, no commentary, no code fences.",
+      "- Preserve every verified fact, name, number, date, link, and scope boundary accurately; never invent new claims or insert unresolved {{...}} tags.",
+      "- Keep greeting and signature when present, unless instructed otherwise.",
       isReply
-        ? "- This is a reply to a prospect's message: sound like a person answering them, not a marketing blast."
-        : "- This is a first or follow-up cold email: keep it specific, calm and easy to answer.",
-      "- If the instruction conflicts with keeping the facts, keep the facts and apply the tone only.",
+        ? "- Reply context (Module 4): calm, same-thread human response."
+        : "- Cold/follow-up context (Modules 2-3): concise, peer-level, deliverable-safe.",
     ].join("\n");
 
+    const orchestrated = await buildOrchestratedSystemPrompt({
+      workflow: isReply ? "handle_reply" : "draft_outreach",
+      ownerId: user.ownerId,
+      taskInstructions,
+    });
+
     const result = await providerJSON<{ text?: unknown }>(aiConfig, {
-      system,
+      system: orchestrated.system,
       user: `HOW TO CHANGE IT\n${instruction}\n\nMESSAGE TO REWRITE\n${text}`,
       schema: {
         type: Type.OBJECT,
@@ -73,7 +77,7 @@ export async function POST(req: NextRequest) {
       },
     });
 
-    const refined = typeof result.text === "string" ? result.text.trim() : "";
+    const refined = typeof result.text === "string" ? stripUnresolvedPlaceholders(result.text.trim()) : "";
     if (!refined) {
       return NextResponse.json(
         { error: "The model returned an empty rewrite. Try again or pick another model." },

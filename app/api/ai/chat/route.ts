@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { AGENT_TOOLS, sanitizeAgentContents } from "@/lib/agent-tools";
 import { handleApiError } from "@/lib/api-helpers";
 import { resolveAiConfigForRequest, runWithAiConfig } from "@/lib/ai/context";
+import { buildOrchestratedSystemPrompt } from "@/lib/ai/orchestrator";
 import { verifyRequest } from "@/lib/server-auth";
 import { geminiAgentTurn } from "@/lib/gemini";
 
@@ -145,7 +146,7 @@ export async function POST(req: NextRequest) {
     const mode: OperatorMode =
       body.mode === "chat" || body.mode === "developer" ? body.mode : "agent";
 
-    const system = buildSystemInstruction(
+    const baseTaskInstructions = buildSystemInstruction(
       {
         ...body.context,
         userEmail: body.context?.userEmail ?? authUser.email,
@@ -153,12 +154,19 @@ export async function POST(req: NextRequest) {
       mode,
     );
 
+    const orchestrated = await buildOrchestratedSystemPrompt({
+      workflow: "assistant_chat",
+      ownerId: authUser.ownerId,
+      knowledgeDigest: body.context?.knowledge,
+      taskInstructions: baseTaskInstructions,
+    });
+
     // Chat mode has no tools. Agent and Developer modes have access to all tools to execute changes.
     const tools = mode === "chat" ? [] : AGENT_TOOLS;
 
     const result = await runWithAiConfig(aiConfig, () =>
       geminiAgentTurn({
-        system,
+        system: orchestrated.system,
         contents: trimmedContents,
         tools,
         model: body.model,
