@@ -1,4 +1,5 @@
 import { b64url } from "./crypto";
+import { escapeEmailHtml, formatEmailText, wrapEmailHtml } from "./email-format";
 import type {
   AuditLog,
   Campaign,
@@ -76,13 +77,20 @@ export function columnLetter(index: number): string {
 // Email Composition & RFC822 MIME Formatting
 // ---------------------------------------------------------------------------
 
+/**
+ * Normalise a stored email body without destroying the owner's formatting.
+ * Paragraph breaks, `**bold**`, `*italic*` and `- ` lists are the light Markdown
+ * the send renderer understands, so they are kept as written and turned into
+ * styled HTML at dispatch time.
+ */
 export function cleanEmailText(text: string): string {
   return text
     .replace(/\r\n/g, "\n")
-    .replace(/\*\*/g, "")
+    .replace(/\u00a0/g, " ")
     .replace(/^#{1,6}\s*/gm, "")
-    .replace(/^\s*[-*]\s+/gm, "")
+    .replace(/^\s*[•*]\s+/gm, "- ")
     .replace(/\[(your|insert|company|name)[^\]]*\]/gi, "")
+    .replace(/[ \t]+$/gm, "")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 }
@@ -123,20 +131,6 @@ export interface RawEmailInput {
   openPixelUrl?: string | null;
 }
 
-function escapeHtml(value: string): string {
-  return value
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
-}
-
-function plainTextToHtml(body: string): string {
-  return body
-    .split(/\n{2,}/)
-    .map((paragraph) => `<p style="margin:0 0 14px;">${escapeHtml(paragraph).replace(/\n/g, "<br />")}</p>`)
-    .join("");
-}
 
 /** Builds a signed-less but unguessable tracking URL for one sent message. */
 export function buildOpenPixelUrl(
@@ -163,20 +157,14 @@ export function buildRawEmail(input: RawEmailInput): string {
   if (input.inReplyTo) headers.push(`In-Reply-To: ${input.inReplyTo}`);
 
   const pixel = input.openPixelUrl
-    ? `<img src="${escapeHtml(input.openPixelUrl)}" width="1" height="1" alt="" style="display:block;width:1px;height:1px;border:0;opacity:0;" />`
+    ? `<img src="${escapeEmailHtml(input.openPixelUrl)}" width="1" height="1" alt="" style="display:block;width:1px;height:1px;border:0;opacity:0;" />`
     : "";
 
-  if (!pixel) {
-    const encodedBody = wrapBase64(btoa(bytesToBinary(new TextEncoder().encode(body))));
-    headers.push(`Content-Type: text/plain; charset="UTF-8"`);
-    headers.push(`Content-Transfer-Encoding: base64`);
-    return `${headers.join("\r\n")}\r\n\r\n${encodedBody}`;
-  }
-
+  // Every email goes out as HTML with a text/plain alternative — replies too,
+  // where tracking is off and there is no pixel. Sending plain text only is
+  // what made paragraphs and lists collapse in some mail clients.
   const boundary = `os_alt_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
-  const html = `<!doctype html><html><body style="margin:0;padding:0;"><div style="font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;font-size:15px;line-height:1.6;color:#1c1d1a;">${plainTextToHtml(
-    body,
-  )}</div>${pixel}</body></html>`;
+  const html = wrapEmailHtml(body, pixel);
   headers.push(`Content-Type: multipart/alternative; boundary="${boundary}"`);
 
   const textPart = [
@@ -184,7 +172,7 @@ export function buildRawEmail(input: RawEmailInput): string {
     `Content-Type: text/plain; charset="UTF-8"`,
     `Content-Transfer-Encoding: base64`,
     "",
-    wrapBase64(btoa(bytesToBinary(new TextEncoder().encode(body)))),
+    wrapBase64(btoa(bytesToBinary(new TextEncoder().encode(formatEmailText(body))))),
   ].join("\r\n");
 
   const htmlPart = [

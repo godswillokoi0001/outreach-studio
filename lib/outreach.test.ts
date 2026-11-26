@@ -68,7 +68,9 @@ test("parseSheetUrl and columnLetter parse sheet IDs and Excel-style columns", (
 
 test("cleanEmailText, validateEmail, and buildRawEmail format clean outreach messages", () => {
   const cleaned = cleanEmailText("**Hello**\n\n- bullet one\n\n\n\nSecond paragraph.");
-  assert.ok(!cleaned.includes("**"));
+  // Light Markdown is kept so the send renderer can format it; only the
+  // accidental noise is normalised away.
+  assert.equal(cleaned, "**Hello**\n\n- bullet one\n\nSecond paragraph.");
   const shortErr = validateEmail("Quick note", "Too short");
   assert.ok(shortErr !== null);
 
@@ -87,6 +89,10 @@ test("cleanEmailText, validateEmail, and buildRawEmail format clean outreach mes
   assert.ok(!raw.includes("List-Unsubscribe"));
   assert.ok(!raw.toLowerCase().includes("unsubscribe"));
   assert.ok(raw.includes("Content-Transfer-Encoding: base64"));
+  // Replies send without a tracking pixel, but must still be HTML formatted.
+  assert.ok(raw.includes("multipart/alternative"));
+  assert.ok(raw.includes("text/html"));
+  assert.ok(raw.includes("text/plain"));
 });
 
 test("checkSendWindow respects configured hours and days", () => {

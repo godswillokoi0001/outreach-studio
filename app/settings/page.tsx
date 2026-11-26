@@ -501,6 +501,7 @@ export default function SettingsPage() {
         >
           <ul className="tiny" style={{ paddingLeft: 16 }}>
             <li>Delete a prospect and its emails from the Leads page; the deletion is recorded in the audit log.</li>
+            <li>Delete rejected and failed emails from Email review, clear the open history from Sent emails, and delete reply records from Conversations.</li>
             <li>Google Workspace access tokens stay strictly in memory and clear automatically when you sign out.</li>
             <li>Campaign history and audit entries remain available for your own records.</li>
           </ul>

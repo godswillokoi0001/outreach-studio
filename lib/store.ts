@@ -1092,6 +1092,56 @@ export async function listMessageIndex(uid: string): Promise<Message[]> {
   }
 }
 
+/**
+ * Delete one email record. Used for drafts that will never send (rejected or
+ * failed), where keeping the row only clutters the review queue.
+ */
+export async function deleteMessage(uid: string, id: string): Promise<void> {
+  const path = `users/${uid}/messages/${id}`;
+  try {
+    await deleteDoc(doc(db, "users", uid, "messages", id));
+    await writeAuditLog(uid, "message_deleted", "message", id);
+  } catch (err) {
+    handleDataError(err, OperationType.DELETE, path);
+  }
+}
+
+/**
+ * Delete many emails at once, together with the open events recorded against
+ * them. Deleting one row per request would time out on a long queue, so the
+ * rows go out as one batch and the open events as chunked batches.
+ */
+export async function deleteMessages(uid: string, ids: string[]): Promise<number> {
+  const unique = Array.from(new Set(ids.filter(Boolean)));
+  if (unique.length === 0) return 0;
+  const path = `users/${uid}/messages`;
+  const wanted = new Set(unique);
+  try {
+    // The API checks ownership of every op before deleting it, so keep each
+    // request small enough to finish well inside its time limit.
+    for (let i = 0; i < unique.length; i += 40) {
+      const batch = writeBatch(db);
+      for (const id of unique.slice(i, i + 40)) batch.delete(doc(db, "users", uid, "messages", id));
+      await batch.commit();
+    }
+
+    const snap = await getDocs(query(collection(db, "tracking"), where("ownerId", "==", uid)), {
+      columns: ["id", "message_id"],
+    });
+    const orphaned = snap.docs.filter((d) => wanted.has(String(d.data().message_id ?? "")));
+    for (let i = 0; i < orphaned.length; i += 100) {
+      const chunk = writeBatch(db);
+      for (const openDoc of orphaned.slice(i, i + 100)) chunk.delete(openDoc.ref);
+      await chunk.commit();
+    }
+
+    await writeAuditLog(uid, "messages_deleted", "message", unique[0], { count: unique.length });
+    return unique.length;
+  } catch (err) {
+    handleDataError(err, OperationType.DELETE, path);
+  }
+}
+
 export async function createMessage(
   uid: string,
   input: {
@@ -1359,6 +1409,57 @@ export async function listReplies(uid: string): Promise<Reply[]> {
 }
 
 /** Reply rows without the full email body, for counters and badges. */
+/**
+ * Delete reply records. The Gmail messages are untouched, but the inbox sync
+ * would otherwise re-import everything still inside its 21-day window, so each
+ * deletion is also recorded as a dismissal keyed by Gmail message id.
+ */
+export async function deleteReplies(
+  uid: string,
+  replies: { id: string; gmail_id?: string | null }[],
+): Promise<number> {
+  const unique = replies.filter((reply) => reply.id);
+  if (unique.length === 0) return 0;
+  const path = `users/${uid}/replies`;
+  try {
+    for (let i = 0; i < unique.length; i += 100) {
+      const batch = writeBatch(db);
+      for (const reply of unique.slice(i, i + 100)) {
+        batch.delete(doc(db, "users", uid, "replies", reply.id));
+      }
+      await batch.commit();
+    }
+    for (const reply of unique) {
+      await writeAuditLog(uid, "reply_deleted", "reply", reply.gmail_id || reply.id);
+    }
+    return unique.length;
+  } catch (err) {
+    handleDataError(err, OperationType.DELETE, path);
+    return 0;
+  }
+}
+
+/** Gmail ids whose reply record was deleted, so the inbox sync leaves them out. */
+export async function listDismissedReplyIds(uid: string): Promise<Set<string>> {
+  const path = `users/${uid}/auditLogs`;
+  try {
+    const snap = await getDocs(query(collection(db, path), where("ownerId", "==", uid)), {
+      columns: ["id", "action", "entity_id", "created_at"],
+      order: "created_at.desc",
+      limit: 1000,
+    });
+    const ids = new Set<string>();
+    for (const d of snap.docs) {
+      const row = d.data();
+      if (row.action === "reply_deleted" && row.entity_id) ids.add(String(row.entity_id));
+    }
+    return ids;
+  } catch {
+    // A missing audit read must not stop an inbox sync.
+    return new Set();
+  }
+}
+
 export async function listReplyIndex(uid: string): Promise<Reply[]> {
   const path = `users/${uid}/replies`;
   try {
@@ -1569,6 +1670,32 @@ export async function listOpenEvents(uid: string): Promise<EmailOpen[]> {
 }
 
 /**
+ * Delete every recorded open, so the Opened column and its notifications start
+ * from empty. New opens are still recorded afterwards; only the history goes.
+ */
+export async function clearOpenEvents(uid: string): Promise<number> {
+  const path = "tracking";
+  try {
+    const snap = await getDocs(query(collection(db, path), where("ownerId", "==", uid)), {
+      columns: ["id"],
+    });
+    const docs = snap.docs;
+    // One write per 100 rows: the API applies batch ops in sequence, so a
+    // single 5,000-op request would time out before it finished.
+    for (let i = 0; i < docs.length; i += 100) {
+      const batch = writeBatch(db);
+      for (const openDoc of docs.slice(i, i + 100)) batch.delete(openDoc.ref);
+      await batch.commit();
+    }
+    if (docs.length) await writeAuditLog(uid, "open_history_cleared", "tracking", "all", { count: docs.length });
+    return docs.length;
+  } catch (err) {
+    handleDataError(err, OperationType.DELETE, path);
+    return 0;
+  }
+}
+
+/**
  * Subscribes to new email-open events for `uid`.
  *
  * The underlying store has no push subscriptions, so the listener polls
@@ -1578,7 +1705,7 @@ export async function listOpenEvents(uid: string): Promise<EmailOpen[]> {
  */
 export function subscribeOpenEvents(
   uid: string,
-  onOpen: (events: EmailOpen[]) => void,
+  onOpen: (events: EmailOpen[], latest: EmailOpen | null) => void,
 ): () => void {
   let last: EmailOpen[] = [];
   let active = true;
@@ -1600,11 +1727,13 @@ export function subscribeOpenEvents(
       .then((current) => {
         if (!active) return;
 
-        // Only emit events newer than what we last handed to the caller.
+        // Only emit events newer than what we last handed to the caller, but
+        // always report the newest row: the notification menu needs to know
+        // whether anything is still unread.
         const cutoff = last.length ? last[last.length - 1].opened_at : "";
         const next = current.filter((e) => e.opened_at > cutoff);
         last = current;
-        if (next.length) onOpen(next);
+        onOpen(next, current.length ? current[current.length - 1] : null);
       })
       .catch((err) => {
         if (active) handleDataError(err, OperationType.LIST, "tracking");
@@ -1733,7 +1862,13 @@ export async function loadFollowupsBundle(uid: string) {
 
 export function subscribeBadgeCounts(
   uid: string,
-  onChange: (counts: { review: number; replies: number; followups: number }) => void,
+  onChange: (counts: {
+    review: number;
+    replies: number;
+    followups: number;
+    /** ISO time of the newest synced reply, or "" when there is none. */
+    latestReplyAt: string;
+  }) => void,
 ) {
   let latestLeads: Lead[] = [];
   let latestCampaigns: Campaign[] = [];
@@ -1749,7 +1884,11 @@ export function subscribeBadgeCounts(
       messages: latestMessages,
       replies: latestReplies,
     }).length;
-    onChange({ review, replies, followups });
+    const latestReplyAt = latestReplies.reduce(
+      (latest, reply) => (reply.received_at && reply.received_at > latest ? reply.received_at : latest),
+      "",
+    );
+    onChange({ review, replies, followups, latestReplyAt });
   };
 
   // Counters only need the light columns: polling email bodies every minute
@@ -1787,7 +1926,7 @@ export function subscribeBadgeCounts(
       emit();
     },
     (err) => handleDataError(err, OperationType.LIST, `users/${uid}/replies`),
-    { pollMs: 3 * 60_000, columns: ["id", "lead_id", "classification", "handled", "created_at"] },
+    { pollMs: 3 * 60_000, columns: ["id", "lead_id", "classification", "handled", "received_at", "created_at"] },
   );
 
   const unsubLeads = onSnapshot(

@@ -2,7 +2,13 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useState,
+  useSyncExternalStore,
+  type ReactNode,
+} from "react";
 import {
   BarChart3,
   Bell,
@@ -33,6 +39,16 @@ import { AnimatePresence, motion } from "framer-motion";
 import { initAiConfig } from "@/lib/ai-client";
 import { errorMessage } from "@/lib/client";
 import { subscribeBadgeCounts, subscribeOpenEvents } from "@/lib/store";
+import {
+  emptySignalMarks,
+  getSignalMarks,
+  isSignalNew,
+  markSignal,
+  readSignalMarks,
+  subscribeSignalMarks,
+  writeSignalMarks,
+  type SignalKind,
+} from "@/lib/signals";
 import { runSendBatch, runSyncBatch } from "@/lib/pipeline-client";
 import { useAuth } from "./AuthProvider";
 import { BrandLockup, BrandMark } from "./BrandMark";
@@ -128,7 +144,15 @@ function ShellInner({ children }: { children: ReactNode }) {
   const [syncing, setSyncing] = useState(false);
   const [syncNote, setSyncNote] = useState<string | null>(null);
   const [signals, setSignals] = useState<SignalToast[]>([]);
-  const previousReplies = useRef<number | null>(null);
+  const [latest, setLatest] = useState<{ open: string; reply: string }>({ open: "", reply: "" });
+  const uid = user?.uid ?? "";
+  // What this browser has already announced and already looked at, so a
+  // notification appears once and stays marked seen until something new lands.
+  const marks = useSyncExternalStore(
+    useCallback((onChange: () => void) => subscribeSignalMarks(uid, onChange), [uid]),
+    useCallback(() => getSignalMarks(uid), [uid]),
+    () => null,
+  );
 
   useEffect(() => {
     const frame = requestAnimationFrame(() => {
@@ -145,47 +169,79 @@ function ShellInner({ children }: { children: ReactNode }) {
     });
   };
 
-  const pushSignal = (signal: Omit<SignalToast, "id">) => {
+  const pushSignal = useCallback((signal: Omit<SignalToast, "id">) => {
     const id = `${signal.kind}_${Date.now()}`;
     setSignals((current) => [...current.slice(-2), { ...signal, id }]);
     window.setTimeout(() => {
       setSignals((current) => current.filter((item) => item.id !== id));
     }, 9000);
-  };
+  }, []);
+
+  // Each signal is announced once. `at` is the newest event we know about; if a
+  // toast was already shown for that moment or later, this call stays quiet.
+  const announce = useCallback(
+    (kind: SignalKind, at: string, title: string, detail: string) => {
+      if (!uid || !at) return;
+      setLatest((current) => (at > current[kind] ? { ...current, [kind]: at } : current));
+      const current = getSignalMarks(uid);
+      if (!current) return;
+      const field = kind === "open" ? "open_notified" : "reply_notified";
+      if (at <= current[field]) return;
+      pushSignal({ kind, title, detail });
+      markSignal(uid, kind, "notified", at);
+    },
+    [uid, pushSignal],
+  );
+
+  // First run on this browser adopts whatever already exists as seen, so a
+  // page reload never re-announces old activity.
+  useEffect(() => {
+    if (!uid || readSignalMarks(uid)) return;
+    writeSignalMarks(uid, emptySignalMarks());
+  }, [uid]);
 
   useEffect(() => {
     if (!user?.uid) return;
     const unsub = subscribeBadgeCounts(user.uid, (next) => {
-      setCounts(next);
-      const previous = previousReplies.current;
-      previousReplies.current = next.replies;
-      if (previous !== null && next.replies > previous) {
-        pushSignal({
-          kind: "reply",
-          title: "A prospect replied",
-          detail: "Open Conversations to read it and send the suggested answer.",
-        });
-      }
+      setCounts({ review: next.review, replies: next.replies, followups: next.followups });
+      announce(
+        "reply",
+        next.latestReplyAt,
+        "A prospect replied",
+        "Open Conversations to read it and send the suggested answer.",
+      );
     });
     return () => unsub();
-  }, [user?.uid]);
+  }, [user?.uid, announce]);
 
-  // Open tracking: tell the operator the moment a sent email is read.
-  // The subscriber only emits events newer than its last snapshot, so we do
-  // not need a manual baseline skip here.
+  // Open tracking: tell the operator once, the first time an email is read.
   useEffect(() => {
     if (!user?.uid) return;
-    const unsub = subscribeOpenEvents(user.uid, (events) => {
-      if (events.length === 0) return;
-      pushSignal({
-        kind: "open",
-        title: "An email was just opened",
-        detail: `${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} · see which send in Sent emails.`,
-      });
-      void events;
+    const unsub = subscribeOpenEvents(user.uid, (_events, latestOpen) => {
+      if (!latestOpen) return;
+      announce(
+        "open",
+        latestOpen.opened_at,
+        "An email was just opened",
+        `${new Date(latestOpen.opened_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} · see which send in Sent emails.`,
+      );
     });
     return () => unsub();
-  }, [user?.uid]);
+  }, [user?.uid, announce]);
+
+  // Opening the screen that lists an activity marks it seen. A later event
+  // moves the "new" mark again, so it is flagged once more.
+  useEffect(() => {
+    if (!uid) return;
+    const kind: SignalKind | null = pathname.startsWith("/sent")
+      ? "open"
+      : pathname.startsWith("/conversations")
+        ? "reply"
+        : null;
+    if (!kind) return;
+    const at = (kind === "open" ? latest.open : latest.reply) || new Date().toISOString();
+    markSignal(uid, kind, "seen", at);
+  }, [pathname, uid, latest.open, latest.reply]);
 
   const runSync = async () => {
     if (!workspaceToken) {
@@ -273,6 +329,15 @@ function ShellInner({ children }: { children: ReactNode }) {
     if (href === "/conversations") return counts.replies || null;
     if (href === "/followups") return counts.followups || null;
     return null;
+  };
+
+  // "new" while activity is unread, otherwise "seen" — with the work count
+  // kept for replies, because those still need an answer.
+  const signalHint = (kind: SignalKind, count = 0): string => {
+    const fresh = isSignalNew(marks, kind, kind === "open" ? latest.open : latest.reply);
+    if (fresh) return "new";
+    if (count > 0) return `${count} · seen`;
+    return "seen";
   };
 
   const displayName = user.displayName || user.email || "Signed in";
@@ -447,11 +512,20 @@ function ShellInner({ children }: { children: ReactNode }) {
                     <MenuItem href="/review" onClick={close} hint={counts.review ? String(counts.review) : "—"}>
                       <CheckSquare size={14} aria-hidden="true" /> Emails to review
                     </MenuItem>
-                    <MenuItem href="/conversations" onClick={close} hint={counts.replies ? String(counts.replies) : "—"}>
+                    <MenuItem
+                      href="/conversations"
+                      onClick={close}
+                      hint={signalHint("reply", counts.replies)}
+                    >
                       <MessageSquare size={14} aria-hidden="true" /> Replies
                     </MenuItem>
                     <MenuItem href="/followups" onClick={close} hint={counts.followups ? String(counts.followups) : "—"}>
                       <Clock size={14} aria-hidden="true" /> Follow-ups due
+                    </MenuItem>
+                    <MenuSeparator />
+                    <div className="menu-heading">Activity</div>
+                    <MenuItem href="/sent" onClick={close} hint={signalHint("open")}>
+                      <MousePointerClick size={14} aria-hidden="true" /> Email opens
                     </MenuItem>
                   </>
                 )}

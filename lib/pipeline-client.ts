@@ -13,6 +13,7 @@ import {
   getSettings,
   listCampaigns,
   listLeads,
+  listDismissedReplyIds,
   listMessages,
   listReplies,
   listSuppressions,
@@ -679,15 +680,21 @@ export async function runSyncBatch(uid: string, limit = 15): Promise<BatchResult
     throw new Error("Connect Google (click 'Connect Google' in the top bar) to sync Gmail replies.");
   }
 
-  const [leads, messages, replies, settings, knowledge] = await Promise.all([
+  const [leads, messages, replies, settings, knowledge, dismissed] = await Promise.all([
     listLeads(uid),
     listMessages(uid),
     listReplies(uid),
     getSettings(uid),
     buildLiveKnowledgeDigest(uid),
+    listDismissedReplyIds(uid),
   ]);
 
-  const seenGmailIds = new Set(replies.map((r) => r.gmail_id));
+  // Replies the user deleted stay deleted: the records are gone, so their Gmail
+  // ids are remembered separately and skipped when the inbox is read again.
+  const seenGmailIds = new Set([
+    ...replies.map((r) => r.gmail_id),
+    ...Array.from(dismissed),
+  ]);
   const leadByEmail = new Map<string, Lead>();
   for (const l of leads) {
     if (l.email_norm) leadByEmail.set(l.email_norm.toLowerCase(), l);

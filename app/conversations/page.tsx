@@ -3,12 +3,15 @@
 import { BrandLoader } from "@/components/BrandLoader";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { Trash2 } from "lucide-react";
 import { useAuth } from "@/components/AuthProvider";
 import { Badge, Banner, Card, Empty, Pager } from "@/components/ui";
+import { EmailBodyEditor } from "@/components/EmailBodyEditor";
 import { confirmDialog } from "@/components/Feedback";
 import { authedPost, errorMessage } from "@/lib/client";
 import {
   addSuppression,
+  deleteReplies,
   getSettings,
   listLeads,
   listMessages,
@@ -170,6 +173,33 @@ export default function ConversationsPage() {
       await updateReplyHandled(user.uid, reply.id, !reply.handled);
       setNotice(reply.handled ? "Marked as not handled." : "Marked as handled.");
       await reload();
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  /**
+   * Remove a synced reply record. The Gmail message is untouched, and the inbox
+   * sync remembers the dismissal, so the next sync does not import it again.
+   */
+  const deleteReplyRecord = async (reply: ReplyRow) => {
+    const proceed = await confirmDialog({
+      title: "Delete this reply record?",
+      message:
+        "It disappears from Conversations and stops counting as an unread reply. The email itself stays in your Gmail inbox, and syncing will not bring this reply back. This cannot be undone.",
+      confirmLabel: "Delete reply",
+      tone: "bad",
+    });
+    if (!proceed) return;
+    setBusy(reply.id);
+    setError(null);
+    setNotice(null);
+    try {
+      await deleteReplies(user.uid, [{ id: reply.id, gmail_id: reply.gmail_id }]);
+      await reload();
+      setNotice("Reply deleted from your workspace.");
     } catch (err) {
       setError(errorMessage(err));
     } finally {
@@ -424,15 +454,12 @@ export default function ConversationsPage() {
                   )}
 
                   <div style={{ marginBottom: 10 }}>
-                    <div className="label" style={{ marginBottom: 4 }}>
-                      Send a reply from here
-                    </div>
-                    <textarea
-                      className="textarea"
-                      rows={4}
+                    <EmailBodyEditor
+                      label="Send a reply from here"
+                      minHeight={120}
                       value={drafts[reply.id] ?? reply.draft_reply ?? ""}
-                      onChange={(e) =>
-                        setDrafts((current) => ({ ...current, [reply.id]: e.target.value }))
+                      onChange={(value) =>
+                        setDrafts((current) => ({ ...current, [reply.id]: value }))
                       }
                       placeholder="Write your answer…"
                     />
@@ -479,6 +506,15 @@ export default function ConversationsPage() {
                       type="button"
                     >
                       Stop contact
+                    </button>
+                    <button
+                      className="btn btn-sm btn-ghost"
+                      onClick={() => void deleteReplyRecord(reply)}
+                      disabled={busy === reply.id}
+                      type="button"
+                      title="Delete this reply from your workspace"
+                    >
+                      <Trash2 size={12} aria-hidden="true" /> Delete
                     </button>
                   </div>
                 </div>

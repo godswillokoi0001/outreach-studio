@@ -3,12 +3,20 @@
 import { BrandLoader } from "@/components/BrandLoader";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { RotateCcw } from "lucide-react";
+import { RotateCcw, Trash2 } from "lucide-react";
 import { useAuth } from "@/components/AuthProvider";
 import { Badge, Banner, Card, Empty, Modal, Pager } from "@/components/ui";
 import { useConfirm, useToast } from "@/components/Feedback";
 import { errorMessage } from "@/lib/client";
-import { listLeads, listMessages, listOpenEvents, updateLeadFields, updateMessageStatus } from "@/lib/store";
+import {
+  clearOpenEvents,
+  listLeads,
+  listMessages,
+  listOpenEvents,
+  updateLeadFields,
+  updateMessageStatus,
+} from "@/lib/store";
+import { formatEmailHtml } from "@/lib/email-format";
 import { fmtDate, label, statusTone } from "@/lib/format";
 import type { EmailOpen, Lead, Message } from "@/lib/types";
 
@@ -143,6 +151,31 @@ export default function SentPage() {
     }
   };
 
+  /** Delete every recorded open so the Opened column and signals start fresh. */
+  const clearOpens = async () => {
+    const ok = await confirmDialog({
+      title: "Clear the open history?",
+      message:
+        `${opens.length} recorded open${opens.length === 1 ? "" : "s"} are deleted. The sent emails stay, and new opens are still tracked from now on. This cannot be undone.`,
+      confirmLabel: "Clear history",
+      tone: "bad",
+    });
+    if (!ok) return;
+    setBusy("clears-opens");
+    try {
+      const removed = await clearOpenEvents(user.uid);
+      await reload();
+      toast.success(
+        "Open history cleared",
+        `${removed} open${removed === 1 ? "" : "s"} removed. New opens are still recorded.`,
+      );
+    } catch (err) {
+      toast.error("Could not clear the open history", errorMessage(err));
+    } finally {
+      setBusy(null);
+    }
+  };
+
   const openStats = useMemo(() => {
     const map = new Map<string, { count: number; last: string }>();
     for (const event of opens) {
@@ -178,6 +211,18 @@ export default function SentPage() {
             Every message Gmail confirmed as sent, with the original content and the Gmail message ID used to match
             replies back to the prospect.
           </p>
+        </div>
+        <div className="row-end">
+          <button
+            className="btn btn-sm btn-danger"
+            onClick={() => void clearOpens()}
+            disabled={busy !== null || opens.length === 0}
+            type="button"
+            title="Delete every recorded email open"
+          >
+            <Trash2 size={12} aria-hidden="true" />
+            {busy === "clears-opens" ? "Clearing…" : `Clear open history (${opens.length})`}
+          </button>
         </div>
       </div>
 
@@ -281,7 +326,18 @@ export default function SentPage() {
                 To {open.lead_email ?? "—"} · {fmtDate(open.sent_at)}
               </span>
             </div>
-            <pre className="pre">{open.body}</pre>
+            <div
+              style={{
+                padding: "14px 16px",
+                border: "1px solid var(--line)",
+                borderRadius: 10,
+                background: "var(--surface)",
+                fontSize: 15,
+                lineHeight: 1.65,
+              }}
+              // The renderer escapes the body first; only p/br/strong/em/ul/li/a are emitted.
+              dangerouslySetInnerHTML={{ __html: formatEmailHtml(open.body ?? "") }}
+            />
             {(open.status === "sent" || open.status === "failed") && (
               <div className="row" style={{ marginTop: 12 }}>
                 <button

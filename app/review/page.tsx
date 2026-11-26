@@ -3,13 +3,18 @@
 import { BrandLoader } from "@/components/BrandLoader";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { Trash2 } from "lucide-react";
 import { useAuth } from "@/components/AuthProvider";
 import { BatchRunner } from "@/components/Runner";
 import { Badge, Banner, Card, Empty, Modal, Pager } from "@/components/ui";
+import { EmailBodyEditor } from "@/components/EmailBodyEditor";
+import { useConfirm, useToast } from "@/components/Feedback";
 import { authedPost, errorMessage } from "@/lib/client";
 import type { ComposedEmail } from "@/lib/compose";
 import {
   approveAllMessagesInCampaign,
+  deleteMessage,
+  deleteMessages,
   getSettings,
   listCampaigns,
   listLeads,
@@ -41,6 +46,8 @@ const PAGE_SIZE = 20;
 
 export default function ReviewPage() {
   const { user, workspaceToken, reconnectWorkspace } = useAuth();
+  const confirmDialog = useConfirm();
+  const toast = useToast();
   const [tab, setTab] = useState<string>("pending_approval");
   const [campaign, setCampaign] = useState("");
   const [page, setPage] = useState(1);
@@ -128,6 +135,11 @@ export default function ReviewPage() {
     }
     return map;
   }, [rows]);
+
+  const rejectedCount = useMemo(
+    () => rows.filter((m) => m.status === "cancelled" || m.status === "failed").length,
+    [rows],
+  );
 
   const filtered = useMemo(() => {
     const allowed = tab === "all" ? null : new Set(tab.split(","));
@@ -250,6 +262,61 @@ export default function ReviewPage() {
     }
   };
 
+  /** Remove one email record that will never be sent. */
+  const removeMessage = async (message: MessageRow) => {
+    const ok = await confirmDialog({
+      title: "Delete this email?",
+      message:
+        "The email record is deleted from your account. The prospect stays in Leads, and nothing is sent.",
+      confirmLabel: "Delete email",
+      tone: "bad",
+    });
+    if (!ok) return;
+    setBusy(`delete:${message.id}`);
+    setError(null);
+    try {
+      await deleteMessage(user.uid, message.id);
+      setOpen(null);
+      await reload();
+      toast.success("Email deleted", "It is gone from the review queue.");
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  /** Clear the whole rejected/failed pile in one confirmed action. */
+  const removeRejected = async () => {
+    const ids = rows
+      .filter((m) => m.status === "cancelled" || m.status === "failed")
+      .map((m) => m.id);
+    if (ids.length === 0) return;
+    const ok = await confirmDialog({
+      title: `Delete ${ids.length} rejected and failed email${ids.length === 1 ? "" : "s"}?`,
+      message:
+        "These records are deleted from your account and their open history with them. Prospects stay in Leads, and nothing is sent. This cannot be undone.",
+      confirmLabel: "Delete them",
+      tone: "bad",
+    });
+    if (!ok) return;
+    setBusy("delete_rejected");
+    setError(null);
+    setNotice(null);
+    try {
+      const removed = await deleteMessages(user.uid, ids);
+      await reload();
+      toast.success(
+        "Rejected and failed emails deleted",
+        `${removed} record${removed === 1 ? "" : "s"} removed from your account.`,
+      );
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setBusy(null);
+    }
+  };
+
   return (
     <main className="page">
       <div className="page-head">
@@ -322,6 +389,20 @@ export default function ReviewPage() {
               >
                 Approve all pending in campaign
               </button>
+              {rejectedCount > 0 && (
+                <button
+                  className="btn btn-sm btn-danger"
+                  onClick={() => void removeRejected()}
+                  disabled={busy !== null}
+                  type="button"
+                  title="Delete every rejected and failed email record"
+                >
+                  <Trash2 size={12} aria-hidden="true" />
+                  {busy === "delete_rejected"
+                    ? "Deleting…"
+                    : `Delete rejected & failed (${rejectedCount})`}
+                </button>
+              )}
               <BatchRunner
                 type="send"
                 label="Send all approved"
@@ -402,15 +483,7 @@ export default function ReviewPage() {
               <span className="label">Subject</span>
               <input className="input" value={subject} onChange={(e) => setSubject(e.target.value)} />
             </div>
-            <div className="field">
-              <span className="label">Body</span>
-              <textarea
-                className="textarea"
-                style={{ minHeight: 260 }}
-                value={body}
-                onChange={(e) => setBody(e.target.value)}
-              />
-            </div>
+            <EmailBodyEditor value={body} onChange={setBody} minHeight={260} />
             {open.rationale && (
               <div style={{ marginBottom: 12 }}>
                 <div className="label">Why this approach</div>
@@ -462,6 +535,15 @@ export default function ReviewPage() {
                 type="button"
               >
                 Reject this email
+              </button>
+              <button
+                className="btn btn-sm btn-ghost"
+                onClick={() => void removeMessage(open)}
+                disabled={busy !== null}
+                type="button"
+              >
+                <Trash2 size={12} aria-hidden="true" />
+                {busy === `delete:${open.id}` ? "Deleting…" : "Delete this email"}
               </button>
               <span className="tiny">Rejected emails are never sent.</span>
             </div>
