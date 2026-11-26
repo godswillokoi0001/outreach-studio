@@ -1491,6 +1491,15 @@ body .dock-track > span {
 @media (max-width: 940px) {
   .sidebar-scrim {
     display: block;
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+    transition: opacity 0.18s ease, visibility 0.18s ease;
+  }
+  .sidebar.open + .sidebar-scrim {
+    opacity: 1;
+    visibility: visible;
+    pointer-events: auto;
   }
   .sidebar-close {
     display: grid;
