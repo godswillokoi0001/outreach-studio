@@ -3,7 +3,7 @@
 import { BrandLoader } from "@/components/BrandLoader";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Trash2 } from "lucide-react";
+import { Save, Sparkles, Trash2 } from "lucide-react";
 import { useAuth } from "@/components/AuthProvider";
 import { BatchRunner } from "@/components/Runner";
 import { Badge, Banner, Card, Empty, Modal, Pager } from "@/components/ui";
@@ -54,6 +54,8 @@ export default function ReviewPage() {
   const [open, setOpen] = useState<MessageRow | null>(null);
   const [subject, setSubject] = useState("");
   const [body, setBody] = useState("");
+  const [subjectIdeas, setSubjectIdeas] = useState<string[]>([]);
+  const [subjectBusy, setSubjectBusy] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -115,7 +117,11 @@ export default function ReviewPage() {
 
   const rows: MessageRow[] = useMemo(() => {
     const leadMap = new Map(leads.map((l) => [l.id, l]));
-    return messages.map((m) => {
+    // Reply drafts belong to Conversations; showing them here would invite a
+    // duplicate answer to the same prospect.
+    return messages
+      .filter((m) => !(m.kind === "reply" && m.status === "draft"))
+      .map((m) => {
       const lead = leadMap.get(m.lead_id);
       return {
         ...m,
@@ -159,6 +165,29 @@ export default function ReviewPage() {
     setOpen(message);
     setSubject(message.subject ?? "");
     setBody(message.body ?? "");
+    setSubjectIdeas([]);
+  };
+
+  const suggestSubject = async (message: MessageRow) => {
+    if (!body.trim()) {
+      setError("Write the email first — subjects come from what you actually say.");
+      return;
+    }
+    setSubjectBusy(true);
+    setError(null);
+    try {
+      const res = await authedPost<{ subjects: string[] }>("/api/ai/subject", {
+        kind: message.kind,
+        body: body.slice(0, 6000),
+        originalSubject: message.subject ?? "",
+        business: message.business ?? "",
+      });
+      setSubjectIdeas(res.subjects ?? []);
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setSubjectBusy(false);
+    }
   };
 
   const sendNow = async (message: MessageRow) => {
@@ -189,7 +218,10 @@ export default function ReviewPage() {
     }
   };
 
-  const act = async (action: "approve_all" | "edit" | "approve" | "reject" | "regenerate", id?: string) => {
+  const act = async (
+    action: "approve_all" | "edit" | "draft" | "approve" | "reject" | "regenerate",
+    id?: string,
+  ) => {
     setBusy(action);
     setError(null);
     setNotice(null);
@@ -208,6 +240,11 @@ export default function ReviewPage() {
         if (action === "edit") {
           await updateMessageContent(user.uid, id, { subject, body });
           setNotice("Changes saved.");
+        } else if (action === "draft") {
+          await updateMessageContent(user.uid, id, { subject, body });
+          await updateMessageStatus(user.uid, id, "draft");
+          setNotice("Saved as a draft. It stays under All emails until you approve or send it.");
+          setOpen(null);
         } else if (action === "approve") {
           await updateMessageContent(user.uid, id, { subject, body });
           await updateMessageStatus(user.uid, id, "approved", { approved_at: new Date().toISOString() });
@@ -481,7 +518,34 @@ export default function ReviewPage() {
             </div>
             <div className="field">
               <span className="label">Subject</span>
-              <input className="input" value={subject} onChange={(e) => setSubject(e.target.value)} />
+              <div className="row reply-subject-row">
+                <input className="input" value={subject} onChange={(e) => setSubject(e.target.value)} />
+                <button
+                  className="btn btn-sm btn-ghost"
+                  onClick={() => void suggestSubject(open)}
+                  disabled={subjectBusy || busy !== null}
+                  type="button"
+                  title="Ask AI for subject lines based on this email"
+                >
+                  <Sparkles size={12} aria-hidden="true" />
+                  {subjectBusy ? "Thinking…" : "Suggest"}
+                </button>
+              </div>
+              {subjectIdeas.length > 0 && (
+                <div className="row refine-tones" style={{ marginTop: 6 }}>
+                  {subjectIdeas.map((idea) => (
+                    <button
+                      key={idea}
+                      className="btn btn-sm btn-ghost"
+                      type="button"
+                      title="Use this subject"
+                      onClick={() => setSubject(idea)}
+                    >
+                      {idea}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
             <EmailBodyEditor value={body} onChange={setBody} minHeight={260} />
             {open.rationale && (
@@ -516,6 +580,16 @@ export default function ReviewPage() {
                 type="button"
               >
                 Save my edits
+              </button>
+              <button
+                className="btn btn-sm"
+                onClick={() => void act("draft", open.id)}
+                disabled={busy !== null}
+                type="button"
+                title="Keep this email unsent and finish it later"
+              >
+                <Save size={12} aria-hidden="true" />
+                {busy === "draft" ? "Saving…" : "Save as draft"}
               </button>
               <button
                 className="btn btn-sm btn-ghost"

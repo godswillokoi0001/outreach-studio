@@ -918,6 +918,47 @@ export async function addLeadsToCampaign(
   return moving.length;
 }
 
+export async function moveLeadsToCampaign(
+  uid: string,
+  leadIds: string[],
+  campaignId: string | null,
+): Promise<number> {
+  if (leadIds.length === 0) return 0;
+  const leads = await listLeads(uid);
+  const wanted = new Set(leadIds.map((id) => String(id)));
+  const target = campaignId ? sanitizeId(campaignId, "camp") : null;
+  const moving = leads.filter((lead) => wanted.has(lead.id) && lead.campaign_id !== target);
+
+  for (const lead of moving) {
+    const path = `users/${uid}/leads/${lead.id}`;
+    // A prospect that has not been researched or contacted starts fresh in the
+    // new campaign. Contacted ones keep their stage so nobody is emailed twice.
+    // Taking a prospect out of a campaign parks the untouched ones as new.
+    const untouched = ["new", "queued_research", "needs_research"].includes(lead.status);
+    const status = target
+      ? untouched
+        ? ("queued_research" as LeadStatus)
+        : lead.status
+      : lead.status === "queued_research"
+        ? ("new" as LeadStatus)
+        : lead.status;
+    try {
+      await updateDoc(doc(db, "users", uid, "leads", lead.id), {
+        campaign_id: target,
+        ...(status !== lead.status ? { status } : {}),
+        updatedAt: serverTimestamp(),
+      });
+      await writeLeadEvent(uid, lead.id, target ? "moved_to_campaign" : "removed_from_campaign", {
+        from: lead.campaign_id,
+        to: target,
+      });
+    } catch (err) {
+      handleDataError(err, OperationType.UPDATE, path);
+    }
+  }
+  return moving.length;
+}
+
 export async function updateLeadFields(
   uid: string,
   id: string,
@@ -1228,6 +1269,72 @@ export async function recordOutgoingReply(
     return id;
   } catch (err) {
     handleDataError(err, OperationType.CREATE, path);
+  }
+}
+
+/**
+ * Deterministic id for the saved draft of one conversation reply: saving the
+ * same reply again updates the same row instead of piling up copies.
+ */
+export function replyDraftMessageId(replyId: string): string {
+  return sanitizeId(`replydraft_${replyId}`, "msg");
+}
+
+/**
+ * Store the reply the user is still writing as a real message row with status
+ * "draft". The browser also mirrors drafts locally, but this is the copy that
+ * survives a different device, a cleared cache or an expired session.
+ */
+export async function saveReplyDraftMessage(
+  uid: string,
+  input: {
+    replyId: string;
+    lead_id: string;
+    campaign_id: string | null;
+    subject: string;
+    body: string;
+  },
+): Promise<string> {
+  const id = replyDraftMessageId(input.replyId);
+  const path = `users/${uid}/messages/${id}`;
+  try {
+    await setDoc(doc(db, "users", uid, "messages", id), {
+      ownerId: uid,
+      lead_id: input.lead_id,
+      campaign_id: input.campaign_id,
+      step: 0,
+      kind: "reply",
+      subject: clampStr(input.subject, 200),
+      body: clampStr(input.body, 12000),
+      angle: null,
+      rationale: null,
+      service: null,
+      status: "draft",
+      gmail_id: null,
+      thread_id: null,
+      rfc_message_id: null,
+      sent_at: null,
+      error: null,
+      approved_at: null,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
+    await writeAuditLog(uid, "reply_draft_saved", "reply", input.replyId);
+    return id;
+  } catch (err) {
+    handleDataError(err, OperationType.CREATE, path);
+  }
+}
+
+/** Remove a saved reply draft (after it was sent or the user discarded it). */
+export async function deleteReplyDraftMessage(uid: string, replyId: string): Promise<void> {
+  const id = replyDraftMessageId(replyId);
+  const path = `users/${uid}/messages/${id}`;
+  try {
+    await deleteDoc(doc(db, "users", uid, "messages", id));
+    await writeAuditLog(uid, "reply_draft_discarded", "reply", replyId);
+  } catch (err) {
+    handleDataError(err, OperationType.DELETE, path);
   }
 }
 

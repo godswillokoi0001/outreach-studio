@@ -21,6 +21,7 @@ import {
   getSettings,
   importSheetRows,
   listCampaigns,
+  moveLeadsToCampaign,
   listLeads,
   listMessages,
   listReplies,
@@ -298,6 +299,26 @@ export default function CampaignsPage() {
     }
   };
 
+  const removeProspects = async (campaignId: string, leadIds: string[]) => {
+    if (leadIds.length === 0) return;
+    setBusy(`${campaignId}:remove`);
+    setFailure(null);
+    setNotice(null);
+    try {
+      const moved = await moveLeadsToCampaign(user.uid, leadIds, null);
+      setNotice(
+        moved
+          ? `Took ${moved} prospect${moved === 1 ? "" : "s"} out of this campaign. Their research, score and email history are kept, so you can move them elsewhere from Leads.`
+          : "Those prospects were not in this campaign.",
+      );
+      await reload();
+    } catch (err) {
+      setFailure(errorMessage(err));
+    } finally {
+      setBusy(null);
+    }
+  };
+
   const act = async (
     campaign: Campaign,
     action: "approve" | "pause" | "resume" | "unarchive" | "archive" | "complete" | "delete" | "assign",
@@ -498,6 +519,7 @@ export default function CampaignsPage() {
                   allLeads={leads}
                   onAct={act}
                   onAddLeads={addProspects}
+                  onRemoveLeads={removeProspects}
                   onDone={reload}
                 />
               </section>
@@ -516,6 +538,7 @@ function CampaignDetail({
   busy,
   onAct,
   onAddLeads,
+  onRemoveLeads,
   onDone,
 }: {
   campaign: Enriched;
@@ -524,6 +547,7 @@ function CampaignDetail({
   busy: string | null;
   onAct: (campaign: Campaign, action: "approve" | "pause" | "resume" | "unarchive" | "archive" | "complete" | "delete" | "assign") => Promise<void>;
   onAddLeads: (campaignId: string, leadIds: string[]) => Promise<void>;
+  onRemoveLeads: (campaignId: string, leadIds: string[]) => Promise<void>;
   onDone: () => void | Promise<void>;
 }) {
   const c = campaign;
@@ -606,7 +630,7 @@ function CampaignDetail({
               <Link href="/conversations">Conversations</Link>
               <Link href="/leads">All prospects</Link>
               <div className="kebab-sep" />
-              {c.status !== "approved" && c.status !== "completed" && (
+              {c.status !== "approved" && c.status !== "completed" && c.status !== "archived" && (
                 <button onClick={() => void onAct(c, "approve")} disabled={busy !== null} type="button">
                   Approve campaign
                 </button>
@@ -627,40 +651,26 @@ function CampaignDetail({
                 <button onClick={() => void onAct(c, "unarchive")} disabled={busy !== null} type="button">
                   Unarchive campaign
                 </button>
-              ) : null}
-              {c.status !== "approved" && c.status !== "completed" && c.status !== "archived" && (
-                <button onClick={() => void onAct(c, "approve")} disabled={busy !== null} type="button">
-                  Approve campaign
-                </button>
-              )}
-              <div className="kebab-sep" />
-              {c.status === "paused" ? (
-                <button onClick={() => void onAct(c, "resume")} disabled={busy !== null} type="button">
-                  Resume campaign
-                </button>
               ) : (
-                <button onClick={() => void onAct(c, "pause")} disabled={busy !== null} type="button">
-                  Pause campaign
+                <button
+                  className="danger"
+                  onClick={() => void onAct(c, "archive")}
+                  disabled={busy !== null}
+                  type="button"
+                >
+                  Archive campaign
                 </button>
               )}
-              {c.status === "archived" ? (
-                <button className="danger"
+              {c.status === "archived" && (
+                <button
+                  className="danger"
                   onClick={() => void onAct(c, "delete")}
                   disabled={busy !== null}
                   type="button"
                 >
                   Delete campaign
                 </button>
-              ) : null}
-              <div className="kebab-sep" />
-              <button
-                className="danger"
-                onClick={() => void onAct(c, "archive")}
-                disabled={busy !== null}
-                type="button"
-              >
-                Archive campaign
-              </button>
+              )}
             </div>
           </details>
         </div>
@@ -814,6 +824,15 @@ function CampaignDetail({
                     {label(lead.status)}
                   </span>
                   <span className="mini-score">{typeof lead.score === "number" ? lead.score : "—"}</span>
+                  <button
+                    className="mini-action"
+                    type="button"
+                    title="Take this prospect out of the campaign"
+                    disabled={busy !== null}
+                    onClick={() => void onRemoveLeads(c.id, [lead.id])}
+                  >
+                    Remove
+                  </button>
                 </li>
               ))}
             </ul>

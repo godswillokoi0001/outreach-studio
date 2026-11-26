@@ -189,6 +189,26 @@ export const AGENT_TOOLS: FunctionDeclaration[] = [
     },
   },
   {
+    name: "move_leads_to_campaign",
+    description:
+      "Move one or more leads to a campaign, or take them out of a campaign by leaving campaign_id empty. Research, scores and email history are kept.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        lead_ids: {
+          type: Type.ARRAY,
+          items: { type: Type.STRING },
+          description: "Lead IDs to move (1-100).",
+        },
+        campaign_id: {
+          type: Type.STRING,
+          description: "Target campaign ID. Omit to take the leads out of their campaign.",
+        },
+      },
+      required: ["lead_ids"],
+    },
+  },
+  {
     name: "delete_lead",
     description: "Permanently delete a lead and all its messages and replies. Requires explicit user confirmation.",
     parameters: {

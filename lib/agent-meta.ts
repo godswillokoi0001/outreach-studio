@@ -187,6 +187,7 @@ export const MUTATING_TOOLS = new Set<string>([
   "save_knowledge_note",
   "add_lead",
   "update_lead",
+  "move_leads_to_campaign",
   "delete_lead",
   "discover_prospects",
   "import_google_sheet",

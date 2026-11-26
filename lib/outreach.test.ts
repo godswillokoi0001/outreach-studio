@@ -248,8 +248,8 @@ test("parseGeminiError turns raw 429 RESOURCE_EXHAUSTED JSON into actionable mes
   assert.ok(parsed.message.includes("billing-enabled"));
 });
 
-test("AGENT_TOOLS declares 34 unique valid Gemini tool schemas", () => {
-  assert.equal(AGENT_TOOLS.length, 34);
+test("AGENT_TOOLS declares 35 unique valid Gemini tool schemas", () => {
+  assert.equal(AGENT_TOOLS.length, 35);
   const names = new Set<string>();
   for (const tool of AGENT_TOOLS) {
     assert.ok(tool.name && tool.name.length > 0);

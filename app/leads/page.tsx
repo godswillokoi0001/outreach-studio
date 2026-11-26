@@ -13,6 +13,7 @@ import {
   deleteLeadCascade,
   listCampaigns,
   listLeads,
+  moveLeadsToCampaign,
   updateLeadFields,
 } from "@/lib/store";
 import { fmtDate, label, priorityTone, scoreClass, statusTone } from "@/lib/format";
@@ -43,6 +44,9 @@ export default function LeadsPage() {
   const [error, setError] = useState<string | null>(null);
 
   const [status, setStatus] = useState("all");
+  const [campaignFilter, setCampaignFilter] = useState("all");
+  const [checked, setChecked] = useState<string[]>([]);
+  const [bulkCampaign, setBulkCampaign] = useState("");
   const [search, setSearch] = useState("");
   const [query, setQuery] = useState("");
   const [page, setPage] = useState(1);
@@ -107,16 +111,35 @@ export default function LeadsPage() {
     return map;
   }, [allLeads]);
 
+  const campaignNames = useMemo(() => {
+    const map: Record<string, string> = {};
+    for (const c of campaigns) map[c.id] = c.name;
+    return map;
+  }, [campaigns]);
+
+  const campaignCounts = useMemo(() => {
+    const map: Record<string, number> = { unassigned: 0 };
+    for (const l of allLeads) {
+      const key = l.campaign_id ?? "unassigned";
+      map[key] = (map[key] ?? 0) + 1;
+    }
+    return map;
+  }, [allLeads]);
+
   const filtered = useMemo(() => {
     const allowedStatuses = status === "all" ? null : new Set(status.split(","));
     const q = query.trim().toLowerCase();
     return allLeads.filter((l) => {
       if (allowedStatuses && !allowedStatuses.has(l.status)) return false;
+      if (campaignFilter === "unassigned" && l.campaign_id) return false;
+      if (campaignFilter !== "all" && campaignFilter !== "unassigned" && l.campaign_id !== campaignFilter) {
+        return false;
+      }
       if (!q) return true;
       const hay = `${l.business ?? ""} ${l.contact_name ?? ""} ${l.email ?? ""} ${l.industry ?? ""} ${l.location ?? ""}`.toLowerCase();
       return hay.includes(q);
     });
-  }, [allLeads, status, query]);
+  }, [allLeads, status, campaignFilter, query]);
 
   const paged = useMemo(
     () => filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE),
@@ -154,6 +177,30 @@ export default function LeadsPage() {
       await load();
     } catch (err) {
       setNotice(errorMessage(err));
+    }
+  };
+
+  const moveTo = async (ids: string[], campaignId: string | null) => {
+    if (ids.length === 0) return;
+    setBusy("move");
+    setNotice(null);
+    try {
+      const moved = await moveLeadsToCampaign(user.uid, ids, campaignId);
+      setChecked([]);
+      await load();
+      if (moved === 0) {
+        setNotice("Nothing to move: those prospects are already there.");
+      } else if (campaignId) {
+        setNotice(
+          `Moved ${moved} prospect${moved === 1 ? "" : "s"} to ${campaignNames[campaignId] ?? "the campaign"}. Untouched ones joined its research queue; contacted ones keep their stage.`,
+        );
+      } else {
+        setNotice(`Took ${moved} prospect${moved === 1 ? "" : "s"} out of their campaign.`);
+      }
+    } catch (err) {
+      setNotice(errorMessage(err));
+    } finally {
+      setBusy(null);
     }
   };
 
@@ -227,6 +274,23 @@ export default function LeadsPage() {
                 </option>
               ))}
             </select>
+            <select
+              className="select"
+              style={{ width: 210 }}
+              value={campaignFilter}
+              onChange={(e) => {
+                setCampaignFilter(e.target.value);
+                setPage(1);
+              }}
+            >
+              <option value="all">Every campaign</option>
+              <option value="unassigned">Unassigned ({campaignCounts.unassigned ?? 0})</option>
+              {campaigns.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.name} ({campaignCounts[c.id] ?? 0})
+                </option>
+              ))}
+            </select>
             <input
               className="input"
               style={{ maxWidth: 320 }}
@@ -278,12 +342,66 @@ export default function LeadsPage() {
             </div>
           ) : (
             <div className="table-wrap">
+              {checked.length > 0 && (
+                <div className="row" style={{ padding: "0 16px 12px", gap: 8 }}>
+                  <span className="tiny">
+                    {checked.length} selected
+                  </span>
+                  <select
+                    className="select"
+                    style={{ width: 220 }}
+                    value={bulkCampaign}
+                    onChange={(e) => setBulkCampaign(e.target.value)}
+                  >
+                    <option value="">Move to campaign…</option>
+                    {campaigns.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.name}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    className="btn btn-sm btn-primary"
+                    type="button"
+                    disabled={!bulkCampaign || busy !== null}
+                    onClick={() => void moveTo(checked, bulkCampaign)}
+                  >
+                    {busy === "move" ? "Moving…" : "Move"}
+                  </button>
+                  <button
+                    className="btn btn-sm"
+                    type="button"
+                    disabled={busy !== null}
+                    onClick={() => void moveTo(checked, null)}
+                  >
+                    Take out of campaign
+                  </button>
+                  <button className="btn btn-sm btn-ghost" type="button" onClick={() => setChecked([])}>
+                    Clear
+                  </button>
+                </div>
+              )}
               <table>
                 <thead>
                   <tr>
+                    <th style={{ width: 34 }}>
+                      <input
+                        type="checkbox"
+                        aria-label="Select this page"
+                        checked={paged.length > 0 && paged.every((l) => checked.includes(l.id))}
+                        onChange={(e) =>
+                          setChecked((prev) =>
+                            e.target.checked
+                              ? Array.from(new Set([...prev, ...paged.map((l) => l.id)]))
+                              : prev.filter((id) => !paged.some((l) => l.id === id)),
+                          )
+                        }
+                      />
+                    </th>
                     <th>Business</th>
                     <th>Contact</th>
                     <th>Industry</th>
+                    <th>Campaign</th>
                     <th className="num">Score</th>
                     <th>Priority</th>
                     <th>Status</th>
@@ -293,6 +411,18 @@ export default function LeadsPage() {
                 <tbody>
                   {paged.map((lead) => (
                     <tr key={lead.id} className="clickable" onClick={() => setSelected(lead)}>
+                      <td onClick={(e) => e.stopPropagation()}>
+                        <input
+                          type="checkbox"
+                          aria-label={`Select ${lead.business ?? lead.email ?? lead.id}`}
+                          checked={checked.includes(lead.id)}
+                          onChange={(e) =>
+                            setChecked((prev) =>
+                              e.target.checked ? [...prev, lead.id] : prev.filter((id) => id !== lead.id),
+                            )
+                          }
+                        />
+                      </td>
                       <td>
                         <div className="strong">{lead.business ?? "—"}</div>
                         <div className="tiny">
@@ -304,6 +434,13 @@ export default function LeadsPage() {
                         <div className="tiny">{lead.role ?? ""}</div>
                       </td>
                       <td>{lead.industry ?? "—"}</td>
+                      <td className="tiny nowrap">
+                        {lead.campaign_id ? (
+                          campaignNames[lead.campaign_id] ?? "Campaign"
+                        ) : (
+                          <span className="tiny">Unassigned</span>
+                        )}
+                      </td>
                       <td className="num">
                         <span className={`score ${scoreClass(lead.score)}`}>{lead.score ?? "—"}</span>
                       </td>
@@ -327,10 +464,14 @@ export default function LeadsPage() {
       <LeadDetail
         key={selected?.id ?? "none"}
         lead={selected}
-        busy={busy === selected?.id}
+        campaigns={campaigns}
+        busy={busy === selected?.id || busy === "move"}
         onClose={() => setSelected(null)}
         onSave={async (patch) => {
           if (selected) await update(selected.id, patch);
+        }}
+        onMove={async (campaignId) => {
+          if (selected) await moveTo([selected.id], campaignId);
         }}
         onDelete={() => selected && void remove(selected)}
       />
@@ -422,15 +563,19 @@ export default function LeadsPage() {
 
 function LeadDetail({
   lead,
+  campaigns,
   busy,
   onClose,
   onSave,
+  onMove,
   onDelete,
 }: {
   lead: Lead | null;
+  campaigns: Campaign[];
   busy: boolean;
   onClose: () => void;
   onSave: (patch: { manual_research?: string | null; status?: LeadStatus; action?: "requeue" }) => Promise<void>;
+  onMove: (campaignId: string | null) => Promise<void>;
   onDelete: () => void;
 }) {
   const [manual, setManual] = useState(lead?.manual_research ?? "");
@@ -601,6 +746,27 @@ function LeadDetail({
                 </option>
               ))}
             </select>
+          </Field>
+
+          <Field label="Campaign">
+            <select
+              className="select"
+              value={lead.campaign_id ?? ""}
+              disabled={busy}
+              onChange={(e) => void onMove(e.target.value || null)}
+            >
+              <option value="">No campaign</option>
+              {campaigns.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.name}
+                  {c.id === lead.campaign_id ? " (current)" : ""}
+                </option>
+              ))}
+            </select>
+            <p className="hint" style={{ marginTop: 6 }}>
+              Moving a prospect keeps its research, score and email history. An untouched prospect joins the new
+              campaign&apos;s research queue; one already contacted keeps its stage so it is never emailed twice.
+            </p>
           </Field>
 
           {lead.extra && (

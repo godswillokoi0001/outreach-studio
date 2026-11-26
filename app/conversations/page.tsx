@@ -2,8 +2,8 @@
 
 import { BrandLoader } from "@/components/BrandLoader";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { Trash2 } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Save, Sparkles, Trash2 } from "lucide-react";
 import { useAuth } from "@/components/AuthProvider";
 import { Badge, Banner, Card, Empty, Pager } from "@/components/ui";
 import { EmailBodyEditor } from "@/components/EmailBodyEditor";
@@ -12,15 +12,19 @@ import { authedPost, errorMessage } from "@/lib/client";
 import {
   addSuppression,
   deleteReplies,
+  deleteReplyDraftMessage,
   getSettings,
   listLeads,
   listMessages,
   listReplies,
   recordOutgoingReply,
+  replyDraftMessageId,
+  saveReplyDraftMessage,
   updateLeadFields,
   updateReplyHandled,
 } from "@/lib/store";
 import { createRfcMessageId } from "@/lib/outreach-utils";
+import { clearReplyDraft, loadReplyDrafts, saveReplyDraft } from "@/lib/reply-drafts";
 import { fmtDate } from "@/lib/format";
 import type { Lead, Message, Reply } from "@/lib/types";
 
@@ -67,6 +71,11 @@ function classTone(classification: string | null): string | undefined {
 
 const PAGE_SIZE = 15;
 
+function suggestedSubject(reply: ReplyRow): string {
+  const base = reply.subject?.trim() ?? "";
+  return /^re:/i.test(base) ? base : `Re: ${base || "your message"}`;
+}
+
 export default function ConversationsPage() {
   const { user, workspaceToken, reconnectWorkspace } = useAuth();
   const [filter, setFilter] = useState("all");
@@ -80,7 +89,59 @@ export default function ConversationsPage() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [loading, setLoading] = useState(true);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [draftStatus, setDraftStatus] = useState<Record<string, "saving" | "saved">>({});
+  const savedTimers = useRef<Record<string, number>>({});
   const [sending, setSending] = useState<string | null>(null);
+  const [subjects, setSubjects] = useState<Record<string, string>>({});
+  const [subjectIdeas, setSubjectIdeas] = useState<Record<string, string[]>>({});
+  const [subjectBusy, setSubjectBusy] = useState<string | null>(null);
+  const [draftBusy, setDraftBusy] = useState<string | null>(null);
+  const [savedDraftAt, setSavedDraftAt] = useState<Record<string, string>>({});
+
+  /**
+   * Pick up drafts saved from any device: a reply draft is a message row with
+   * status "draft" whose id is derived from the reply, so no extra lookup
+   * table is needed. Text the user is typing right now always wins.
+   */
+  const applyStoredDrafts = useCallback(
+    (replyList: Reply[], messageList: Message[]) => {
+      const byId = new Map(messageList.map((m) => [m.id, m]));
+      setDrafts((current) => {
+        const next: Record<string, string> = { ...loadReplyDrafts(user.uid), ...current };
+        for (const reply of replyList) {
+          if (next[reply.id]?.trim()) continue;
+          const stored = byId.get(replyDraftMessageId(reply.id));
+          if (stored?.status === "draft" && stored.body) next[reply.id] = stored.body;
+        }
+        return next;
+      });
+      setSubjects((current) => {
+        const next = { ...current };
+        for (const reply of replyList) {
+          if (next[reply.id]?.trim()) continue;
+          const stored = byId.get(replyDraftMessageId(reply.id));
+          if (stored?.status === "draft" && stored.subject) next[reply.id] = stored.subject;
+        }
+        return next;
+      });
+      setSavedDraftAt((current) => {
+        const next = { ...current };
+        for (const reply of replyList) {
+          const stored = byId.get(replyDraftMessageId(reply.id));
+          if (stored?.status === "draft") next[reply.id] = stored.updated_at;
+        }
+        return next;
+      });
+    },
+    [user.uid],
+  );
+
+  useEffect(() => {
+    const timers = savedTimers.current;
+    return () => {
+      for (const id of Object.values(timers)) window.clearTimeout(id);
+    };
+  }, []);
 
   const reload = useCallback(async () => {
     setLoading(true);
@@ -94,12 +155,13 @@ export default function ConversationsPage() {
       setReplies(r);
       setLeads(l);
       setMessages(m);
+      applyStoredDrafts(r, m);
     } catch (err) {
       setError(errorMessage(err));
     } finally {
       setLoading(false);
     }
-  }, [user.uid]);
+  }, [user.uid, applyStoredDrafts]);
 
   useEffect(() => {
     let active = true;
@@ -113,6 +175,7 @@ export default function ConversationsPage() {
         setReplies(r);
         setLeads(l);
         setMessages(m);
+        applyStoredDrafts(r, m);
         setLoading(false);
       },
       (err) => {
@@ -124,7 +187,7 @@ export default function ConversationsPage() {
     return () => {
       active = false;
     };
-  }, [user.uid]);
+  }, [user.uid, applyStoredDrafts]);
 
   const rows: ReplyRow[] = useMemo(() => {
     const leadMap = new Map(leads.map((l) => [l.id, l]));
@@ -198,6 +261,8 @@ export default function ConversationsPage() {
     setNotice(null);
     try {
       await deleteReplies(user.uid, [{ id: reply.id, gmail_id: reply.gmail_id }]);
+      clearReplyDraft(user.uid, reply.id);
+      setDrafts((current) => ({ ...current, [reply.id]: "" }));
       await reload();
       setNotice("Reply deleted from your workspace.");
     } catch (err) {
@@ -243,6 +308,94 @@ export default function ConversationsPage() {
     return () => window.removeEventListener("os:data-refreshed", onRefresh);
   }, [reload]);
 
+  /**
+   * Every keystroke is mirrored to this browser straight away, so an unfinished
+   * answer is never lost by navigating away. The label just confirms the write.
+   */
+  const changeDraft = (replyId: string, value: string) => {
+    setDrafts((current) => ({ ...current, [replyId]: value }));
+    saveReplyDraft(user.uid, replyId, value);
+    setDraftStatus((current) => ({ ...current, [replyId]: "saving" }));
+    window.clearTimeout(savedTimers.current[replyId]);
+    savedTimers.current[replyId] = window.setTimeout(() => {
+      setDraftStatus((current) => ({ ...current, [replyId]: "saved" }));
+    }, 450);
+  };
+
+  const saveDraft = async (reply: ReplyRow) => {
+    const bodyText = (drafts[reply.id] ?? reply.draft_reply ?? "").trim();
+    if (!bodyText) {
+      setError("Write a reply before saving it as a draft.");
+      return;
+    }
+    setDraftBusy(reply.id);
+    setError(null);
+    setNotice(null);
+    try {
+      const subjectValue = (subjects[reply.id] ?? "").trim() || suggestedSubject(reply);
+      await saveReplyDraftMessage(user.uid, {
+        replyId: reply.id,
+        lead_id: reply.lead_id ?? "",
+        campaign_id: reply.campaign_id,
+        subject: subjectValue,
+        body: bodyText,
+      });
+      setSubjects((current) => ({ ...current, [reply.id]: subjectValue }));
+      setSavedDraftAt((current) => ({ ...current, [reply.id]: new Date().toISOString() }));
+      setNotice(
+        `Draft saved for ${reply.business ?? reply.from_email ?? "this reply"}. Open it again on any device to continue.`,
+      );
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setDraftBusy(null);
+    }
+  };
+
+  const discardDraft = async (reply: ReplyRow) => {
+    setDraftBusy(reply.id);
+    setError(null);
+    try {
+      await deleteReplyDraftMessage(user.uid, reply.id);
+      clearReplyDraft(user.uid, reply.id);
+      setDrafts((current) => ({ ...current, [reply.id]: "" }));
+      setSubjects((current) => ({ ...current, [reply.id]: "" }));
+      setSavedDraftAt((current) => {
+        const next = { ...current };
+        delete next[reply.id];
+        return next;
+      });
+      setNotice("Draft discarded. The suggested reply is still here if you want it.");
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setDraftBusy(null);
+    }
+  };
+
+  const suggestSubject = async (reply: ReplyRow) => {
+    const bodyText = (drafts[reply.id] ?? reply.draft_reply ?? "").trim();
+    if (!bodyText) {
+      setError("Write the reply first — subjects come from what you actually say.");
+      return;
+    }
+    setSubjectBusy(reply.id);
+    setError(null);
+    try {
+      const res = await authedPost<{ subjects: string[] }>("/api/ai/subject", {
+        kind: "reply",
+        body: bodyText.slice(0, 6000),
+        originalSubject: reply.subject ?? "",
+        business: reply.business ?? "",
+      });
+      setSubjectIdeas((current) => ({ ...current, [reply.id]: res.subjects ?? [] }));
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setSubjectBusy(null);
+    }
+  };
+
   const sendReply = async (reply: ReplyRow) => {
     const body = (drafts[reply.id] ?? reply.draft_reply ?? "").trim();
     if (!body) {
@@ -270,10 +423,7 @@ export default function ConversationsPage() {
         ),
       ]);
       const senderEmail = settings.sender_email?.trim() || profile.emailAddress;
-      const baseSubject = reply.subject ?? "";
-      const subject = /^re:/i.test(baseSubject)
-        ? baseSubject
-        : `Re: ${baseSubject || "your message"}`;
+      const subject = (subjects[reply.id] ?? "").trim() || suggestedSubject(reply);
       const rfcMessageId = createRfcMessageId(`reply-${reply.id}`, senderEmail);
 
       const sent = await authedPost<{ id: string; threadId: string }>(
@@ -306,8 +456,22 @@ export default function ConversationsPage() {
         await updateLeadFields(user.uid, reply.lead_id, { status: "replied" });
       }
       await updateReplyHandled(user.uid, reply.id, true);
+      // The saved draft has become the sent message; keeping it would leave a
+      // stale copy in the inbox drafts.
+      try {
+        await deleteReplyDraftMessage(user.uid, reply.id);
+      } catch {
+        /* sending already succeeded; a leftover draft row is harmless */
+      }
+      setSavedDraftAt((current) => {
+        const next = { ...current };
+        delete next[reply.id];
+        return next;
+      });
       setNotice(`Reply sent to ${to}. Follow-ups for this prospect stay stopped.`);
+      clearReplyDraft(user.uid, reply.id);
       setDrafts((current) => ({ ...current, [reply.id]: "" }));
+      setDraftStatus((current) => ({ ...current, [reply.id]: "saved" }));
       await reload();
     } catch (err) {
       setError(errorMessage(err));
@@ -454,16 +618,54 @@ export default function ConversationsPage() {
                   )}
 
                   <div style={{ marginBottom: 10 }}>
+                    <div className="row reply-subject-row">
+                      <span className="label" style={{ marginBottom: 0 }}>
+                        Subject
+                      </span>
+                      <input
+                        className="input"
+                        aria-label="Reply subject"
+                        value={subjects[reply.id] ?? suggestedSubject(reply)}
+                        onChange={(event) =>
+                          setSubjects((current) => ({ ...current, [reply.id]: event.target.value }))
+                        }
+                        placeholder="Subject line"
+                      />
+                      <button
+                        className="btn btn-sm btn-ghost"
+                        onClick={() => void suggestSubject(reply)}
+                        disabled={subjectBusy === reply.id || sending !== null}
+                        type="button"
+                        title="Ask AI for subject lines based on this reply"
+                      >
+                        <Sparkles size={12} aria-hidden="true" />
+                        {subjectBusy === reply.id ? "Thinking…" : "Suggest"}
+                      </button>
+                    </div>
+                    {(subjectIdeas[reply.id]?.length ?? 0) > 0 && (
+                      <div className="row refine-tones" style={{ marginBottom: 6 }}>
+                        {subjectIdeas[reply.id].map((idea) => (
+                          <button
+                            key={idea}
+                            className="btn btn-sm btn-ghost"
+                            type="button"
+                            title="Use this subject"
+                            onClick={() => setSubjects((current) => ({ ...current, [reply.id]: idea }))}
+                          >
+                            {idea}
+                          </button>
+                        ))}
+                      </div>
+                    )}
                     <EmailBodyEditor
                       label="Send a reply from here"
+                      kind="reply"
                       minHeight={120}
                       value={drafts[reply.id] ?? reply.draft_reply ?? ""}
-                      onChange={(value) =>
-                        setDrafts((current) => ({ ...current, [reply.id]: value }))
-                      }
+                      onChange={(value) => changeDraft(reply.id, value)}
                       placeholder="Write your answer…"
                     />
-                    <div className="row" style={{ marginTop: 6 }}>
+                    <div className="row reply-actions">
                       <button
                         className="btn btn-sm btn-primary"
                         onClick={() => void sendReply(reply)}
@@ -472,19 +674,51 @@ export default function ConversationsPage() {
                       >
                         {sending === reply.id ? "Sending…" : "Send reply"}
                       </button>
+                      <button
+                        className="btn btn-sm"
+                        onClick={() => void saveDraft(reply)}
+                        disabled={draftBusy === reply.id || sending !== null}
+                        type="button"
+                        title="Save this reply so you can finish it later, on any device"
+                      >
+                        <Save size={12} aria-hidden="true" />
+                        {draftBusy === reply.id ? "Saving…" : "Save draft"}
+                      </button>
                       {reply.draft_reply && (
                         <button
                           className="btn btn-sm btn-ghost"
-                          onClick={() =>
-                            setDrafts((current) => ({
-                              ...current,
-                              [reply.id]: reply.draft_reply ?? "",
-                            }))
-                          }
+                          onClick={() => changeDraft(reply.id, reply.draft_reply ?? "")}
                           disabled={sending !== null}
                           type="button"
                         >
                           Reset to suggestion
+                        </button>
+                      )}
+                      {(savedDraftAt[reply.id] || draftStatus[reply.id]) && (
+                        <span
+                          className="tiny reply-draft-note"
+                          title={
+                            savedDraftAt[reply.id]
+                              ? `Saved ${new Date(savedDraftAt[reply.id]).toLocaleString()}`
+                              : "Saved in this browser, so it survives reloads and page changes"
+                          }
+                        >
+                          {draftStatus[reply.id] === "saving"
+                            ? "Saving…"
+                            : savedDraftAt[reply.id]
+                              ? "Draft saved"
+                              : "Saved here"}
+                        </span>
+                      )}
+                      {savedDraftAt[reply.id] && (
+                        <button
+                          className="btn btn-sm btn-ghost"
+                          onClick={() => void discardDraft(reply)}
+                          disabled={draftBusy === reply.id || sending !== null}
+                          type="button"
+                          title="Delete the saved draft"
+                        >
+                          Discard draft
                         </button>
                       )}
                     </div>

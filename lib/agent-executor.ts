@@ -20,6 +20,7 @@ import {
   listReplies,
   listSuppressions,
   loadAnalyticsBundle,
+  moveLeadsToCampaign,
   loadDashboardBundle,
   loadFollowupsBundle,
   saveMasterKnowledge,
@@ -394,6 +395,35 @@ export async function executeAgentTool(
           ok: true,
           summary: args.requeue_research ? `Requeued lead ${leadId} for research` : `Updated lead ${leadId}`,
           data: { lead_id: leadId, updated: true },
+        };
+      }
+
+      case "move_leads_to_campaign": {
+        const ids = Array.isArray(args.lead_ids)
+          ? (args.lead_ids as unknown[]).map((value) => asStr(value)).filter(Boolean)
+          : [];
+        if (ids.length === 0) {
+          return { ok: false, summary: "lead_ids is required.", data: { error: "lead_ids is required" } };
+        }
+        const targetCampaignId = asStr(args.campaign_id) || null;
+        if (targetCampaignId) {
+          const campaigns = await listCampaigns(uid);
+          if (!campaigns.some((c) => c.id === targetCampaignId)) {
+            return {
+              ok: false,
+              summary: `Campaign ${targetCampaignId} not found.`,
+              data: { error: "Campaign not found" },
+            };
+          }
+        }
+        const moved = await moveLeadsToCampaign(uid, ids, targetCampaignId);
+        notifyIfMutated(moved > 0);
+        return {
+          ok: true,
+          summary: targetCampaignId
+            ? `Moved ${moved} lead${moved === 1 ? "" : "s"} to campaign ${targetCampaignId}`
+            : `Took ${moved} lead${moved === 1 ? "" : "s"} out of their campaign`,
+          data: { moved, campaign_id: targetCampaignId },
         };
       }
 
