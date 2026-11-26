@@ -453,7 +453,7 @@ export const AGENT_TOOLS: FunctionDeclaration[] = [
   },
   {
     name: "get_settings",
-    description: "Read the user's sender identity, daily/campaign sending limits, sending window, Gemini model, and suppression list.",
+    description: "Read the user's sender identity, daily/campaign sending limits, sending window, active AI model, saved providers (keys redacted) and suppression list.",
     parameters: {
       type: Type.OBJECT,
       properties: {
@@ -463,7 +463,8 @@ export const AGENT_TOOLS: FunctionDeclaration[] = [
   },
   {
     name: "update_settings",
-    description: "Update sender profile, sending limits, sending hours/days, timezone offset, minimum qualification score, or Gemini model.",
+    description:
+      "Update sender profile, sending limits, sending hours/days, timezone offset, minimum qualification score, or the active AI model. Changing the model also updates the saved provider entry, so the choice takes effect immediately.",
     parameters: {
       type: Type.OBJECT,
       properties: {
@@ -485,6 +486,11 @@ export const AGENT_TOOLS: FunctionDeclaration[] = [
           type: Type.STRING,
           description:
             "Model id from the provider connected in Settings > AI engine (for example gemini-3.5-flash or gpt-4o-mini).",
+        },
+        provider: {
+          type: Type.STRING,
+          description:
+            "Optional saved provider to change: its id, display name or type (for example gemini or openai). Defaults to the currently active provider. Use this when the user names the provider.",
         },
       },
     },

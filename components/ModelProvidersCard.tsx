@@ -22,11 +22,13 @@ import {
   guessCapabilities,
   newProviderDraft,
   providersFromSettings,
+  providerFromSettings,
   providersPatchFor,
   readActiveProviderId,
   readProviders,
   seedFromSettings,
   setActiveProviderId,
+  useActiveProviderId,
   settingsPatchFor,
   toAiConfig,
   writeProviders,
@@ -63,7 +65,6 @@ export function ModelProvidersCard({
   onSaved: (settings: Settings) => void;
 }) {
   const [overrides, setOverrides] = useState<SavedProvider[] | null>(null);
-  const [activeOverride, setActiveOverride] = useState<string | null>(null);
   const [editing, setEditing] = useState<SavedProvider | null>(null);
   const [showKey, setShowKey] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
@@ -82,8 +83,19 @@ export function ModelProvidersCard({
   useEffect(() => {
     listRef.current = providers;
   }, [providers]);
-  const storedActive = readActiveProviderId();
-  const activeId = activeOverride ?? (storedActive || providers.find((provider) => provider.enabled)?.id || "");
+  // The active provider is shared with the operator. Reading it reactively means
+  // a switch made in the operator is reflected here without a reload.
+  const storedActive = useActiveProviderId();
+  const activeId =
+    (storedActive && providers.some((provider) => provider.id === storedActive) ? storedActive : "") ||
+    providerFromSettings(providers, settings)?.id ||
+    providers.find((provider) => provider.enabled)?.id ||
+    "";
+
+  const activeIdRef = useRef(activeId);
+  useEffect(() => {
+    activeIdRef.current = activeId;
+  }, [activeId]);
 
   const persist = useCallback(
     (updater: SavedProvider[] | ((current: SavedProvider[]) => SavedProvider[])) => {
@@ -94,14 +106,14 @@ export function ModelProvidersCard({
       listRef.current = next;
       setOverrides(next);
       writeProviders(next);
-      void saveSettings(uid, providersPatchFor(next, readActiveProviderId())).catch((err) => {
+      // Pass the provider this card shows as active, so editing its model also
+      // updates the top-level settings that every AI request actually reads.
+      void saveSettings(uid, providersPatchFor(next, activeIdRef.current || readActiveProviderId())).catch((err) => {
         toast.error("Provider saved on this browser only", errorMessage(err));
       });
     },
     [toast, uid],
   );
-
-  const setActiveId = (id: string) => setActiveOverride(id);
 
   useEffect(() => {
     if (seeded.length > 0) writeProviders(seeded);
@@ -111,7 +123,6 @@ export function ModelProvidersCard({
 
   const applyProvider = async (provider: SavedProvider) => {
     setActiveProviderId(provider.id);
-    setActiveId(provider.id);
     setActiveAiConfig({
       provider: provider.provider,
       model: provider.model,
@@ -144,9 +155,10 @@ export function ModelProvidersCard({
           model: provider.model,
         });
         const models = res.models.length ? res.models : provider.models;
-        const model = res.models.some((item) => item.id === provider.model)
-          ? provider.model
-          : res.recommendedModel || provider.model || models[0]?.id || "";
+        // Never replace a model the user chose. The catalogue can be paginated
+        // or omit ids that still work, and "recommended" used to quietly rewrite
+        // a selected Pro/other model back to the default Flash model.
+        const model = provider.model.trim() || res.recommendedModel || models[0]?.id || "";
         const next: SavedProvider = {
           ...provider,
           provider: res.provider,
@@ -230,7 +242,6 @@ export function ModelProvidersCard({
       if (fallback) void applyProvider(fallback);
       else {
         setActiveProviderId("");
-        setActiveId("");
         setActiveAiConfig(aiConfigFromSettings(settings));
       }
     }

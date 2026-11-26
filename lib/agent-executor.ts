@@ -44,6 +44,16 @@ import {
   writebackCampaignStatuses,
 } from "./pipeline-client";
 import { computeDashboardStats, findFollowupCandidatesFromData } from "./outreach-utils";
+import {
+  activeProviderEntry,
+  patchActiveModel,
+  providersFromSettings,
+  readProviders,
+  setActiveProviderId,
+  toAiConfig,
+  writeProviders,
+} from "./ai/providers";
+import { setActiveAiConfig } from "./ai-client";
 import type { LeadStatus, Settings } from "./types";
 
 export interface AgentExecutionEnv {
@@ -1025,14 +1035,30 @@ export async function executeAgentTool(
           getSettings(uid),
           includeSup ? listSuppressions(uid) : Promise.resolve([]),
         ]);
+        const providers = providersFromSettings(settings);
+        const active = activeProviderEntry(providers, settings);
+        // Never hand raw provider JSON to the model: it contains every API key.
         return {
           ok: true,
-          summary: `Settings loaded (AI: ${settings.ai_provider || "gemini"} / ${settings.model}, daily limit: ${settings.daily_limit})`,
+          summary: `Settings loaded (active AI: ${settings.ai_provider || "gemini"} / ${settings.model}, daily limit: ${settings.daily_limit})`,
           data: {
             settings: {
               ...settings,
+              ai_providers: "(redacted — see providers)",
               ai_api_key: settings.ai_api_key ? "(stored privately — not shown)" : "",
+              active_provider_id: active?.id ?? "",
             },
+            providers: providers.map((provider) => ({
+              id: provider.id,
+              name: provider.name,
+              provider: provider.provider,
+              model: provider.model,
+              enabled: provider.enabled,
+              base_url: provider.baseUrl,
+              key_hint: provider.apiKey ? `••••${provider.apiKey.slice(-4)}` : "",
+              verified_at: provider.verifiedAt,
+              last_error: provider.lastError,
+            })),
             suppressions: suppressions.slice(0, 30).map((s) => ({ email: s.email, reason: s.reason })),
           },
         };
@@ -1069,12 +1095,35 @@ export async function executeAgentTool(
             patch[f] = Math.round(Number(args[f]));
           }
         }
+        // A model change also has to rewrite the active provider's entry, or the
+        // saved conversation config keeps sending the previous model.
+        if (typeof args.model === "string" && args.model.trim()) {
+          const current = await getSettings(uid);
+          const { patch: modelPatch, provider } = patchActiveModel(
+            current,
+            args.model.trim(),
+            typeof args.provider === "string" ? args.provider : undefined,
+          );
+          Object.assign(patch, modelPatch);
+          if (provider) {
+            setActiveProviderId(provider.id);
+            setActiveAiConfig(toAiConfig(provider));
+          }
+        }
         const saved = await saveSettings(uid, patch);
+        // Publish the merged list so open panels show the new model right away.
+        const stored = providersFromSettings(saved);
+        if (stored.length > 0) {
+          writeProviders([
+            ...stored,
+            ...readProviders().filter((local) => !stored.some((entry) => entry.id === local.id)),
+          ]);
+        }
         await writeAuditLog(uid, "settings_updated", "settings", "default", { via: "ai_operator", keys: Object.keys(patch) });
         notifyIfMutated(true);
         return {
           ok: true,
-          summary: `Saved settings (${Object.keys(patch).join(", ") || "no changes"})`,
+          summary: `Saved settings (${Object.keys(patch).join(", ") || "no changes"}) — active AI: ${saved.ai_provider || "gemini"} / ${saved.model}`,
           data: { settings: saved },
         };
       }

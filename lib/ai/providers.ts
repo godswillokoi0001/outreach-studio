@@ -176,14 +176,46 @@ export function readActiveProviderId(): string {
   }
 }
 
+const ACTIVE_EVENT = "knowrevo:model-active-changed";
+
+/**
+ * The active provider is one shared value, not per-panel state. Settings and the
+ * operator subscribe to this event, so switching in one place takes effect in
+ * the other immediately instead of leaving a stale model pinned in a panel.
+ */
 export function setActiveProviderId(id: string): void {
   if (typeof window === "undefined") return;
   try {
+    const current = window.localStorage.getItem(ACTIVE_KEY) ?? "";
+    if (current === id) return;
     if (id) window.localStorage.setItem(ACTIVE_KEY, id);
     else window.localStorage.removeItem(ACTIVE_KEY);
+    window.dispatchEvent(new Event(ACTIVE_EVENT));
   } catch {
     /* ignore */
   }
+}
+
+function subscribeActiveProvider(onChange: () => void): () => void {
+  window.addEventListener(ACTIVE_EVENT, onChange);
+  window.addEventListener("storage", onChange);
+  return () => {
+    window.removeEventListener(ACTIVE_EVENT, onChange);
+    window.removeEventListener("storage", onChange);
+  };
+}
+
+function readActiveProviderRaw(): string {
+  try {
+    return window.localStorage.getItem(ACTIVE_KEY) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+/** Live active provider id, shared by Settings and the operator's model switcher. */
+export function useActiveProviderId(): string {
+  return useSyncExternalStore(subscribeActiveProvider, readActiveProviderRaw, () => "");
 }
 
 export function enabledProviders(list: SavedProvider[]): SavedProvider[] {
@@ -263,6 +295,72 @@ export function providersPatchFor(
     ai_providers: JSON.stringify(list),
     ...(active ? settingsPatchFor(active) : {}),
   };
+}
+
+/**
+ * The provider currently in use: the settings fields first (they are what the
+ * server runs), then this browser's selection, then the first enabled entry.
+ */
+export function activeProviderEntry(
+  list: SavedProvider[],
+  settings: Settings | null | undefined,
+): SavedProvider | null {
+  return (
+    providerFromSettings(list, settings) ??
+    list.find((item) => item.id === readActiveProviderId()) ??
+    list.find((item) => item.enabled) ??
+    list[0] ??
+    null
+  );
+}
+
+/**
+ * Changing the active model has to change the provider entry as well. Writing
+ * only the top-level settings left `ai_providers` pointing at the previous
+ * model, and the next render sent that old model again.
+ */
+export function patchActiveModel(
+  settings: Settings,
+  model: string,
+  providerHint?: string,
+): { patch: Partial<Settings>; provider: SavedProvider | null } {
+  const list = providersFromSettings(settings);
+  const hint = (providerHint ?? "").trim().toLowerCase();
+  const hinted = hint
+    ? list.find(
+        (item) =>
+          item.id.toLowerCase() === hint ||
+          item.name.trim().toLowerCase() === hint ||
+          item.provider.toLowerCase() === hint,
+      ) ?? null
+    : null;
+  const entry = hinted ?? activeProviderEntry(list, settings);
+  if (!entry) return { patch: { model }, provider: null };
+
+  const updated: SavedProvider = { ...entry, model, enabled: true };
+  const next = list.some((item) => item.id === entry.id)
+    ? list.map((item) => (item.id === entry.id ? updated : item))
+    : [...list, updated];
+  return {
+    patch: { ai_providers: JSON.stringify(next), ...settingsPatchFor(updated) },
+    provider: updated,
+  };
+}
+
+/** The provider whose provider/model/key match the account settings row. */
+export function providerFromSettings(
+  list: SavedProvider[],
+  settings: Settings | null | undefined,
+): SavedProvider | null {
+  if (!settings) return null;
+  return (
+    list.find(
+      (item) =>
+        item.provider === settings.ai_provider &&
+        item.apiKey === settings.ai_api_key &&
+        item.model === settings.model,
+    ) ?? null
+  );
 }
 
 /** The subset persisted into the private settings row (server fallback). */

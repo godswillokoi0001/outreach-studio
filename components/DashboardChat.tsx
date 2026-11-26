@@ -66,6 +66,7 @@ import {
   settingsPatchFor,
   toAiConfig,
   useModelProviders,
+  useActiveProviderId,
   writeProviders,
 } from "@/lib/ai/providers";
 import { withRetry } from "@/lib/retry";
@@ -441,13 +442,14 @@ export function DashboardChat({
   // browser's model vault (Settings → Model providers); keys never enter the
   // bundle and are only attached to authenticated AI requests.
   const providers = useModelProviders();
-  const [providerChoice, setProviderChoice] = useState<string | null>(null);
-  const storedProviderId = readActiveProviderId();
+  // The active model is shared with Settings through one reactive store. Panel
+  // state used to pin an older choice, which let Settings show a model as active
+  // while this panel kept sending requests to the previous one.
+  const storedProviderId = useActiveProviderId();
   const providerId =
-    providerChoice ??
-    (storedProviderId && providers.some((provider) => provider.id === storedProviderId)
+    storedProviderId && providers.some((provider) => provider.id === storedProviderId)
       ? storedProviderId
-      : providers.find((provider) => provider.enabled)?.id || "");
+      : providers.find((provider) => provider.enabled)?.id || "";
 
   // A browser that has never opened Settings still gets the account's provider
   // vault, so the operator's model switcher lists every saved model here too.
@@ -461,18 +463,16 @@ export function DashboardChat({
             ...saved,
             ...local.filter((entry) => !saved.some((remote) => remote.id === entry.id)),
           ];
-          // Without a local choice, mirror the account's active provider so the
-          // switcher and the server agree on another computer.
-          if (!readActiveProviderId()) {
-            const active =
-              saved.find(
-                (entry) =>
-                  entry.provider === settings.ai_provider &&
-                  entry.apiKey === settings.ai_api_key &&
-                  entry.model === settings.model,
-              ) ?? saved.find((entry) => entry.enabled);
-            if (active) setActiveProviderId(active.id);
-          }
+          // Mirror the account's active provider so the switcher and the server
+          // agree, including after a change made on another computer.
+          const active =
+            saved.find(
+              (entry) =>
+                entry.provider === settings.ai_provider &&
+                entry.apiKey === settings.ai_api_key &&
+                entry.model === settings.model,
+            ) ?? saved.find((entry) => entry.enabled);
+          if (active && readActiveProviderId() !== active.id) setActiveProviderId(active.id);
           writeProviders(merged);
         }
       })
@@ -1055,6 +1055,11 @@ export function DashboardChat({
       );
 
       const turn = normalizeAgentTurnResponse(rawTurn);
+      // Say so when the chosen model could not answer and another one did, so a
+      // silent fallback never looks like the selected model was used.
+      if (turn.modelUsed && activeModel && turn.modelUsed !== activeModel) {
+        showNarration(`Note: ${activeModel} was unavailable, so this reply came from ${turn.modelUsed}.`);
+      }
       if (turn.modelUsed) {
         activeModel = turn.modelUsed;
       }
@@ -1199,7 +1204,6 @@ export function DashboardChat({
 
   const chooseProvider = (id: string) => {
     const next = providers.find((provider) => provider.id === id) ?? null;
-    setProviderChoice(id);
     if (!next) {
       setActiveProviderId("");
       return;
@@ -1647,7 +1651,6 @@ export function DashboardChat({
     setMode(conversation.mode ?? "agent");
     const restore = providers.find((provider) => provider.id === conversation.providerId);
     if (restore) {
-      setProviderChoice(restore.id);
       setActiveProviderId(restore.id);
       setActiveAiConfig(toAiConfig(restore));
     }

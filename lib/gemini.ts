@@ -56,7 +56,9 @@ async function runWithRetryAndFallback<T>(
   executor: (model: string) => Promise<T>,
 ): Promise<{ result: T; model: string }> {
   const cfg = getActiveAiConfig();
-  const primary = resolveModel(requestedModel || cfg?.model, process.env.GEMINI_MODEL);
+  // The configured provider's model wins: a client can briefly hold a model id
+  // from the provider it just switched away from.
+  const primary = resolveModel(cfg?.model || requestedModel, process.env.GEMINI_MODEL);
   const candidates = primary === FALLBACK_GEMINI_MODEL ? [primary] : [primary, FALLBACK_GEMINI_MODEL];
   let lastError: GeminiApiError | null = null;
 
