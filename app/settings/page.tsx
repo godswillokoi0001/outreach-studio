@@ -19,7 +19,7 @@ import {
 } from "@/lib/store";
 import { fmtDate } from "@/lib/format";
 import { DEFAULT_SETTINGS, type Settings, type Suppression } from "@/lib/types";
-import { ModelProvidersCard } from "@/components/ModelProvidersCard";
+import { AiProviderSettingsCard } from "@/components/AiProviderSettingsCard";
 import { ClearActivityModal } from "@/components/ClearActivityModal";
 import {
   OPERATOR_MEMORY_CHANGED,
@@ -281,7 +281,7 @@ export default function SettingsPage() {
 
         <div id="ai-engine">
           {!loading && (
-            <ModelProvidersCard uid={user.uid} settings={form} onSaved={(saved) => setForm(saved)} />
+            <AiProviderSettingsCard />
           )}
         </div>
 

@@ -4,6 +4,8 @@ import { isSafeProviderUrl } from "@/lib/ai/context";
 import { getProvider, guessProviderId, isProviderId, pickRecommendedModel, publicProviderList } from "@/lib/ai/registry";
 import type { AiConfig, AiProviderId } from "@/lib/ai/types";
 import { handleApiError } from "@/lib/api-helpers";
+import { validateApiKeyInput } from "@/lib/key-vault";
+import { checkKeyTestRateLimit } from "@/lib/platform/store-server";
 import { verifyRequest } from "@/lib/server-auth";
 
 export const dynamic = "force-dynamic";
@@ -24,7 +26,15 @@ export async function GET(req: NextRequest) {
  */
 export async function POST(req: NextRequest) {
   try {
-    await verifyRequest(req);
+    const authUser = await verifyRequest(req);
+    const rl = checkKeyTestRateLimit(authUser.ownerId);
+    if (!rl.allowed) {
+      return NextResponse.json(
+        { error: `Too many key tests. Wait ${rl.retryAfterSec} seconds and try again.` },
+        { status: 429 },
+      );
+    }
+
     const body = (await req.json().catch(() => ({}))) as {
       provider?: string;
       apiKey?: string;
@@ -32,13 +42,11 @@ export async function POST(req: NextRequest) {
       model?: string;
     };
 
-    const apiKey = String(body.apiKey ?? "").trim();
-    if (!apiKey) {
-      return NextResponse.json({ error: "Paste an API key first." }, { status: 400 });
+    const validatedKey = validateApiKeyInput(body.apiKey);
+    if (!validatedKey.ok) {
+      return NextResponse.json({ error: validatedKey.error }, { status: 400 });
     }
-    if (apiKey.length > 512) {
-      return NextResponse.json({ error: "That API key is too long." }, { status: 400 });
-    }
+    const apiKey = validatedKey.value;
 
     const requested = String(body.provider ?? "").trim().toLowerCase();
     const guessed = guessProviderId(apiKey);

@@ -86,7 +86,9 @@ const PROVIDERS_EVENT = "knowrevo:model-providers-changed";
 export function writeProviders(list: SavedProvider[]): void {
   if (typeof window === "undefined") return;
   try {
-    window.localStorage.setItem(LIST_KEY, JSON.stringify(list));
+    // Requirement: never store plaintext API keys in localStorage.
+    const sanitized = list.map((p) => ({ ...p, apiKey: "" }));
+    window.localStorage.setItem(LIST_KEY, JSON.stringify(sanitized));
     window.dispatchEvent(new Event(PROVIDERS_EVENT));
   } catch {
     /* storage unavailable: the caller keeps its in-memory copy */

@@ -31,6 +31,17 @@ export interface AppUser {
   displayName: string;
   photoURL: string | null;
   emailVerified: boolean;
+  role?: "super_admin" | "admin" | "support" | "user";
+  status?: "active" | "suspended";
+  twoFactorEnabled?: boolean;
+}
+
+export interface ClientAnnouncement {
+  id: string;
+  title: string;
+  message: string;
+  tone: "info" | "warn" | "ok";
+  createdAt: string;
 }
 
 /**
@@ -111,10 +122,23 @@ export async function fetchCurrentUser(): Promise<AppUser | null> {
   });
 
   const text = await res.text().catch(() => "");
-  const data = text ? (JSON.parse(text) as { user?: AppUser; error?: string }) : null;
+  const data = text
+    ? (JSON.parse(text) as {
+        user?: AppUser;
+        announcements?: ClientAnnouncement[];
+        error?: string;
+      })
+    : null;
 
   if (!res.ok) {
     throw new Error(data?.error ?? `Could not load your workspace (HTTP ${res.status}).`);
+  }
+  if (data?.user && typeof window !== "undefined") {
+    try {
+      window.sessionStorage.setItem("os:announcements", JSON.stringify(data.announcements ?? []));
+    } catch {
+      /* ignore */
+    }
   }
   return data?.user ?? null;
 }

@@ -67,6 +67,25 @@ export async function verifyRequest(req: NextRequest): Promise<AuthUser> {
 
   const ownerId = await resolveOwnerId(data.user.id, email);
 
+  // Enforce suspension immediately across every authenticated route.
+  try {
+    const metaRow = await supabaseServer
+      .from("knowledge")
+      .select("content")
+      .eq("id", `system_user_meta_${ownerId}`)
+      .eq("owner_id", ownerId)
+      .maybeSingle();
+    const content = (metaRow.data as { content?: string } | null)?.content;
+    if (content) {
+      const parsed = JSON.parse(content) as { status?: string };
+      if (parsed.status === "suspended") {
+        throw new AuthError("Your account has been suspended by an administrator. Contact support.", 403);
+      }
+    }
+  } catch (err) {
+    if (err instanceof AuthError) throw err;
+  }
+
   return { id: data.user.id, ownerId, email, name, avatarUrl };
 }
 

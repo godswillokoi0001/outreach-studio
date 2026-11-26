@@ -20,7 +20,20 @@ export function extractWorkspaceToken(req: NextRequest): string {
 
 export function handleApiError(err: unknown): NextResponse {
   if (err instanceof AuthError) {
-    return NextResponse.json({ error: err.message }, { status: err.status });
+    const extra = err as AuthError & {
+      code?: string;
+      canUseOwnKey?: boolean;
+      canFallbackToPlatform?: boolean;
+    };
+    return NextResponse.json(
+      {
+        error: err.message,
+        ...(extra.code ? { code: extra.code } : {}),
+        ...(extra.canUseOwnKey ? { canUseOwnKey: true } : {}),
+        ...(extra.canFallbackToPlatform ? { canFallbackToPlatform: true } : {}),
+      },
+      { status: err.status },
+    );
   }
   if (err instanceof GeminiApiError) {
     return NextResponse.json({ error: err.message }, { status: err.status });

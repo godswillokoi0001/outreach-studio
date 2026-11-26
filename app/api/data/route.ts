@@ -106,7 +106,19 @@ function cleanValues(table: string, raw: unknown): Row {
   return out;
 }
 
+function assertSafeClientRecordId(id: string): void {
+  if (
+    id.startsWith("system_user_meta_") ||
+    id.startsWith("system_user_byok_") ||
+    id.startsWith("system_platform") ||
+    id.startsWith("adm_log_")
+  ) {
+    throw new AuthError("Access to protected system security records is denied.", 403);
+  }
+}
+
 async function assertOwnership(table: string, id: string, ownerId: string): Promise<void> {
+  assertSafeClientRecordId(id);
   if (!supabaseServer) throw new AuthError("Supabase is not configured on this deployment.", 503);
   const { data } = await supabaseServer
     .from(table as never)
@@ -131,6 +143,7 @@ async function upsertRow(table: string, id: string, ownerId: string, values: unk
 }
 
 async function deleteRow(table: string, id: string, ownerId: string): Promise<void> {
+  assertSafeClientRecordId(id);
   if (!supabaseServer) throw new AuthError("Supabase is not configured on this deployment.", 503);
   const { error } = await supabaseServer
     .from(table as never)
@@ -155,6 +168,8 @@ export async function GET(req: NextRequest) {
       ? Math.min(Math.floor(requestedLimit), 5000)
       : null;
 
+    if (id) assertSafeClientRecordId(id);
+
     let scoped = supabaseServer.from(table as never).select(columns);
     scoped = id
       ? scoped.eq("id", id).eq("owner_id", user.ownerId)
@@ -166,7 +181,15 @@ export async function GET(req: NextRequest) {
 
     if (error) throw new Error(`Could not read ${table}: ${error.message}`);
 
-    const rows = (data ?? []) as Row[];
+    const rows = ((data ?? []) as Row[]).filter((row) => {
+      const rowId = String(row.id ?? "");
+      return (
+        !rowId.startsWith("system_user_meta_") &&
+        !rowId.startsWith("system_user_byok_") &&
+        !rowId.startsWith("system_platform") &&
+        !rowId.startsWith("adm_log_")
+      );
+    });
     return NextResponse.json(
       id ? { row: rows[0] ?? null } : { rows },
       { headers: { "Cache-Control": "no-store" } },

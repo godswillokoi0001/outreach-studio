@@ -32,6 +32,7 @@ import {
   Search,
   Send,
   Settings,
+  Shield,
   TrendingUp,
   Users,
   X,
@@ -52,6 +53,7 @@ import {
 } from "@/lib/signals";
 import { runSendBatch, runSyncBatch } from "@/lib/pipeline-client";
 import { useAuth } from "./AuthProvider";
+import type { ClientAnnouncement } from "@/lib/auth";
 import { BrandLoader } from "./BrandLoader";
 import { BrandLockup, BrandMark } from "./BrandMark";
 import { Menu, MenuItem, MenuSeparator } from "./Menu";
@@ -151,7 +153,17 @@ function ShellInner({ children }: { children: ReactNode }) {
   const [latest, setLatest] = useState<{ open: string; reply: string }>({ open: "", reply: "" });
   const [onboardingChecked, setOnboardingChecked] = useState(false);
   const [onboardingDone, setOnboardingDone] = useState(true);
+  const [announcements, setAnnouncements] = useState<ClientAnnouncement[]>([]);
   const uid = user?.uid ?? "";
+
+  useEffect(() => {
+    try {
+      const raw = window.sessionStorage.getItem("os:announcements");
+      if (raw) setAnnouncements(JSON.parse(raw) as ClientAnnouncement[]);
+    } catch {
+      /* ignore */
+    }
+  }, []);
 
   useEffect(() => {
     if (!uid) return;
@@ -368,8 +380,21 @@ function ShellInner({ children }: { children: ReactNode }) {
     return "seen";
   };
 
+  const isAdminUser =
+    user.role === "super_admin" || user.role === "admin" || user.role === "support";
+
+  const navSections = isAdminUser
+    ? [
+        ...NAV,
+        {
+          group: "Administration",
+          items: [{ href: "/admin", label: "Admin Dashboard", icon: Shield }],
+        },
+      ]
+    : NAV;
+
   const displayName = user.displayName || user.email || "Signed in";
-  const currentSection = NAV.flatMap((group) => group.items).find((item) =>
+  const currentSection = navSections.flatMap((group) => group.items).find((item) =>
     item.href === "/" ? pathname === "/" : pathname.startsWith(item.href),
   );
 
@@ -438,7 +463,7 @@ function ShellInner({ children }: { children: ReactNode }) {
           </button>
         </div>
         <nav className="nav">
-          {NAV.map((group) => (
+          {navSections.map((group) => (
             <div key={group.group}>
               <div className="nav-group-label">{group.group}</div>
               {group.items.map((item) => {
@@ -663,6 +688,29 @@ function ShellInner({ children }: { children: ReactNode }) {
         {workspaceIssue && (
           <div style={{ padding: "12px 28px 0" }}>
             <WorkspaceIssueNotice />
+          </div>
+        )}
+
+        {announcements.length > 0 && (
+          <div style={{ padding: "12px 28px 0" }} className="stack">
+            {announcements.map((ann) => (
+              <div key={ann.id} className="banner" data-tone={ann.tone}>
+                <div className="row" style={{ justifyContent: "space-between", alignItems: "flex-start", gap: 10 }}>
+                  <div>
+                    <strong style={{ display: "block", fontSize: 13 }}>{ann.title}</strong>
+                    <span className="tiny">{ann.message}</span>
+                  </div>
+                  <button
+                    type="button"
+                    className="btn btn-sm btn-ghost"
+                    onClick={() => setAnnouncements((prev) => prev.filter((a) => a.id !== ann.id))}
+                    aria-label="Dismiss announcement"
+                  >
+                    <X size={13} />
+                  </button>
+                </div>
+              </div>
+            ))}
           </div>
         )}
 

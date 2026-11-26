@@ -39,15 +39,8 @@ export function currentAiConfig(): AiConfig | null {
 }
 
 export function aiConfigHeader(): string | null {
-  if (!cached || !cached.apiKey) return null;
-  return encodeURIComponent(
-    JSON.stringify({
-      provider: cached.provider,
-      model: cached.model,
-      apiKey: cached.apiKey,
-      ...(cached.baseUrl ? { baseUrl: cached.baseUrl } : {}),
-    }),
-  );
+  // Plaintext AI keys are never sent from the browser; server resolves encrypted vault keys.
+  return null;
 }
 
 export function initAiConfig(uid: string): Promise<AiConfig | null> {

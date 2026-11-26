@@ -89,6 +89,20 @@ function supabaseConfigured(): boolean {
   );
 }
 
+import { maskSecret } from "@/lib/key-vault";
+
+function sanitizeSettingsForClient(settings: Settings | null): Settings | null {
+  if (!settings) return null;
+  // Never transmit plaintext AI API keys to the browser.
+  const maskedKey = settings.ai_api_key ? maskSecret(settings.ai_api_key) : "";
+  return {
+    ...settings,
+    ai_api_key: "",
+    ai_key_hint: settings.ai_key_hint || maskedKey,
+    ai_providers: "",
+  };
+}
+
 export async function GET(req: NextRequest) {
   try {
     await verifyRequest(req);
@@ -100,7 +114,7 @@ export async function GET(req: NextRequest) {
       );
     }
 
-    const settings = await getSupabaseSettingsServer();
+    const settings = sanitizeSettingsForClient(await getSupabaseSettingsServer());
     return NextResponse.json({ settings }, { headers: { "Cache-Control": "no-store" } });
   } catch (err) {
     return handleApiError(err);
@@ -128,8 +142,8 @@ export async function PUT(req: NextRequest) {
       return NextResponse.json({ error: "Supabase request failed." }, { status: 500 });
     }
 
-    // Return the stored document so the UI works from what the database holds.
-    const settings = await getSupabaseSettingsServer();
+    // Return masked/safe document so keys never travel to the browser.
+    const settings = sanitizeSettingsForClient(await getSupabaseSettingsServer());
     return NextResponse.json({ ok: true, settings }, { headers: { "Cache-Control": "no-store" } });
   } catch (err) {
     return handleApiError(err);

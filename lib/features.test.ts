@@ -315,3 +315,93 @@ test("Onboarding URL validation, user prefill, completeness scoring, and Markdow
   assert.match(markdown, /## Business overview\n\nWe help clinics grow\./);
   assert.match(markdown, /## Proof and credibility\n\nNot provided\./);
 });
+
+test("Key vault encrypts/decrypts AES-256-GCM, masks secrets, validates keys, and verifies TOTP & admin tokens", async () => {
+  const {
+    decryptSecret,
+    encryptSecret,
+    generateTotpAt,
+    generateTotpSecret,
+    issueAdmin2faToken,
+    maskSecret,
+    validateApiKeyInput,
+    verifyAdmin2faToken,
+    verifyTotpCode,
+  } = await import("./key-vault");
+
+  const secretKey = "sk-numes-v1-test998877665544332211a91f";
+  const encrypted = encryptSecret(secretKey);
+  assert.ok(encrypted.startsWith("enc:v1:"), "must encrypt with versioned AES-256-GCM format");
+  assert.notEqual(encrypted, secretKey);
+  assert.equal(decryptSecret(encrypted), secretKey);
+
+  const masked = maskSecret(secretKey);
+  assert.ok(masked.startsWith("sk-") && masked.endsWith("a91f"), `unexpected mask: ${masked}`);
+  assert.ok(!masked.includes("99887766"), "masked secret must hide middle characters");
+
+  assert.equal(validateApiKeyInput("short").ok, false);
+  assert.equal(validateApiKeyInput("sk-good-key-1234567890").ok, true);
+  assert.equal(validateApiKeyInput("sk-bad key\n123456").ok, false);
+
+  const totpSecret = generateTotpSecret();
+  const step = Math.floor(Date.now() / 1000 / 30);
+  const code = generateTotpAt(totpSecret, step);
+  assert.equal(code.length, 6);
+  assert.equal(verifyTotpCode(totpSecret, code), true);
+  assert.equal(verifyTotpCode(totpSecret, "000000"), code === "000000");
+
+  const sessionTok = issueAdmin2faToken("user_123", "session", 600);
+  assert.equal(verifyAdmin2faToken(sessionTok, "user_123", "session"), true);
+  assert.equal(verifyAdmin2faToken(sessionTok, "user_456", "session"), false);
+  assert.equal(verifyAdmin2faToken(sessionTok, "user_123", "reauth"), false);
+});
+
+test("Platform model catalog excludes disabled providers and disabled models", async () => {
+  const { buildPublicPlatformModelList } = await import("./platform/store-server");
+  const list = buildPublicPlatformModelList({
+    providers: [
+      {
+        id: "gemini",
+        label: "Google Gemini",
+        enabled: true,
+        hasKey: true,
+        maskedKey: "AIza...1234",
+        models: [
+          { id: "gemini-2.5-flash", displayName: "Gemini 2.5 Flash", enabled: true },
+          { id: "gemini-disabled", displayName: "Disabled Model", enabled: false },
+        ],
+      },
+      {
+        id: "openai",
+        label: "OpenAI",
+        enabled: false,
+        hasKey: true,
+        maskedKey: "sk-...5678",
+        models: [{ id: "gpt-4o", displayName: "GPT-4o", enabled: true }],
+      },
+    ],
+    featureDefaults: {
+      analytics: { provider: "gemini", model: "gemini-2.5-flash" },
+      growth_advisor: { provider: "gemini", model: "gemini-2.5-flash" },
+      research: { provider: "gemini", model: "gemini-2.5-flash" },
+      ask_ai: { provider: "gemini", model: "gemini-2.5-flash" },
+      knowledge_base: { provider: "gemini", model: "gemini-2.5-flash" },
+      email_compose: { provider: "gemini", model: "gemini-2.5-flash" },
+      operator_chat: { provider: "gemini", model: "gemini-2.5-flash" },
+    },
+    fallbackChain: [],
+    quotas: {
+      dailyRequestsPerUser: 100,
+      monthlyRequestsPerUser: 1500,
+      dailyTokensPerUser: 300000,
+      monthlyTokensPerUser: 4000000,
+      rateLimitPerMinute: 25,
+      monthlySpendCapUsd: 250,
+      alertThresholdPct: 80,
+    },
+    updatedAt: new Date().toISOString(),
+  });
+
+  assert.equal(list.length, 1);
+  assert.equal(list[0].model, "gemini-2.5-flash");
+});

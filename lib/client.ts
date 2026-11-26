@@ -78,13 +78,11 @@ export async function authedPost<T>(
     Authorization: `Bearer ${sessionToken}`,
   };
 
-  // AI routes run against whichever provider/model the user connected in
-  // Settings. The key never leaves this request.
-  if (path.startsWith("/api/ai/")) {
-    await ensureAiConfigLoaded();
-    const aiHeader = aiConfigHeader();
-    if (aiHeader) headers["X-AI-Config"] = aiHeader;
-  }
+  // AI credentials & routing live strictly on the server (encrypted vault +
+  // platform router). Plaintext keys are never placed in browser headers.
+  void aiConfigHeader;
+  void ensureAiConfigLoaded;
+  void setActiveAiConfig;
 
   if (options?.requireWorkspace) {
     const ready = await ensureWorkspaceToken();
@@ -105,30 +103,17 @@ export async function authedPost<T>(
   const backoffMs = (attempt: number) =>
     Math.min(8_000, 900 * 2 ** attempt) + Math.round(Math.random() * 400);
   const serialized = body === undefined ? undefined : JSON.stringify(body);
-
-  let rotatedProvider = false;
+  void rotateAiProvider;
 
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     let res: Response;
-    try {
-      res = await fetch(path, {
-        method: "POST",
-        headers,
-        body: serialized,
-        cache: "no-store",
-        credentials: "same-origin",
-      });
-    } catch (err) {
-      // A network failure on an AI call switches to the next saved model
-      // instead of failing the whole feature.
-      if (isAiRoute && !rotatedProvider && (await rotateAiProvider())) {
-        rotatedProvider = true;
-        headers["X-AI-Config"] = aiConfigHeader() ?? headers["X-AI-Config"];
-        attempt = -1;
-        continue;
-      }
-      throw err;
-    }
+    res = await fetch(path, {
+      method: "POST",
+      headers,
+      body: serialized,
+      cache: "no-store",
+      credentials: "same-origin",
+    });
 
     const contentType = res.headers.get("content-type") ?? "";
     const text = await res.text();
@@ -144,14 +129,26 @@ export async function authedPost<T>(
     }
 
     if (!res.ok) {
+      const errorObj = (data && typeof data === "object" ? data : {}) as {
+        error?: unknown;
+        code?: string;
+        canUseOwnKey?: boolean;
+        canFallbackToPlatform?: boolean;
+      };
+      const isPolicyStop =
+        typeof errorObj.code === "string" &&
+        (errorObj.code.startsWith("PLATFORM_") || errorObj.code.startsWith("PERSONAL_KEY_"));
+
       const isTransientStatus =
-        res.status === 408 ||
-        res.status === 425 ||
-        res.status === 429 ||
-        res.status === 500 ||
-        res.status === 502 ||
-        res.status === 503 ||
-        res.status === 504;
+        !isPolicyStop &&
+        (res.status === 408 ||
+          res.status === 425 ||
+          res.status === 429 ||
+          res.status === 500 ||
+          res.status === 502 ||
+          res.status === 503 ||
+          res.status === 504);
+
       if (isTransientStatus && attempt < maxAttempts - 1) {
         const retryAfter = Number(res.headers.get("retry-after"));
         await sleep(
@@ -159,22 +156,19 @@ export async function authedPost<T>(
         );
         continue;
       }
-      // The selected model is out of quota or down: try the next provider
-      // before giving up on the request.
-      if (isAiRoute && !rotatedProvider && (await rotateAiProvider())) {
-        rotatedProvider = true;
-        headers["X-AI-Config"] = aiConfigHeader() ?? headers["X-AI-Config"];
-        attempt = -1;
-        continue;
-      }
-      const rawError =
-        data && typeof data === "object" && "error" in data
-          ? (data as { error: unknown }).error
-          : null;
+
+      const rawError = errorObj.error ?? null;
       const message = describeError(rawError) ?? `Request failed (HTTP ${res.status}).`;
-      const error = new Error(message) as Error & { status?: number };
+      const error = new Error(message) as Error & {
+        status?: number;
+        code?: string;
+        canUseOwnKey?: boolean;
+        canFallbackToPlatform?: boolean;
+      };
       error.status = res.status;
-      // The operator renders its own inline errors, so AI failures stay in the panel.
+      error.code = errorObj.code;
+      error.canUseOwnKey = errorObj.canUseOwnKey;
+      error.canFallbackToPlatform = errorObj.canFallbackToPlatform;
       if (!path.startsWith("/api/ai/")) {
         toast({ tone: "bad", title: "Something went wrong", message });
       }

@@ -1,18 +1,19 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { NextRequest } from "next/server";
-import { getSupabaseSettingsServer } from "../supabase-server";
+import { verifyRequest } from "../server-auth";
+import {
+  recordRoutedExecution,
+  resolveRoutedAiPlan,
+  RoutedAiError,
+  type ResolvedAiPlan,
+} from "../platform/router";
 import { listProviderModels } from "./chat";
-import { getProvider, isProviderId, pickRecommendedModel, providerBaseUrl } from "./registry";
+import { getProvider, pickRecommendedModel } from "./registry";
 import type { AiConfig } from "./types";
 
-/**
- * Per-request AI configuration. The browser reads the user's key from the
- * private settings row and sends it with each AI call, so the server stays
- * stateless and never needs a service account.
- */
 const storage = new AsyncLocalStorage<AiConfig>();
+const planMap = new WeakMap<AiConfig, ResolvedAiPlan>();
 
-/** Providers such as Numes ship no static default model, so it is resolved once from their live catalogue. */
 const modelCache = new Map<string, { model: string; at: number }>();
 const MODEL_CACHE_MS = 10 * 60 * 1000;
 
@@ -37,18 +38,95 @@ async function resolveProviderModel(cfg: AiConfig): Promise<AiConfig> {
   }
 }
 
-export function runWithAiConfig<T>(config: AiConfig | null | undefined, fn: () => Promise<T> | T): Promise<T> | T {
+function isRetryableProviderFailure(err: unknown): boolean {
+  const status = (err as { status?: number })?.status;
+  if (status === 429 || status === 500 || status === 502 || status === 503 || status === 504) return true;
+  const msg = err instanceof Error ? err.message : String(err);
+  return /rate limit|429|temporarily unavailable|overloaded|503|502|timeout|ECONNRESET/i.test(msg);
+}
+
+function isPersonalKeyFailure(err: unknown): boolean {
+  const status = (err as { status?: number })?.status;
+  if (status === 401 || status === 402 || status === 403) return true;
+  const msg = err instanceof Error ? err.message : String(err);
+  return /invalid api key|incorrect api key|authentication|unauthorized|insufficient_quota|credit|billing|quota exceeded/i.test(
+    msg,
+  );
+}
+
+export async function runWithAiConfig<T>(
+  config: AiConfig | null | undefined,
+  fn: () => Promise<T> | T,
+): Promise<T> {
   if (!config) return fn();
-  return storage.run(config, fn);
+
+  const plan = planMap.get(config);
+  if (!plan) {
+    return storage.run(config, fn);
+  }
+
+  const startMs = Date.now();
+  const candidates = [plan.primary, ...plan.fallbacks];
+  let lastError: unknown = null;
+
+  for (let i = 0; i < candidates.length; i++) {
+    const activeCfg = candidates[i];
+    const isPersonalAttempt = plan.source === "personal" && i === 0;
+
+    try {
+      const result = await storage.run(activeCfg, fn);
+      void recordRoutedExecution({
+        plan,
+        usedConfig: activeCfg,
+        startMs,
+        success: true,
+      });
+      return result;
+    } catch (err) {
+      lastError = err;
+      const errMsg = err instanceof Error ? err.message : String(err);
+
+      // Personal key failed: only fall back to platform key if user explicitly permitted it!
+      if (isPersonalAttempt && isPersonalKeyFailure(err)) {
+        void recordRoutedExecution({
+          plan,
+          usedConfig: activeCfg,
+          startMs,
+          success: false,
+          errorMsg: errMsg,
+        });
+        if (plan.allowFallbackOnError && plan.fallbacks.length > 0) {
+          continue;
+        }
+        throw new RoutedAiError(
+          `Your personal ${activeCfg.provider} API key failed (${errMsg}). Would you like to switch to the platform shared key in Settings?`,
+          "PERSONAL_KEY_FAILED",
+          400,
+          { canFallbackToPlatform: true },
+        );
+      }
+
+      if (i < candidates.length - 1 && isRetryableProviderFailure(err)) {
+        continue;
+      }
+
+      void recordRoutedExecution({
+        plan,
+        usedConfig: activeCfg,
+        startMs,
+        success: false,
+        errorMsg: errMsg,
+      });
+      throw err;
+    }
+  }
+
+  throw lastError ?? new Error("All configured AI providers failed.");
 }
 
 export function getActiveAiConfig(): AiConfig | null {
   return storage.getStore() ?? null;
 }
-
-const MAX_KEY_LENGTH = 512;
-const MAX_MODEL_LENGTH = 200;
-const MAX_BASE_URL_LENGTH = 400;
 
 function isPrivateHostname(hostname: string): boolean {
   const host = hostname.toLowerCase().replace(/^\[|\]$/g, "");
@@ -72,7 +150,6 @@ function isPrivateHostname(hostname: string): boolean {
   return false;
 }
 
-/** Only public http(s) endpoints are allowed, which keeps custom keys from turning into SSRF probes. */
 export function isSafeProviderUrl(raw: string): boolean {
   try {
     const url = new URL(raw.trim());
@@ -85,98 +162,16 @@ export function isSafeProviderUrl(raw: string): boolean {
 }
 
 /**
- * Reads the AI credentials a signed-in browser attached to an AI request.
- * Invalid or unsafe values are ignored so the route falls back to the server
- * default (the environment Gemini key).
+ * Server-side routed AI resolution:
+ * Keys NEVER come from client headers or localStorage. Instead, the server
+ * checks the user's encrypted BYOK vault or the admin-managed platform vault,
+ * enforces quotas & enabled-model policies, and binds fallbacks + telemetry.
  */
-export function readAiConfigFromRequest(req: NextRequest): AiConfig | null {
-  const raw = req.headers.get("x-ai-config");
-  if (!raw) return null;
-
-  let decoded = raw;
-  try {
-    decoded = decodeURIComponent(raw);
-  } catch {
-    return null;
-  }
-  if (decoded.length > 4000 || !decoded.trim().startsWith("{")) return null;
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(decoded);
-  } catch {
-    return null;
-  }
-  if (!parsed || typeof parsed !== "object") return null;
-  const obj = parsed as Partial<AiConfig>;
-
-  const providerId = typeof obj.provider === "string" ? obj.provider.trim().toLowerCase() : "";
-  if (!isProviderId(providerId)) return null;
-
-  const apiKey = typeof obj.apiKey === "string" ? obj.apiKey.trim() : "";
-  if (!apiKey || apiKey.length > MAX_KEY_LENGTH) return null;
-
-  const model = typeof obj.model === "string" ? obj.model.trim().slice(0, MAX_MODEL_LENGTH) : "";
-  const baseUrlInput = typeof obj.baseUrl === "string" ? obj.baseUrl.trim().slice(0, MAX_BASE_URL_LENGTH) : "";
-
-  let baseUrl: string | undefined;
-  if (baseUrlInput) {
-    if (!isSafeProviderUrl(baseUrlInput)) return null;
-    baseUrl = baseUrlInput;
-  }
-
-  const meta = getProvider(providerId);
-  if (!meta) return null;
-
-  const cfg: AiConfig = {
-    provider: meta.id,
-    model: model || meta.defaultModel,
-    apiKey,
-    ...(baseUrl ? { baseUrl } : {}),
-  };
-  if (!providerBaseUrl(cfg)) return null;
-  return cfg;
-}
-
-/**
- * The AI key lives in the user's settings row, so the server can run a request
- * even when the browser never attached X-AI-Config (expired session, a failed
- * settings read, or a different device).
- */
-export async function storedAiConfig(): Promise<AiConfig | null> {
-  const settings = await getSupabaseSettingsServer();
-  if (!settings) return null;
-
-  const apiKey = (settings.ai_api_key ?? "").trim();
-  if (!apiKey || apiKey.length > MAX_KEY_LENGTH) return null;
-
-  const providerId = (settings.ai_provider ?? "").trim().toLowerCase();
-  if (!isProviderId(providerId)) return null;
-
-  const meta = getProvider(providerId);
-  if (!meta) return null;
-
-  const baseUrl = (settings.ai_base_url ?? "").trim();
-  if (baseUrl && !isSafeProviderUrl(baseUrl)) return null;
-
-  const cfg: AiConfig = {
-    provider: meta.id,
-    model: (settings.model ?? "").trim().slice(0, MAX_MODEL_LENGTH) || meta.defaultModel,
-    apiKey,
-    ...(baseUrl ? { baseUrl } : {}),
-  };
-
-  if (!providerBaseUrl(cfg)) return null;
-  return resolveProviderModel(cfg);
-}
-
-/** The request header wins for provider/base URL; the database fills the gaps. */
 export async function resolveAiConfigForRequest(req: NextRequest): Promise<AiConfig | null> {
-  const fromRequest = readAiConfigFromRequest(req);
-  const stored = await storedAiConfig().catch(() => null);
-
-  if (!fromRequest) return stored;
-  if (!stored) return resolveProviderModel(fromRequest);
-
-  return resolveProviderModel({ ...fromRequest, model: fromRequest.model || stored.model });
+  const user = await verifyRequest(req);
+  const plan = await resolveRoutedAiPlan({ req, user });
+  const resolvedPrimary = await resolveProviderModel(plan.primary);
+  plan.primary = resolvedPrimary;
+  planMap.set(resolvedPrimary, plan);
+  return resolvedPrimary;
 }
