@@ -5,10 +5,11 @@ import { usePathname } from "next/navigation";
 import type { Session } from "@supabase/supabase-js";
 import {
   fetchCurrentUser,
+  getSupabaseBrowser,
   signInWithGoogle,
+  supabaseConfigured,
   signOut as signOutSupabase,
   subscribeAuthState,
-  supabaseBrowser,
   type AppUser,
 } from "@/lib/auth";
 import {
@@ -175,12 +176,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
     };
 
+    const client = getSupabaseBrowser();
     void (async () => {
+      if (!client) {
+        consumeAuthErrorFromUrl();
+        setLoading(false);
+        return;
+      }
+
       // A failed callback leaves ?auth=error&reason=… in the address bar. Show
       // the reason once, then clean the URL so a refresh cannot replay a code
       // that was already spent.
       const notice = consumeAuthErrorFromUrl();
-      const { data } = await supabaseBrowser.auth.getSession();
+      const { data } = await client.auth.getSession();
       if (notice && !data.session) setAuthError(notice);
       await applySession(data.session);
     })();
@@ -266,7 +274,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }
 
   if (!user) {
-    return <PreAuth onGoogleAuth={handleGoogleAuth} busy={signingIn} error={authError} />;
+    const configurationError = supabaseConfigured
+      ? null
+      : "Supabase is not configured. Add NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY to the environment.";
+    return (
+      <PreAuth
+        onGoogleAuth={handleGoogleAuth}
+        busy={signingIn}
+        error={authError ?? configurationError}
+      />
+    );
   }
 
   return (

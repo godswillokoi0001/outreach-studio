@@ -1,6 +1,6 @@
 /* ---------------------------------------------------------------------------
    Knowrevo — brand layer
-   Navy structure, teal accent, neutral surfaces, Manrope throughout.
+   Navy structure, teal accent, neutral surfaces, system-first typography.
    Loaded after globals.css, so these tokens and rules are the source of truth.
 --------------------------------------------------------------------------- */
 
@@ -59,7 +59,7 @@
   --shadow-lg: 0 32px 70px -46px rgba(8, 22, 37, 0.55);
 
   /* Type */
-  --font: var(--font-manrope), "Manrope", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font: var(--font-sans);
   --serif: var(--font);
   --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   --ease: cubic-bezier(0.22, 0.61, 0.36, 1);

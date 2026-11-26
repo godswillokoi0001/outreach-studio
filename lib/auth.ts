@@ -1,14 +1,30 @@
 "use client";
 
 import { createBrowserClient } from "@supabase/ssr";
-import type { Session } from "@supabase/supabase-js";
+import type { Session, SupabaseClient } from "@supabase/supabase-js";
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL ?? "";
-const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? "";
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL?.trim() ?? "";
+const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY?.trim() ?? "";
 
 export const supabaseConfigured = Boolean(supabaseUrl && supabaseAnonKey);
 
-export const supabaseBrowser = createBrowserClient(supabaseUrl, supabaseAnonKey);
+let browserClient: SupabaseClient | null = null;
+
+export function getSupabaseBrowser(): SupabaseClient | null {
+  if (!supabaseConfigured) return null;
+  browserClient ??= createBrowserClient(supabaseUrl, supabaseAnonKey);
+  return browserClient;
+}
+
+function requireSupabaseBrowser(): SupabaseClient {
+  const client = getSupabaseBrowser();
+  if (!client) {
+    throw new Error(
+      "Supabase is not configured. Add NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY to the environment.",
+    );
+  }
+  return client;
+}
 
 /** Gmail + Sheets are requested separately from sign-in, through the app's own OAuth client. */
 export const WORKSPACE_SCOPES = [
@@ -65,7 +81,7 @@ function authCallbackUrl(): string {
 
 /** Identity-only Google sign-in through Supabase Auth. Redirects the browser. */
 export async function signInWithGoogle(): Promise<void> {
-  const { error } = await supabaseBrowser.auth.signInWithOAuth({
+  const { error } = await requireSupabaseBrowser().auth.signInWithOAuth({
     provider: "google",
     options: {
       redirectTo: authCallbackUrl(),
@@ -76,26 +92,30 @@ export async function signInWithGoogle(): Promise<void> {
 }
 
 export async function getAccessToken(): Promise<string | null> {
-  const { data } = await supabaseBrowser.auth.getSession();
+  const client = requireSupabaseBrowser();
+  const { data } = await client.auth.getSession();
   if (data.session?.access_token) return data.session.access_token;
-  const refreshed = await supabaseBrowser.auth.refreshSession();
+  const refreshed = await client.auth.refreshSession();
   return refreshed.data.session?.access_token ?? null;
 }
 
 export async function getProviderToken(): Promise<string | null> {
-  const { data } = await supabaseBrowser.auth.getSession();
+  const { data } = await requireSupabaseBrowser().auth.getSession();
   return data.session?.provider_token ?? null;
 }
 
 export function subscribeAuthState(onChange: (session: Session | null) => void): () => void {
-  const { data } = supabaseBrowser.auth.onAuthStateChange((_event, session) => {
+  const client = getSupabaseBrowser();
+  if (!client) return () => {};
+
+  const { data } = client.auth.onAuthStateChange((_event, session) => {
     onChange(session);
   });
   return () => data.subscription.unsubscribe();
 }
 
 export async function signOut(): Promise<void> {
-  await supabaseBrowser.auth.signOut();
+  await requireSupabaseBrowser().auth.signOut();
 }
 
 /** Loads the app user (and its data owner id) from the authenticated account route. */
