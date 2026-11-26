@@ -77,6 +77,7 @@ import { Menu, MenuItem, MenuSeparator } from "./Menu";
 import { useAgentPresence } from "./AgentPresence";
 import { useConfirm } from "./Feedback";
 import {
+  OPERATOR_MEMORY_CLEARED,
   clearOperatorMemory,
   deleteOperatorMemory,
   loadOperatorMemory,
@@ -619,6 +620,24 @@ export function DashboardChat({
   useEffect(() => {
     conversationsRef.current = conversations;
   }, [conversations]);
+
+  // If memory is cleared from Settings while this panel is mounted, empty the
+  // panel too; otherwise its next save would write the old thread straight back.
+  useEffect(() => {
+    const onCleared = () => {
+      conversationsRef.current = [];
+      historyRef.current = [];
+      activeIdRef.current = null;
+      setConversations([]);
+      setActiveId(null);
+      setMessages([]);
+      setRecent([]);
+      setPendingConfirm(null);
+      cancelledRef.current = false;
+    };
+    window.addEventListener(OPERATOR_MEMORY_CLEARED, onCleared);
+    return () => window.removeEventListener(OPERATOR_MEMORY_CLEARED, onCleared);
+  }, []);
 
   // Memory lives in the database, not this browser. Load it before anything is
   // written back, restore the open thread, and upload any history that was

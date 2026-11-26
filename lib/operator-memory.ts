@@ -24,6 +24,15 @@ export interface OperatorMemoryRecord {
 
 const MEMORY_LIMIT = 200;
 
+/** Fired after any memory write, so open panels can refresh their numbers. */
+export const OPERATOR_MEMORY_CHANGED = "os:operator-memory-changed";
+/** Fired when the user clears every conversation, so every open operator resets. */
+export const OPERATOR_MEMORY_CLEARED = "os:operator-memory-cleared";
+
+function announce(event: string): void {
+  if (typeof window !== "undefined") window.dispatchEvent(new Event(event));
+}
+
 function memoryPath(uid: string): string {
   return `users/${uid}/operatorMemory`;
 }
@@ -77,15 +86,19 @@ export async function saveOperatorMemory(
     created_at: new Date(record.createdAt).toISOString(),
     updated_at: new Date(record.updatedAt).toISOString(),
   });
+  announce(OPERATOR_MEMORY_CHANGED);
 }
 
 /** Forget one conversation. */
 export async function deleteOperatorMemory(uid: string, id: string): Promise<void> {
   await deleteDoc(doc(db, `${memoryPath(uid)}/${id}`));
+  announce(OPERATOR_MEMORY_CHANGED);
 }
 
 /** Forget everything. This is the only destructive path, and the user starts it. */
 export async function clearOperatorMemory(uid: string): Promise<void> {
   const records = await loadOperatorMemory(uid);
   await Promise.all(records.map((record) => deleteDoc(doc(db, `${memoryPath(uid)}/${record.id}`))));
+  announce(OPERATOR_MEMORY_CHANGED);
+  announce(OPERATOR_MEMORY_CLEARED);
 }

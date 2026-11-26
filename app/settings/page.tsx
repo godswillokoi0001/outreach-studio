@@ -3,8 +3,9 @@
 import { BrandLoader } from "@/components/BrandLoader";
 
 import { useEffect, useState, useSyncExternalStore } from "react";
+import { Trash2 } from "lucide-react";
 import { useAuth } from "@/components/AuthProvider";
-import { Banner, Card, Empty, Field, Toggle } from "@/components/ui";
+import { Banner, Card, Empty, Field, Stat, Toggle } from "@/components/ui";
 import { useConfirm, useToast } from "@/components/Feedback";
 import { errorMessage } from "@/lib/client";
 import {
@@ -17,8 +18,19 @@ import {
 import { fmtDate } from "@/lib/format";
 import { DEFAULT_SETTINGS, type Settings, type Suppression } from "@/lib/types";
 import { ModelProvidersCard } from "@/components/ModelProvidersCard";
+import {
+  OPERATOR_MEMORY_CHANGED,
+  clearOperatorMemory,
+  loadOperatorMemory,
+} from "@/lib/operator-memory";
 
 const DEVELOPER_MODE_KEY = "os:developer-mode";
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+}
 
 function subscribeDeveloperMode(onChange: () => void) {
   window.addEventListener(DEVELOPER_MODE_KEY, onChange);
@@ -49,6 +61,9 @@ export default function SettingsPage() {
   const [failure, setFailure] = useState<string | null>(null);
   const [email, setEmail] = useState("");
   const [reason, setReason] = useState("");
+  const [memoryStats, setMemoryStats] = useState<{ count: number; bytes: number; lastAt: number } | null>(null);
+  const [memoryError, setMemoryError] = useState<string | null>(null);
+  const [clearingMemory, setClearingMemory] = useState(false);
 
   const changeDeveloperMode = (on: boolean) => {
     try {
@@ -85,6 +100,43 @@ export default function SettingsPage() {
     })();
     return () => {
       active = false;
+    };
+  }, [user.uid]);
+
+  // Memory numbers come from the real rows, so the count and size are what the
+  // operator actually remembers — not a guess. The panel updates after any save
+  // or clear, lightly debounced so a streaming reply is not a read per token.
+  useEffect(() => {
+    let active = true;
+    let timer: number | null = null;
+    const refresh = async () => {
+      try {
+        const records = await loadOperatorMemory(user.uid);
+        if (!active) return;
+        const bytes = records.reduce(
+          (total, record) => total + new TextEncoder().encode(JSON.stringify(record)).length,
+          0,
+        );
+        setMemoryStats({
+          count: records.length,
+          bytes,
+          lastAt: records.reduce((latest, record) => Math.max(latest, record.updatedAt), 0),
+        });
+        setMemoryError(null);
+      } catch (err) {
+        if (active) setMemoryError(errorMessage(err));
+      }
+    };
+    void refresh();
+    const onChange = () => {
+      if (timer) window.clearTimeout(timer);
+      timer = window.setTimeout(() => void refresh(), 1200);
+    };
+    window.addEventListener(OPERATOR_MEMORY_CHANGED, onChange);
+    return () => {
+      active = false;
+      if (timer) window.clearTimeout(timer);
+      window.removeEventListener(OPERATOR_MEMORY_CHANGED, onChange);
     };
   }, [user.uid]);
 
@@ -140,6 +192,30 @@ export default function SettingsPage() {
       const message = errorMessage(err);
       setFailure(message);
       toast.error("Could not update the suppression list", message);
+    }
+  };
+
+  const clearMemory = async () => {
+    const ok = await confirmDialog({
+      title: "Clear the operator's memory?",
+      message:
+        "Every saved conversation, message and action log is deleted from your account. The operator will not remember any of it. This cannot be undone.",
+      confirmLabel: "Clear memory",
+      tone: "bad",
+    });
+    if (!ok) return;
+    setClearingMemory(true);
+    setMemoryError(null);
+    try {
+      await clearOperatorMemory(user.uid);
+      setMemoryStats({ count: 0, bytes: 0, lastAt: 0 });
+      toast.success("Operator memory cleared", "The operator no longer remembers earlier conversations.");
+    } catch (err) {
+      const message = errorMessage(err);
+      setMemoryError(message);
+      toast.error("Could not clear operator memory", message);
+    } finally {
+      setClearingMemory(false);
     }
   };
 
@@ -215,6 +291,44 @@ export default function SettingsPage() {
             label="Developer mode"
             hint="Adds a Developer option to the operator's mode switch for diagnosing problems and proposing fixes. Leave it off for day-to-day outreach."
           />
+        </Card>
+
+        <Card
+          title="Operator memory"
+          sub="Every conversation, message and action the operator remembers. It is saved in your account, so it follows you to any computer."
+          actions={
+            <button
+              className="btn btn-sm btn-danger"
+              type="button"
+              onClick={() => void clearMemory()}
+              disabled={clearingMemory || !memoryStats || memoryStats.count === 0}
+            >
+              <Trash2 size={12} aria-hidden="true" />
+              <span>{clearingMemory ? "Clearing…" : "Clear all memory"}</span>
+            </button>
+          }
+        >
+          <div className="grid grid-3">
+            <Stat label="Conversations remembered" value={memoryStats ? memoryStats.count : "—"} />
+            <Stat label="Space used" value={memoryStats ? formatBytes(memoryStats.bytes) : "—"} />
+            <Stat
+              label="Last remembered"
+              value={
+                memoryStats?.lastAt ? new Date(memoryStats.lastAt).toLocaleDateString() : "—"
+              }
+            />
+          </div>
+          {memoryError ? (
+            <p className="tiny" style={{ marginTop: 10 }}>
+              Memory could not be read: {memoryError}
+            </p>
+          ) : (
+            <p className="tiny" style={{ marginTop: 10 }}>
+              {memoryStats && memoryStats.count > 0
+                ? "The operator uses this memory to pick up earlier work. Clearing it deletes every saved conversation and action log from your account — this cannot be undone."
+                : "No conversations are remembered yet. As you work with the operator, its conversations and actions are saved here."}
+            </p>
+          )}
         </Card>
 
         <Card
