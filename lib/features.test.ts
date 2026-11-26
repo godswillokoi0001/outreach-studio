@@ -158,3 +158,94 @@ test("normalizeCandidate defaults missing or uncertain reviews honestly", async 
   assert.equal(normalized.contact.phone_status, "Not found");
   assert.equal(normalized.qualification_review?.verdict, "uncertain");
 });
+
+test("Growth Advisor profile completeness, fingerprinting, and staleness detection work accurately", async () => {
+  const {
+    EMPTY_GROWTH_PROFILE,
+    computeProfileFingerprint,
+    evaluateProfileCompleteness,
+    isReportStale,
+  } = await import("./growth-advisor");
+
+  const settings = {
+    sender_company: "Acme Digital",
+    sender_name: "Alice",
+    sender_role: "Founder",
+    physical_address: "Austin, TX",
+  };
+
+  const incomplete = evaluateProfileCompleteness(EMPTY_GROWTH_PROFILE, "", settings);
+  assert.equal(incomplete.complete, false);
+  assert.ok(incomplete.missingFields.includes("What you sell or do"));
+  assert.ok(incomplete.missingFields.includes("Industry"));
+
+  const completeProfile = {
+    whoYouAre: "Acme Digital",
+    whatYouSell: "B2B SEO & Web Redesign",
+    industry: "Dental Clinics",
+    offer: "30-day patient conversion guarantee",
+    priceRange: "$3,000 - $5,000",
+    location: "Austin, TX",
+    idealCustomer: "Multi-chair dental clinics",
+  };
+
+  const complete = evaluateProfileCompleteness(completeProfile, "", settings);
+  assert.equal(complete.complete, true);
+  assert.equal(complete.score, 100);
+
+  const fp1 = computeProfileFingerprint({
+    profile: completeProfile,
+    knowledgeDigest: "",
+    settings,
+    metricsSummary: { leads: 10, campaigns: 1, sent: 5, replies: 1, positive: 1 },
+  });
+  const fp2 = computeProfileFingerprint({
+    profile: { ...completeProfile, priceRange: "$5,000 - $10,000" },
+    knowledgeDigest: "",
+    settings,
+    metricsSummary: { leads: 10, campaigns: 1, sent: 5, replies: 1, positive: 1 },
+  });
+  assert.notEqual(fp1, fp2);
+
+  const freshReport = {
+    overallStrategy: "Focus on Austin multi-chair clinics",
+    profileFingerprint: fp1,
+    generatedAt: new Date().toISOString(),
+    expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    sources: [],
+    recommendations: [
+      {
+        id: "rec_1",
+        category: "location" as const,
+        title: "Target Austin North",
+        summary: "High dental expansion",
+        reason: "New clinic openings",
+        evidence: "Austin growth report",
+        sourceUrl: "https://example.com",
+        sourceTitle: "Example",
+        impact: "high" as const,
+        confidence: 88,
+        priorityOrder: 1,
+        suggestedAction: {
+          targetIndustry: "Dental",
+          targetLocation: "Austin, TX",
+          targetAudience: "Clinic Owners",
+          angle: "Patient booking lift",
+          hook: "Saw your site",
+          subjectLine: "Quick question",
+          offer: "Free audit",
+          channel: "Email",
+          timing: "Tue 9am",
+          goal: "5 calls",
+        },
+      },
+    ],
+  };
+
+  assert.equal(isReportStale(freshReport, fp1), false);
+  assert.equal(isReportStale(freshReport, fp2), true);
+  assert.equal(
+    isReportStale({ ...freshReport, expiresAt: new Date(Date.now() - 10_000).toISOString() }, fp1),
+    true,
+  );
+});

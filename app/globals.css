@@ -1599,3 +1599,16 @@ tr.clickable:hover td { background: #f8faf8; }
   border-radius: var(--radius-lg, 12px);
   scroll-margin-top: 80px;
 }
+
+@keyframes spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.spin {
+  animation: spin 0.9s linear infinite;
+}

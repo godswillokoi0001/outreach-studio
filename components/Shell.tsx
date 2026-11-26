@@ -32,6 +32,7 @@ import {
   Search,
   Send,
   Settings,
+  TrendingUp,
   Users,
   X,
 } from "lucide-react";
@@ -86,6 +87,7 @@ const NAV = [
   {
     group: "Intelligence",
     items: [
+      { href: "/growth-advisor", label: "Growth Advisor", icon: TrendingUp },
       { href: "/analytics", label: "Analytics", icon: BarChart3 },
       { href: "/knowledge", label: "Knowledge base", icon: BookOpen },
     ],

@@ -39,6 +39,12 @@ import {
 } from "./outreach-utils";
 import { authedPost } from "./client";
 import {
+  EMPTY_GROWTH_PROFILE,
+  type ExecutedCampaignBlueprint,
+  type GrowthAdvisorReport,
+  type GrowthProfile,
+} from "./growth-advisor";
+import {
   DEFAULT_SETTINGS,
   type AuditLog,
   type Campaign,
@@ -220,7 +226,9 @@ export async function getKnowledgeBundle(uid: string): Promise<{
   const entries: KnowledgeEntry[] = [];
   for (const d of kSnap.docs) {
     const data = d.data();
-    if (d.id === "master" || d.id === `master_${uid}` || data.is_master === true || data.category === "master") {
+    const category = String(data.category ?? "custom");
+    if (category.startsWith("growth_advisor_")) continue;
+    if (d.id === "master" || d.id === `master_${uid}` || data.is_master === true || category === "master") {
       const text = String(data.content ?? "");
       if (text.trim() || !master) {
         master = text;
@@ -229,7 +237,7 @@ export async function getKnowledgeBundle(uid: string): Promise<{
       entries.push({
         id: d.id,
         ownerId: String(data.ownerId ?? uid),
-        category: String(data.category ?? "custom"),
+        category,
         title: String(data.title ?? ""),
         content: String(data.content ?? ""),
         sort: Number(data.sort ?? 50),
@@ -1889,13 +1897,16 @@ export async function getKnowledgePresence(uid: string): Promise<boolean> {
   try {
     const [entries, sources] = await Promise.all([
       getDocs(query(collection(db, `users/${uid}/knowledge`), where("ownerId", "==", uid)), {
-        columns: ["id", "is_master"],
+        columns: ["id", "is_master", "category"],
       }),
       getDocs(query(collection(db, `users/${uid}/knowledgeSources`), where("ownerId", "==", uid)), {
         columns: ["id"],
       }),
     ]);
-    return entries.docs.length === 0 && sources.docs.length === 0;
+    const userKnowledgeDocs = entries.docs.filter(
+      (d) => !String(d.data().category ?? "").startsWith("growth_advisor_"),
+    );
+    return userKnowledgeDocs.length === 0 && sources.docs.length === 0;
   } catch (err) {
     handleDataError(err, OperationType.LIST, `users/${uid}/knowledge`);
   }
@@ -2091,4 +2102,258 @@ export function subscribeBadgeCounts(
     unsubLeads();
     unsubCamps();
   };
+}
+
+// ---------------------------------------------------------------------------
+// Growth Advisor persistence & execution
+// ---------------------------------------------------------------------------
+
+export async function getGrowthProfile(uid: string): Promise<GrowthProfile> {
+  const docId = `growth_advisor_profile_${uid}`;
+  try {
+    const snap = await getDoc(doc(db, "users", uid, "knowledge", docId));
+    if (!snap.exists()) return { ...EMPTY_GROWTH_PROFILE };
+    const raw = JSON.parse(String(snap.data().content ?? "{}")) as Partial<GrowthProfile>;
+    return {
+      whoYouAre: String(raw.whoYouAre ?? ""),
+      whatYouSell: String(raw.whatYouSell ?? ""),
+      industry: String(raw.industry ?? ""),
+      offer: String(raw.offer ?? ""),
+      priceRange: String(raw.priceRange ?? ""),
+      location: String(raw.location ?? ""),
+      idealCustomer: String(raw.idealCustomer ?? ""),
+      updatedAt: raw.updatedAt ? String(raw.updatedAt) : undefined,
+    };
+  } catch {
+    return { ...EMPTY_GROWTH_PROFILE };
+  }
+}
+
+export async function saveGrowthProfile(uid: string, profile: GrowthProfile): Promise<GrowthProfile> {
+  const docId = `growth_advisor_profile_${uid}`;
+  const path = `users/${uid}/knowledge/${docId}`;
+  const next: GrowthProfile = {
+    ...profile,
+    updatedAt: new Date().toISOString(),
+  };
+  try {
+    const ref = doc(db, "users", uid, "knowledge", docId);
+    const snap = await getDoc(ref);
+    const serialized = JSON.stringify(next);
+    if (!snap.exists()) {
+      await setDoc(ref, {
+        ownerId: uid,
+        category: "growth_advisor_profile",
+        title: "Growth Advisor Business Profile",
+        content: serialized,
+        sort: 999,
+        is_master: false,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+    } else {
+      await updateDoc(ref, {
+        category: "growth_advisor_profile",
+        content: serialized,
+        updatedAt: serverTimestamp(),
+      });
+    }
+    return next;
+  } catch (err) {
+    handleDataError(err, OperationType.WRITE, path);
+  }
+}
+
+export async function getGrowthAdvisorReport(uid: string): Promise<GrowthAdvisorReport | null> {
+  const docId = `growth_advisor_report_${uid}`;
+  try {
+    const snap = await getDoc(doc(db, "users", uid, "knowledge", docId));
+    if (!snap.exists()) return null;
+    const raw = JSON.parse(String(snap.data().content ?? "null")) as GrowthAdvisorReport | null;
+    if (!raw || !Array.isArray(raw.recommendations)) return null;
+    return raw;
+  } catch {
+    return null;
+  }
+}
+
+export async function saveGrowthAdvisorReport(uid: string, report: GrowthAdvisorReport): Promise<void> {
+  const docId = `growth_advisor_report_${uid}`;
+  const path = `users/${uid}/knowledge/${docId}`;
+  try {
+    const ref = doc(db, "users", uid, "knowledge", docId);
+    const snap = await getDoc(ref);
+    const serialized = JSON.stringify(report);
+    if (!snap.exists()) {
+      await setDoc(ref, {
+        ownerId: uid,
+        category: "growth_advisor_report",
+        title: "Growth Advisor Cached Research",
+        content: serialized,
+        sort: 999,
+        is_master: false,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+    } else {
+      await updateDoc(ref, {
+        category: "growth_advisor_report",
+        content: serialized,
+        updatedAt: serverTimestamp(),
+      });
+    }
+  } catch (err) {
+    handleDataError(err, OperationType.WRITE, path);
+  }
+}
+
+export async function commitExecutedCampaign(
+  uid: string,
+  blueprint: ExecutedCampaignBlueprint,
+): Promise<{ campaign: Campaign; leadsCreated: number; draftsCreated: number }> {
+  const selectedProspects = blueprint.prospects.filter((p) => p.selected);
+  const campaign = await createCampaign(uid, {
+    name: blueprint.campaignName,
+    instruction: `${blueprint.goal}\nAngle: ${blueprint.messagingAngle}\nLocation: ${blueprint.targetLocation}\nChannel: ${blueprint.channel}`,
+    config: {
+      services: blueprint.messagingAngle ? [blueprint.messagingAngle.slice(0, 100)] : ["Growth outreach"],
+      target_industry: blueprint.targetIndustry || "General",
+      objective: blueprint.goal,
+      tone: "consultative",
+      min_score: 55,
+      lead_count: selectedProspects.length,
+      send_limit: blueprint.schedule.dailyLimit,
+      followup_days: blueprint.schedule.followupDays,
+      auto_approve_initial: false,
+      auto_approve_followups: false,
+      require_approval: true,
+      extra_instructions: `Channel: ${blueprint.channel}\nHook: ${blueprint.hook}\nCompliance: ${blueprint.complianceChecklist.join("; ")}`,
+      summary: blueprint.goal,
+    },
+    sheetSource: "growth_advisor",
+  });
+
+  const existingLeads = await listLeads(uid, { force: true });
+  const existingEmails = new Set(existingLeads.map((l) => l.email_norm).filter(Boolean));
+  let leadsCreated = 0;
+  let draftsCreated = 0;
+  const nowIso = new Date().toISOString();
+
+  for (const prospect of selectedProspects) {
+    const emailNorm = normalizeEmail(prospect.email);
+    if (emailNorm && existingEmails.has(emailNorm)) continue;
+    if (emailNorm) existingEmails.add(emailNorm);
+
+    const leadId = randomId("lead");
+    const firstName = (prospect.contactName || "there").split(/\s+/)[0];
+    await setDoc(doc(db, "users", uid, "leads", leadId), {
+      ownerId: uid,
+      campaign_id: campaign.id,
+      business: clampStr(prospect.business, 240),
+      contact_name: clampStr(prospect.contactName, 160),
+      role: clampStr(prospect.role, 160),
+      email: emailNorm,
+      email_norm: emailNorm,
+      website: clampStr(normalizeWebsite(prospect.website), 500),
+      phone: clampStr(prospect.phone, 64),
+      location: clampStr(prospect.location, 200),
+      industry: clampStr(prospect.industry, 160),
+      notes: clampStr(
+        `Buying Intent: ${prospect.buyingIntentScore}/100 (${prospect.buyingIntentLevel.toUpperCase()})\nReasoning: ${prospect.buyingIntentReasoning}\nCompliance: ${prospect.complianceNote}`,
+        4000,
+      ),
+      extra: null,
+      source: "growth_advisor",
+      source_ref: clampStr(prospect.sourceUrl, 500),
+      sheet_row: null,
+      status: "qualified",
+      score: prospect.buyingIntentScore,
+      priority: prospect.buyingIntentLevel,
+      score_reason: {
+        score: prospect.buyingIntentScore,
+        category: prospect.buyingIntentLevel,
+        reasons: [
+          prospect.buyingIntentReasoning,
+          ...prospect.signals.map((s) => `${s.signal}: ${s.evidence}`),
+        ].filter(Boolean),
+        opportunity: blueprint.goal,
+        value_tier: prospect.buyingIntentLevel,
+        recommended_service: blueprint.messagingAngle || "Growth Offer",
+      },
+      research: {
+        business_name_confirmed: true,
+        industry: prospect.industry,
+        summary: prospect.buyingIntentReasoning,
+        website_status: prospect.website ? "reachable" : "no_site_known",
+        website_facts: prospect.signals.map((s) => s.evidence).filter(Boolean),
+        verified_facts: [
+          ...(prospect.sourceUrl
+            ? [{ fact: `Verified public profile on ${prospect.sourceDate}`, source: prospect.sourceUrl }]
+            : []),
+        ],
+        findings: prospect.signals.map((s) => ({
+          area: "Buying intent signal",
+          observation: s.signal,
+          severity: s.strength === "strong" ? "high" : s.strength === "moderate" ? "medium" : "low",
+          evidence: s.evidence,
+        })),
+        inferences: [],
+        opportunities: [
+          {
+            opportunity: blueprint.goal,
+            service: blueprint.messagingAngle,
+            rationale: prospect.buyingIntentReasoning,
+          },
+        ],
+        recommended_angle: blueprint.messagingAngle,
+        confidence: prospect.buyingIntentScore,
+        insufficient_data: false,
+        notes: `Sourced via Growth Advisor (${prospect.complianceNote})`,
+        checked_at: nowIso,
+      },
+      research_at: nowIso,
+      research_ok: true,
+      manual_research: null,
+      last_contacted_at: null,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
+    await writeLeadEvent(uid, leadId, "growth_advisor_prospect_added", {
+      campaignId: campaign.id,
+      buyingIntentScore: prospect.buyingIntentScore,
+    });
+    leadsCreated += 1;
+
+    if (emailNorm) {
+      const subject = (prospect.draftSubject || blueprint.subjectLine || "Quick question for {{company}}")
+        .replace(/\{\{company\}\}/gi, prospect.business)
+        .replace(/\{\{first_name\}\}/gi, firstName);
+      const body = (prospect.draftBody || blueprint.sampleEmailBody || "")
+        .replace(/\{\{company\}\}/gi, prospect.business)
+        .replace(/\{\{first_name\}\}/gi, firstName);
+      if (body.trim()) {
+        await createMessage(uid, {
+          lead_id: leadId,
+          campaign_id: campaign.id,
+          step: 1,
+          kind: "initial",
+          subject,
+          body,
+          angle: blueprint.messagingAngle,
+          rationale: prospect.buyingIntentReasoning,
+          service: blueprint.targetIndustry,
+          status: "pending_approval",
+        });
+        draftsCreated += 1;
+      }
+    }
+  }
+
+  await writeAuditLog(uid, "growth_advisor_executed", "campaign", campaign.id, {
+    campaignName: campaign.name,
+    leadsCreated,
+    draftsCreated,
+  });
+
+  return { campaign, leadsCreated, draftsCreated };
 }
