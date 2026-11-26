@@ -219,8 +219,11 @@ export async function getKnowledgeBundle(uid: string): Promise<{
   const entries: KnowledgeEntry[] = [];
   for (const d of kSnap.docs) {
     const data = d.data();
-    if (d.id === "master" || data.is_master === true) {
-      master = String(data.content ?? "");
+    if (d.id === "master" || d.id === `master_${uid}` || data.is_master === true || data.category === "master") {
+      const text = String(data.content ?? "");
+      if (text.trim() || !master) {
+        master = text;
+      }
     } else {
       entries.push({
         id: d.id,
@@ -261,16 +264,21 @@ export async function saveMasterKnowledge(uid: string, content: string): Promise
   try {
     const trimmed = String(content ?? "").slice(0, 700_000);
     const snap = await getDocs(query(collection(db, path), where("ownerId", "==", uid)));
-    const existing = snap.docs.find((d) => d.id === "master" || d.data().is_master === true);
+    const masterDocs = snap.docs.filter(
+      (d) => d.id === "master" || d.id === `master_${uid}` || d.data().is_master === true || d.data().category === "master",
+    );
 
-    if (existing) {
-      await updateDoc(existing.ref, {
-        category: "master",
-        title: "Master knowledge",
-        content: trimmed,
-        sort: 0,
-        updatedAt: serverTimestamp(),
-      });
+    if (masterDocs.length > 0) {
+      for (const d of masterDocs) {
+        await updateDoc(d.ref, {
+          category: "master",
+          title: "Master knowledge",
+          content: trimmed,
+          sort: 0,
+          is_master: true,
+          updatedAt: serverTimestamp(),
+        });
+      }
       return;
     }
 

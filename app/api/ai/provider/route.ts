@@ -41,7 +41,19 @@ export async function POST(req: NextRequest) {
     }
 
     const requested = String(body.provider ?? "").trim().toLowerCase();
-    const providerId: AiProviderId | null = isProviderId(requested) ? requested : guessProviderId(apiKey);
+    const guessed = guessProviderId(apiKey);
+    let providerId: AiProviderId | null = null;
+    if (!requested || requested === "auto") {
+      providerId = guessed;
+    } else if (isProviderId(requested)) {
+      if (guessed && guessed !== requested && (requested === "gemini" || requested === "custom")) {
+        providerId = guessed;
+      } else {
+        providerId = requested;
+      }
+    } else {
+      providerId = guessed;
+    }
     if (!providerId) {
       return NextResponse.json(
         {

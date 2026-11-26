@@ -13,7 +13,7 @@ async function ensureMasterKnowledge(ownerId: string): Promise<void> {
     .from("knowledge")
     .select("id")
     .eq("owner_id", ownerId)
-    .eq("is_master", true)
+    .or("id.eq.master,is_master.eq.true,category.eq.master")
     .limit(1)
     .maybeSingle();
 

@@ -146,10 +146,10 @@ export const AI_PROVIDERS: AiProviderMeta[] = [
     style: "openai",
     baseUrl: "https://api.numes.ai/api/v1",
     modelsPath: "/models",
-    keyPrefixes: ["sk-numes-v1-"],
+    keyPrefixes: ["sk-numes-v1-", "sk-numes-"],
     docsUrl: "https://numes.ai/dashboard/keys",
     docsLabel: "Numes API keys",
-    defaultModel: "",
+    defaultModel: "anthropic/claude-haiku-4.5",
   },
   {
     id: "custom",
@@ -190,14 +190,14 @@ export function providerBaseUrl(cfg: AiConfig): string {
 export function guessProviderId(rawKey: string): AiProviderId | null {
   const key = rawKey.trim();
   if (!key) return null;
-  if (/^AIza[0-9A-Za-z_-]{20,}$/.test(key)) return "gemini";
+  if (/^AIza[0-9A-Za-z_-]{20,}$/.test(key) || key.startsWith("AIza") || key.startsWith("AQ.")) return "gemini";
+  if (key.startsWith("sk-numes-v1-") || key.startsWith("sk-numes-")) return "numes";
   if (key.startsWith("sk-ant-")) return "anthropic";
   if (key.startsWith("sk-or-")) return "openrouter";
   if (key.startsWith("gsk_")) return "groq";
   if (key.startsWith("xai-")) return "xai";
   if (key.startsWith("pplx-")) return "perplexity";
   if (key.startsWith("fw_")) return "fireworks";
-  if (key.startsWith("sk-numes-v1-")) return "numes";
   if (key.startsWith("sk-proj-")) return "openai";
   if (key.startsWith("sk-")) return "openai";
   return null;

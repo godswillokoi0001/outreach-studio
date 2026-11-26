@@ -15,7 +15,7 @@ import {
   Trash2,
   Volume2,
 } from "lucide-react";
-import { AI_PROVIDERS, getProvider } from "@/lib/ai/registry";
+import { AI_PROVIDERS, getProvider, guessProviderId } from "@/lib/ai/registry";
 import type { AiModelOption, AiProviderId } from "@/lib/ai/types";
 import { aiConfigFromSettings, setActiveAiConfig } from "@/lib/ai-client";
 import {
@@ -47,6 +47,7 @@ interface DetectResponse {
   recommendedModel: string;
   probe: { model: string; ms: number; reply: string };
   warning?: string | null;
+  baseUrl?: string;
 }
 
 type Note = { tone: "ok" | "bad" | "info"; text: string } | null;
@@ -162,10 +163,12 @@ export function ModelProvidersCard({
         const next: SavedProvider = {
           ...provider,
           provider: res.provider,
+          name: provider.name && provider.name !== "Provider" ? provider.name : res.providerLabel,
+          baseUrl: res.baseUrl || provider.baseUrl,
           models,
           model,
           verifiedAt: new Date().toISOString(),
-          lastError: "",
+          lastError: res.warning || "",
         };
         persist((current) => current.map((item) => (item.id === provider.id ? next : item)));
         setEditing((draft) => (draft && draft.id === provider.id ? next : draft));
@@ -436,7 +439,46 @@ export function ModelProvidersCard({
                     className="input"
                     type={showKey ? "text" : "password"}
                     value={editing.apiKey}
-                    onChange={(event) => setEditing({ ...editing, apiKey: event.target.value })}
+                    onChange={(event) => {
+                      const key = event.target.value;
+                      const guessed = guessProviderId(key);
+                      if (guessed && guessed !== editing.provider) {
+                        const meta = getProvider(guessed);
+                        setEditing({
+                          ...editing,
+                          apiKey: key,
+                          provider: guessed,
+                          name: meta?.label ?? editing.name,
+                          baseUrl: meta?.baseUrl || "",
+                          model: meta?.defaultModel || editing.model,
+                          models: [],
+                          ...guessCapabilities(guessed, meta?.defaultModel || ""),
+                        });
+                      } else {
+                        setEditing({ ...editing, apiKey: key });
+                      }
+                    }}
+                    onPaste={(event) => {
+                      const pasted = event.clipboardData.getData("text").trim();
+                      const guessed = guessProviderId(pasted);
+                      if (guessed) {
+                        const meta = getProvider(guessed);
+                        setEditing((prev) =>
+                          prev
+                            ? {
+                                ...prev,
+                                apiKey: pasted,
+                                provider: guessed,
+                                name: meta?.label ?? prev.name,
+                                baseUrl: meta?.baseUrl || "",
+                                model: meta?.defaultModel || prev.model,
+                                models: [],
+                                ...guessCapabilities(guessed, meta?.defaultModel || ""),
+                              }
+                            : prev,
+                        );
+                      }
+                    }}
                     placeholder="sk-… or AIza…"
                     autoComplete="off"
                     spellCheck={false}
