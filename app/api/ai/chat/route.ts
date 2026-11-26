@@ -78,21 +78,22 @@ STYLE
   if (mode === "developer") {
     return `You are the Knowrevo Developer Operator in DEVELOPER mode.
 
-MODE PERMISSIONS
-- You can inspect the workspace with read-only tools (dashboard overview, leads, campaigns, messages, replies, settings, knowledge, analytics).
-- You cannot write to the workspace in this mode and you must never claim a change was applied.
-- When you find a problem, explain the root cause in plain language, then propose the smallest concrete fix as a unified diff inside a \`\`\`diff code block, naming the file and the exact lines.
-- Ask for approval before anything is applied. The user applies the diff (or asks Agent mode to carry out the data-side part).
-- Keep a short change log in your reply: what you inspected, what you found, what you propose.
+MODE PERMISSIONS & CAPABILITIES
+- You are fully authorized to both inspect AND actually make changes across the workspace using all available tools.
+- When asked to diagnose, fix, update, create, or alter anything (settings, knowledge, campaigns, leads, drafts, configuration, or data), don't just provide instructions or view code — call the appropriate tools to directly execute the changes so they take effect immediately.
+- When fixing problems or proposing code adjustments, explain the root cause clearly, output the diff or code block, and directly apply the workspace changes where tools allow.
+- Always verify what was changed and report the verified result to the user.
+- Keep a clear, concise log of actions taken in your reply: what you inspected, what you changed, and how to verify.
 
 ${LIVE_CONTEXT(ctx)}
 ${memoryBlock(ctx.memory)}
 ${knowledgeBlock(ctx.knowledge)}
 
-DIAGNOSTIC ORDER
-1. Reproduce from evidence: check the data the tools return, the current route, and any error text the user pastes.
-2. Name the root cause, not the symptom.
-3. Propose one fix with a diff, plus how to verify it afterwards.`;
+DIAGNOSTIC & EXECUTION ORDER
+1. Inspect evidence: check data returned by tools, current route, and error messages.
+2. Identify root cause clearly.
+3. Execute the fix directly using available tools.
+4. Report the change clearly with verification evidence.`;
   }
 
   return `You are the Knowrevo Dashboard Operator — an autonomous, action-oriented AI assistant embedded directly inside the user's Knowrevo workspace.
@@ -153,14 +154,8 @@ export async function POST(req: NextRequest) {
       mode,
     );
 
-    // Chat mode has no tools at all. Developer mode is read-only, so it cannot
-    // change the workspace while diagnosing it.
-    const tools =
-      mode === "chat"
-        ? []
-        : mode === "developer"
-          ? AGENT_TOOLS.filter((tool) => !MUTATING_TOOLS.has(tool.name ?? ""))
-          : AGENT_TOOLS;
+    // Chat mode has no tools. Agent and Developer modes have access to all tools to execute changes.
+    const tools = mode === "chat" ? [] : AGENT_TOOLS;
 
     const result = await runWithAiConfig(aiConfig, () =>
       geminiAgentTurn({

@@ -226,6 +226,21 @@ Rules:
   });
 }
 
+export type VerificationStatus = "Verified" | "Unverified" | "Not found";
+
+export interface CriterionReview {
+  name: string;
+  status: "met" | "not_met" | "unknown";
+  evidence: string;
+}
+
+export interface QualificationReview {
+  verdict: "qualified" | "not_qualified" | "uncertain";
+  criteria: CriterionReview[];
+  weaknesses_and_risks: string[];
+  missing_information: string[];
+}
+
 export interface DiscoveryContact {
   decision_maker: string;
   role: string;
@@ -233,8 +248,16 @@ export interface DiscoveryContact {
   phone: string;
   whatsapp: string;
   address: string;
-  socials: { platform: string; url: string }[];
-  sources: { field: string; url: string; confidence: "high" | "medium" | "low" }[];
+  email_status?: VerificationStatus;
+  phone_status?: VerificationStatus;
+  socials: { platform: string; url: string; verification_status?: VerificationStatus }[];
+  sources: {
+    field: string;
+    url: string;
+    confidence: "high" | "medium" | "low";
+    verification_status?: VerificationStatus;
+    date_found?: string;
+  }[];
 }
 
 export interface DiscoveryIssue {
@@ -257,9 +280,11 @@ export interface DiscoveryCandidate {
   industry: string;
   why: string;
   source_url: string;
+  research_notes?: string;
   contact: DiscoveryContact;
   issues: DiscoveryIssue[];
   how_we_help: DiscoveryHelp[];
+  qualification_review?: QualificationReview;
 }
 
 export async function discoverProspectsServer(input: {
@@ -270,19 +295,38 @@ export async function discoverProspectsServer(input: {
   knowledge?: string;
   model?: string;
 }): Promise<{ candidates: DiscoveryCandidate[]; notes: string; groundingUrls: { uri: string; title: string }[] }> {
+  const today = new Date().toISOString().slice(0, 10);
   const system = `You find real businesses that could plausibly need web design, redesign, branding, SEO or video services, using Google Search.
 
-Rules:
-- Only list real, currently operating businesses you found in search results.
-- Every candidate needs a source_url from the search results. If you cannot verify a website, leave website empty rather than guessing.
-- NEVER invent an email, phone number, address, person, social profile or website problem. If a detail is not visible in the search results, return an empty string for it (or an empty array). The interface prints "Not found" for empty fields.
-- Every contact detail you do return must appear in "contact.sources" with the URL it came from and a confidence level: high (the business's own site or official profile), medium (a directory or news mention), low (aggregator or unverified).
-- "issues" is a concrete audit: only things you can see or strongly infer from the search results (no website, social-page-only presence, no SSL, no mobile viewport, broken/placeholder content, outdated copyright year, no booking/contact form, few or poor reviews, inactive social profiles, thin content, missing SEO basics). Every issue needs the evidence you saw.
-- "how_we_help" maps each issue to one service the sender actually sells (from the knowledge base when given) with a short tailored angle. Never invent an offer or a price.
-- "why" is one sentence on the plausible digital gap, phrased as something to verify.
-- Return at most ${input.count} candidates, each a different business.
-- Output strictly valid JSON:
-{"candidates":[{"business":string,"website":string,"location":string,"industry":string,"why":string,"source_url":string,"contact":{"decision_maker":string,"role":string,"email":string,"phone":string,"whatsapp":string,"address":string,"socials":[{"platform":string,"url":string}],"sources":[{"field":string,"url":string,"confidence":"high"|"medium"|"low"}]},"issues":[{"area":string,"problem":string,"evidence":string,"severity":"high"|"medium"|"low"}],"how_we_help":[{"issue":string,"service":string,"angle":string}]}],"notes":string}`;
+STRICT RESEARCH & QUALIFICATION RULES:
+1. THOROUGH RESEARCH:
+   - Search for the company's official website and verified social media handles (LinkedIn, Instagram, X/Twitter, Facebook, TikTok, YouTube, and niche-specific profiles).
+   - Search for the names and job titles of real decision-makers (Owner, Founder, CEO, Managing Director, Head of Marketing, etc.).
+   - Search for verifiable business email addresses, direct/WhatsApp phone numbers, and physical business location.
+   - For every contact detail, record the exact source URL and date found (${today}).
+
+2. TRUTHFUL, EVIDENCE-BASED DISCOVERY:
+   - NEVER invent, guess, pad, or hallucinate any data (no fake emails, phone numbers, handles, or claims).
+   - If a detail cannot be verified in search results, leave it empty. The interface displays "Not found".
+   - Assign verification_status: "Verified" (confirmed on official website or primary profile), "Unverified" (secondary directory), or "Not found".
+   - Every issue listed in "issues" must be concrete and directly visible from search evidence (e.g. no mobile responsiveness, broken SSL, no contact form, outdated copyright, dead social links).
+
+3. STRICT QUALIFICATION & CANDID REVIEW:
+   - Evaluate against 5 core criteria:
+     1. Offer Fit: Does the business match what the sender sells?
+     2. Observed Need: Is there clear, verified evidence of a digital problem or gap?
+     3. Budget Indicators: Is this a legitimate commercial business that can pay for services?
+     4. Decision-Maker Access: Is a direct decision-maker or verified direct channel reachable?
+     5. Location & Activity: Is the business active and operating in the requested area?
+   - Each prospect must include a qualification_review:
+     - verdict: "qualified" (meets all criteria with strong evidence), "not_qualified" (failed criteria or competitor), or "uncertain" (borderline / needs review).
+     - criteria: array of { name: string, status: "met" | "not_met" | "unknown", evidence: string }.
+     - weaknesses_and_risks: list of all weaknesses, red flags, or risks stated candidly.
+     - missing_information: list of unverified details or missing data.
+   - Do NOT lower standards to reach the requested count. If fewer qualified prospects exist in search results, return only those found and explain in "notes".
+
+Output strictly valid JSON:
+{"candidates":[{"business":string,"website":string,"location":string,"industry":string,"why":string,"source_url":string,"research_notes":string,"contact":{"decision_maker":string,"role":string,"email":string,"phone":string,"whatsapp":string,"address":string,"socials":[{"platform":string,"url":string,"verification_status":"Verified"|"Unverified"|"Not found"}],"sources":[{"field":string,"url":string,"confidence":"high"|"medium"|"low","verification_status":"Verified"|"Unverified"|"Not found","date_found":string}]},"issues":[{"area":string,"problem":string,"evidence":string,"severity":"high"|"medium"|"low"}],"how_we_help":[{"issue":string,"service":string,"angle":string}],"qualification_review":{"verdict":"qualified"|"not_qualified"|"uncertain","criteria":[{"name":string,"status":"met"|"not_met"|"unknown","evidence":string}],"weaknesses_and_risks":[string],"missing_information":[string]}}],"notes":string}`;
 
   const user = `Find ${input.count} realistic prospects.
 Industry/segment: ${input.industry || "any business with a weak or missing website"}
@@ -343,7 +387,7 @@ function confidence(value: unknown): "high" | "medium" | "low" {
 }
 
 /** Shapes whatever the model returned into the interface's contract. */
-function normalizeCandidate(raw: unknown): DiscoveryCandidate {
+export function normalizeCandidate(raw: unknown): DiscoveryCandidate {
   const item = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
   const contact = (item.contact && typeof item.contact === "object" ? item.contact : {}) as Record<string, unknown>;
 
@@ -351,7 +395,16 @@ function normalizeCandidate(raw: unknown): DiscoveryCandidate {
     ? contact.socials
         .map((social) => {
           const entry = (social && typeof social === "object" ? social : {}) as Record<string, unknown>;
-          return { platform: text(entry.platform, 40), url: text(entry.url, 300) };
+          const rawStatus = text(entry.verification_status, 30);
+          const verification_status: VerificationStatus =
+            rawStatus === "Verified" || rawStatus === "Unverified" || rawStatus === "Not found"
+              ? rawStatus
+              : "Verified";
+          return {
+            platform: text(entry.platform, 40),
+            url: text(entry.url, 300),
+            verification_status,
+          };
         })
         .filter((social) => social.url)
         .slice(0, 8)
@@ -361,7 +414,20 @@ function normalizeCandidate(raw: unknown): DiscoveryCandidate {
     ? contact.sources
         .map((source) => {
           const entry = (source && typeof source === "object" ? source : {}) as Record<string, unknown>;
-          return { field: text(entry.field, 40), url: text(entry.url, 300), confidence: confidence(entry.confidence) };
+          const rawStatus = text(entry.verification_status, 30);
+          const verification_status: VerificationStatus =
+            rawStatus === "Verified" || rawStatus === "Unverified" || rawStatus === "Not found"
+              ? rawStatus
+              : confidence(entry.confidence) === "high"
+                ? "Verified"
+                : "Unverified";
+          return {
+            field: text(entry.field, 40),
+            url: text(entry.url, 300),
+            confidence: confidence(entry.confidence),
+            verification_status,
+            date_found: text(entry.date_found, 40) || new Date().toISOString().slice(0, 10),
+          };
         })
         .filter((source) => source.url)
         .slice(0, 12)
@@ -392,6 +458,41 @@ function normalizeCandidate(raw: unknown): DiscoveryCandidate {
         .slice(0, 8)
     : [];
 
+  const rawReview = (item.qualification_review && typeof item.qualification_review === "object" ? item.qualification_review : null) as Record<string, unknown> | null;
+  const rawVerdict = text(rawReview?.verdict, 30);
+  const verdict: "qualified" | "not_qualified" | "uncertain" =
+    rawVerdict === "qualified" || rawVerdict === "not_qualified" || rawVerdict === "uncertain"
+      ? rawVerdict
+      : "uncertain";
+
+  const criteria: CriterionReview[] = Array.isArray(rawReview?.criteria)
+    ? (rawReview!.criteria as unknown[]).map((c) => {
+        const entry = (c && typeof c === "object" ? c : {}) as Record<string, unknown>;
+        const rawStatus = text(entry.status, 20);
+        const status = rawStatus === "met" || rawStatus === "not_met" || rawStatus === "unknown" ? rawStatus : "unknown";
+        return {
+          name: text(entry.name, 120),
+          status,
+          evidence: text(entry.evidence, 300),
+        };
+      })
+    : [];
+
+  const weaknesses = Array.isArray(rawReview?.weaknesses_and_risks)
+    ? (rawReview!.weaknesses_and_risks as unknown[]).map((w) => text(w, 300)).filter(Boolean)
+    : [];
+
+  const missing = Array.isArray(rawReview?.missing_information)
+    ? (rawReview!.missing_information as unknown[]).map((m) => text(m, 300)).filter(Boolean)
+    : [];
+
+  const qualification_review: QualificationReview = {
+    verdict,
+    criteria,
+    weaknesses_and_risks: weaknesses,
+    missing_information: missing,
+  };
+
   return {
     business: text(item.business, 200),
     website: text(item.website, 300),
@@ -399,17 +500,35 @@ function normalizeCandidate(raw: unknown): DiscoveryCandidate {
     industry: text(item.industry, 120),
     why: text(item.why, 400),
     source_url: text(item.source_url, 400),
+    research_notes: text(item.research_notes, 600),
     contact: {
-      decision_maker: text(contact.decision_maker, 120),
-      role: text(contact.role, 120),
+      decision_maker: text(contact.decision_maker || contact.decision_maker_name, 120),
+      role: text(contact.role || contact.role_name || contact.decision_maker_role, 120),
       email: text(contact.email, 200),
       phone: text(contact.phone, 60),
       whatsapp: text(contact.whatsapp, 60),
       address: text(contact.address, 300),
+      email_status: (() => {
+        const rawStatus = text(contact.email_status, 30);
+        return rawStatus === "Verified" || rawStatus === "Unverified" || rawStatus === "Not found"
+          ? rawStatus
+          : contact.email
+            ? "Verified"
+            : "Not found";
+      })(),
+      phone_status: (() => {
+        const rawStatus = text(contact.phone_status, 30);
+        return rawStatus === "Verified" || rawStatus === "Unverified" || rawStatus === "Not found"
+          ? rawStatus
+          : contact.phone
+            ? "Verified"
+            : "Not found";
+      })(),
       socials,
       sources,
     },
     issues,
     how_we_help: howWeHelp,
+    qualification_review,
   };
 }

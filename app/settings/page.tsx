@@ -18,6 +18,7 @@ import {
 import { fmtDate } from "@/lib/format";
 import { DEFAULT_SETTINGS, type Settings, type Suppression } from "@/lib/types";
 import { ModelProvidersCard } from "@/components/ModelProvidersCard";
+import { ClearActivityModal } from "@/components/ClearActivityModal";
 import {
   OPERATOR_MEMORY_CHANGED,
   clearOperatorMemory,
@@ -64,6 +65,7 @@ export default function SettingsPage() {
   const [memoryStats, setMemoryStats] = useState<{ count: number; bytes: number; lastAt: number } | null>(null);
   const [memoryError, setMemoryError] = useState<string | null>(null);
   const [clearingMemory, setClearingMemory] = useState(false);
+  const [clearActivityOpen, setClearActivityOpen] = useState(false);
 
   const changeDeveloperMode = (on: boolean) => {
     try {
@@ -506,6 +508,32 @@ export default function SettingsPage() {
             <li>Campaign history and audit entries remain available for your own records.</li>
           </ul>
         </Card>
+
+        <Card
+          title="Recent activity log"
+          sub="Audit trail entries recorded across your workspace. Clearing logs does not delete leads, campaigns, or analysis results."
+          actions={
+            <button
+              className="btn btn-sm btn-ghost"
+              onClick={() => setClearActivityOpen(true)}
+              type="button"
+            >
+              <Trash2 size={13} aria-hidden="true" />
+              Clear activity
+            </button>
+          }
+        >
+          <p className="tiny" style={{ margin: 0, lineHeight: 1.5 }}>
+            Audit records track pipeline activity, automated runs, imports, and message sends. You can clear all activity or remove logs older than 7 or 30 days at any time. Your prospects, campaigns, messages, and analysis results will never be touched.
+          </p>
+        </Card>
+
+        <ClearActivityModal
+          open={clearActivityOpen}
+          onClose={() => setClearActivityOpen(false)}
+          uid={user.uid}
+          onCleared={() => {}}
+        />
       </div>
     </main>
   );

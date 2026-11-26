@@ -309,60 +309,14 @@ function makeLocalId(prefix: string): string {
   return `${prefix}_${localIdSeq}`;
 }
 
+import { FormattedChatMessage as FormattedReply } from "@/components/FormattedChatMessage";
+
 const STARTER_PROMPTS = [
   "Give me a live summary of my pipeline and what needs attention",
   "Find 5 dental clinics in Austin with outdated websites and save them to Leads",
   "Plan and create a website redesign campaign for my unprocessed leads",
   "Run research, qualify my leads, and draft outreach emails",
 ];
-
-function renderInlineFormatting(line: string, keyPrefix: string): ReactNode[] {
-  const tokens = line.split(/(\*\*[^*]+\*\*|`[^`]+`)/g);
-  return tokens.map((tok, idx) => {
-    if (tok.startsWith("**") && tok.endsWith("**") && tok.length > 4) {
-      return <strong key={`${keyPrefix}-b-${idx}`}>{tok.slice(2, -2)}</strong>;
-    }
-    if (tok.startsWith("`") && tok.endsWith("`") && tok.length > 2) {
-      return (
-        <code key={`${keyPrefix}-c-${idx}`} className="chat-inline-code">
-          {tok.slice(1, -1)}
-        </code>
-      );
-    }
-    return <span key={`${keyPrefix}-t-${idx}`}>{tok}</span>;
-  });
-}
-
-function FormattedReply({ text }: { text: string }) {
-  const blocks = text.trim().split(/\n{2,}/);
-  return (
-    <div className="chat-reply-text">
-      {blocks.map((block, bIdx) => {
-        const lines = block.split("\n").filter((l) => l.trim().length > 0);
-        const isBulletList = lines.length > 0 && lines.every((l) => /^\s*[-*•]\s+/.test(l));
-        if (isBulletList) {
-          return (
-            <ul key={bIdx} className="chat-list">
-              {lines.map((l, lIdx) => (
-                <li key={lIdx}>{renderInlineFormatting(l.replace(/^\s*[-*•]\s+/, ""), `${bIdx}-${lIdx}`)}</li>
-              ))}
-            </ul>
-          );
-        }
-        return (
-          <p key={bIdx}>
-            {lines.map((l, lIdx) => (
-              <span key={lIdx}>
-                {renderInlineFormatting(l, `${bIdx}-${lIdx}`)}
-                {lIdx < lines.length - 1 ? <br /> : null}
-              </span>
-            ))}
-          </p>
-        );
-      })}
-    </div>
-  );
-}
 
 export function DashboardChat({
   open,

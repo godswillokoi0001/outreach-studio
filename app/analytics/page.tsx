@@ -2,9 +2,10 @@
 
 import { BrandLoader } from "@/components/BrandLoader";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useAuth } from "@/components/AuthProvider";
 import { Badge, Banner, Card, Empty, Stat } from "@/components/ui";
+import { NarratorControl } from "@/components/NarratorControl";
 import { authedPost, errorMessage } from "@/lib/client";
 import { getSettings, loadAnalyticsBundle } from "@/lib/store";
 import { label } from "@/lib/format";
@@ -29,6 +30,8 @@ export default function AnalyticsPage() {
   const [insight, setInsight] = useState<PerformanceInsight | null>(null);
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
+  const [highlightResults, setHighlightResults] = useState(false);
+  const resultsRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     let active = true;
@@ -60,8 +63,18 @@ export default function AnalyticsPage() {
         model: settings.model,
       });
       setInsight(result.insight);
+      setTimeout(() => {
+        if (resultsRef.current) {
+          resultsRef.current.scrollIntoView({ behavior: "smooth", block: "start" });
+          setHighlightResults(true);
+          setTimeout(() => setHighlightResults(false), 2800);
+        }
+      }, 120);
     } catch (err) {
       setFailure(errorMessage(err));
+      if (typeof window !== "undefined") {
+        window.scrollTo({ top: 0, behavior: "smooth" });
+      }
     } finally {
       setBusy(false);
     }
@@ -260,41 +273,51 @@ export default function AnalyticsPage() {
             </div>
 
             {insight && (
-              <Card title="AI performance review" sub={insight.headline}>
-                <ul style={{ fontSize: 13, paddingLeft: 16 }}>
-                  {insight.observations.map((observation, index) => (
-                    <li key={index} style={{ marginBottom: 4 }}>
-                      {observation}
-                    </li>
-                  ))}
-                </ul>
-                <div className="stack" style={{ marginTop: 12 }}>
-                  {insight.recommendations.map((recommendation, index) => (
-                    <div key={index} className="banner">
-                      <div>
-                        <strong style={{ display: "block" }}>{recommendation.title}</strong>
-                        <span className="tiny">{recommendation.detail}</span>
+              <div ref={resultsRef} className={highlightResults ? "analysis-highlight" : ""}>
+                <Card
+                  title="AI performance review"
+                  sub={insight.headline}
+                  actions={
+                    <NarratorControl
+                      text={`${insight.headline}. Observations: ${insight.observations.join(". ")}. Recommendations: ${insight.recommendations.map((r) => `${r.title}: ${r.detail}`).join(". ")}. Data limits note: ${insight.data_limits}`}
+                    />
+                  }
+                >
+                  <ul style={{ fontSize: 13, paddingLeft: 16 }}>
+                    {insight.observations.map((observation, index) => (
+                      <li key={index} style={{ marginBottom: 4 }}>
+                        {observation}
+                      </li>
+                    ))}
+                  </ul>
+                  <div className="stack" style={{ marginTop: 12 }}>
+                    {insight.recommendations.map((recommendation, index) => (
+                      <div key={index} className="banner">
+                        <div>
+                          <strong style={{ display: "block" }}>{recommendation.title}</strong>
+                          <span className="tiny">{recommendation.detail}</span>
+                        </div>
+                        <div className="row-end">
+                          <Badge
+                            tone={
+                              recommendation.priority === "high"
+                                ? "bad"
+                                : recommendation.priority === "medium"
+                                  ? "warn"
+                                  : undefined
+                            }
+                          >
+                            {recommendation.priority}
+                          </Badge>
+                        </div>
                       </div>
-                      <div className="row-end">
-                        <Badge
-                          tone={
-                            recommendation.priority === "high"
-                              ? "bad"
-                              : recommendation.priority === "medium"
-                                ? "warn"
-                                : undefined
-                          }
-                        >
-                          {recommendation.priority}
-                        </Badge>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-                <p className="tiny" style={{ marginTop: 10 }}>
-                  {insight.data_limits}
-                </p>
-              </Card>
+                    ))}
+                  </div>
+                  <p className="tiny" style={{ marginTop: 10 }}>
+                    {insight.data_limits}
+                  </p>
+                </Card>
+              </div>
             )}
           </>
         )}

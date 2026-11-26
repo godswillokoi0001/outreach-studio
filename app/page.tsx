@@ -1,12 +1,13 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
-import { ArrowRight, ArrowUpRight, Check, RotateCcw } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { ArrowRight, ArrowUpRight, Check, RotateCcw, Trash2 } from "lucide-react";
 import { useAuth } from "@/components/AuthProvider";
 import { Badge, Banner, Card, Empty, Stat } from "@/components/ui";
 import { BrandLoader } from "@/components/BrandLoader";
 import { CountUp } from "@/components/motion/CountUp";
+import { ClearActivityModal } from "@/components/ClearActivityModal";
 import { errorMessage } from "@/lib/client";
 import { loadDashboardBundle } from "@/lib/store";
 import { label, statusTone } from "@/lib/format";
@@ -18,6 +19,16 @@ export default function DashboardPage() {
   const [data, setData] = useState<DashboardData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [clearActivityOpen, setClearActivityOpen] = useState(false);
+
+  const loadData = useCallback(async () => {
+    try {
+      const bundle = await loadDashboardBundle(user.uid);
+      setData(bundle);
+    } catch (err) {
+      setError(errorMessage(err));
+    }
+  }, [user.uid]);
 
   useEffect(() => {
     let active = true;
@@ -468,7 +479,21 @@ export default function DashboardPage() {
               )}
             </Card>
 
-            <Card title="Recent activity" sub="Audit trail of what the system did">
+            <Card
+              title="Recent activity"
+              sub="Audit trail of what the system did"
+              actions={
+                <button
+                  type="button"
+                  className="btn btn-sm btn-ghost"
+                  onClick={() => setClearActivityOpen(true)}
+                  title="Clear activity log entries"
+                >
+                  <Trash2 size={12} aria-hidden="true" />
+                  Clear activity
+                </button>
+              }
+            >
               {data.activity.length === 0 ? (
                 <Empty title="No activity yet">
                   Imports, research runs, approvals and sends are logged here.
@@ -492,6 +517,13 @@ export default function DashboardPage() {
               )}
             </Card>
           </div>
+
+          <ClearActivityModal
+            open={clearActivityOpen}
+            onClose={() => setClearActivityOpen(false)}
+            uid={user.uid}
+            onCleared={loadData}
+          />
         </div>
       )}
 

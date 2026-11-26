@@ -3,11 +3,13 @@
 import { BrandLoader } from "@/components/BrandLoader";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Plus } from "lucide-react";
+import { Bot, CheckSquare, Filter, Plus, SlidersHorizontal, Square, X } from "lucide-react";
 import { useAuth } from "@/components/AuthProvider";
 import { Badge, Banner, Card, Empty, Field, Modal, Pager } from "@/components/ui";
 import { confirmDialog } from "@/components/Feedback";
 import { errorMessage } from "@/lib/client";
+import { NarratorControl } from "@/components/NarratorControl";
+import { AskAiResearchModal } from "@/components/AskAiResearchModal";
 import {
   createLead,
   deleteLeadCascade,
@@ -45,6 +47,18 @@ export default function LeadsPage() {
 
   const [status, setStatus] = useState("all");
   const [campaignFilter, setCampaignFilter] = useState("all");
+  const [campaignFilters, setCampaignFilters] = useState<string[]>([]);
+  const [qualFilter, setQualFilter] = useState<"all" | "qualified" | "not_qualified" | "needs_review">("all");
+  const [locationFilter, setLocationFilter] = useState("");
+  const [industryFilter, setIndustryFilter] = useState("");
+  const [companySizeFilter, setCompanySizeFilter] = useState("all");
+  const [hasEmailFilter, setHasEmailFilter] = useState(false);
+  const [hasPhoneFilter, setHasPhoneFilter] = useState(false);
+  const [hasSocialFilter, setHasSocialFilter] = useState(false);
+  const [dateAddedFilter, setDateAddedFilter] = useState<"all" | "today" | "7d" | "30d">("all");
+  const [scoreFilter, setScoreFilter] = useState<"all" | "high" | "medium" | "low">("all");
+  const [sortOption, setSortOption] = useState<"newest" | "oldest" | "score_desc" | "score_asc" | "az" | "za">("newest");
+  const [showAdvancedFilters, setShowAdvancedFilters] = useState(false);
   const [checked, setChecked] = useState<string[]>([]);
   const [bulkCampaign, setBulkCampaign] = useState("");
   const [search, setSearch] = useState("");
@@ -127,19 +141,182 @@ export default function LeadsPage() {
   }, [allLeads]);
 
   const filtered = useMemo(() => {
-    const allowedStatuses = status === "all" ? null : new Set(status.split(","));
     const q = query.trim().toLowerCase();
-    return allLeads.filter((l) => {
-      if (allowedStatuses && !allowedStatuses.has(l.status)) return false;
-      if (campaignFilter === "unassigned" && l.campaign_id) return false;
-      if (campaignFilter !== "all" && campaignFilter !== "unassigned" && l.campaign_id !== campaignFilter) {
+    const loc = locationFilter.trim().toLowerCase();
+    const ind = industryFilter.trim().toLowerCase();
+    const now = Date.now();
+    const startOfToday = new Date();
+    startOfToday.setHours(0, 0, 0, 0);
+
+    const result = allLeads.filter((l) => {
+      // 1. Campaign filter (multi or single)
+      if (campaignFilters.length > 0) {
+        const matchesUnassigned = campaignFilters.includes("unassigned") && !l.campaign_id;
+        const matchesCampaign = Boolean(l.campaign_id && campaignFilters.includes(l.campaign_id));
+        if (!matchesUnassigned && !matchesCampaign) return false;
+      } else if (campaignFilter !== "all") {
+        if (campaignFilter === "unassigned" && l.campaign_id) return false;
+        if (campaignFilter !== "unassigned" && l.campaign_id !== campaignFilter) return false;
+      }
+
+      // 2. Qualification status filter
+      if (qualFilter === "qualified") {
+        const isQualified =
+          ["qualified", "email_generated", "approved", "sent", "replied", "converted"].includes(l.status) ||
+          l.score_reason?.category === "high" ||
+          l.score_reason?.category === "medium";
+        if (!isQualified) return false;
+      } else if (qualFilter === "not_qualified") {
+        const isDisqualified = l.status === "disqualified" || l.score_reason?.category === "not_qualified";
+        if (!isDisqualified) return false;
+      } else if (qualFilter === "needs_review") {
+        const isNeedsReview =
+          ["new", "queued_research", "researched", "needs_research"].includes(l.status) ||
+          l.score_reason?.category === "needs_research";
+        if (!isNeedsReview) return false;
+      }
+
+      // Legacy single status dropdown if status !== 'all'
+      if (status !== "all") {
+        const allowedStatuses = new Set(status.split(","));
+        if (!allowedStatuses.has(l.status)) return false;
+      }
+
+      // 3. Location filter
+      if (loc && !(l.location ?? "").toLowerCase().includes(loc)) {
         return false;
       }
+
+      // 4. Industry filter
+      if (ind && !(l.industry ?? "").toLowerCase().includes(ind)) {
+        return false;
+      }
+
+      // 5. Company size filter
+      if (companySizeFilter !== "all") {
+        const combined = `${l.notes ?? ""} ${l.extra ?? ""}`.toLowerCase();
+        if (!combined.includes(companySizeFilter.toLowerCase())) {
+          return false;
+        }
+      }
+
+      // 6. Contact info available
+      if (hasEmailFilter && !l.email?.trim()) return false;
+      if (hasPhoneFilter && !l.phone?.trim()) return false;
+      if (hasSocialFilter) {
+        const notesLower = (l.notes ?? "").toLowerCase();
+        const hasSocialInNotes =
+          notesLower.includes("social") ||
+          notesLower.includes("linkedin") ||
+          notesLower.includes("instagram") ||
+          notesLower.includes("twitter") ||
+          notesLower.includes("facebook") ||
+          notesLower.includes("tiktok") ||
+          notesLower.includes("youtube");
+        const hasSocialInResearch = Boolean((l.research as unknown as { socials?: unknown[] })?.socials?.length);
+        if (!hasSocialInNotes && !hasSocialInResearch) return false;
+      }
+
+      // 7. Date added filter
+      if (dateAddedFilter === "today") {
+        const addedTime = new Date(l.created_at).getTime();
+        if (addedTime < startOfToday.getTime()) return false;
+      } else if (dateAddedFilter === "7d") {
+        const addedTime = new Date(l.created_at).getTime();
+        if (addedTime < now - 7 * 86400 * 1000) return false;
+      } else if (dateAddedFilter === "30d") {
+        const addedTime = new Date(l.created_at).getTime();
+        if (addedTime < now - 30 * 86400 * 1000) return false;
+      }
+
+      // 8. Lead score / buying-intent level
+      const score = l.score ?? 0;
+      if (scoreFilter === "high" && score < 80) return false;
+      if (scoreFilter === "medium" && (score < 60 || score >= 80)) return false;
+      if (scoreFilter === "low" && score >= 60) return false;
+
+      // 9. Search box query
       if (!q) return true;
-      const hay = `${l.business ?? ""} ${l.contact_name ?? ""} ${l.email ?? ""} ${l.industry ?? ""} ${l.location ?? ""}`.toLowerCase();
-      return hay.includes(q);
+      const haystack = `${l.business ?? ""} ${l.contact_name ?? ""} ${l.role ?? ""} ${l.email ?? ""} ${l.phone ?? ""} ${l.industry ?? ""} ${l.location ?? ""} ${l.notes ?? ""}`.toLowerCase();
+      return haystack.includes(q);
     });
-  }, [allLeads, status, campaignFilter, query]);
+
+    // 10. Sorting
+    result.sort((a, b) => {
+      if (sortOption === "newest") {
+        return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+      }
+      if (sortOption === "oldest") {
+        return new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
+      }
+      if (sortOption === "score_desc") {
+        return (b.score ?? -1) - (a.score ?? -1);
+      }
+      if (sortOption === "score_asc") {
+        return (a.score ?? 999) - (b.score ?? 999);
+      }
+      if (sortOption === "az") {
+        return (a.business ?? "").localeCompare(b.business ?? "");
+      }
+      if (sortOption === "za") {
+        return (b.business ?? "").localeCompare(a.business ?? "");
+      }
+      return 0;
+    });
+
+    return result;
+  }, [
+    allLeads,
+    campaignFilters,
+    campaignFilter,
+    qualFilter,
+    status,
+    locationFilter,
+    industryFilter,
+    companySizeFilter,
+    hasEmailFilter,
+    hasPhoneFilter,
+    hasSocialFilter,
+    dateAddedFilter,
+    scoreFilter,
+    query,
+    sortOption,
+  ]);
+
+  const clearAllFilters = () => {
+    setStatus("all");
+    setCampaignFilter("all");
+    setCampaignFilters([]);
+    setQualFilter("all");
+    setLocationFilter("");
+    setIndustryFilter("");
+    setCompanySizeFilter("all");
+    setHasEmailFilter(false);
+    setHasPhoneFilter(false);
+    setHasSocialFilter(false);
+    setDateAddedFilter("all");
+    setScoreFilter("all");
+    setSearch("");
+    setQuery("");
+    setSortOption("newest");
+    setPage(1);
+  };
+
+  const hasActiveFilters = Boolean(
+    status !== "all" ||
+    campaignFilter !== "all" ||
+    campaignFilters.length > 0 ||
+    qualFilter !== "all" ||
+    locationFilter ||
+    industryFilter ||
+    companySizeFilter !== "all" ||
+    hasEmailFilter ||
+    hasPhoneFilter ||
+    hasSocialFilter ||
+    dateAddedFilter !== "all" ||
+    scoreFilter !== "all" ||
+    query,
+  );
 
   const paged = useMemo(
     () => filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE),
@@ -257,65 +434,475 @@ export default function LeadsPage() {
 
       <div className="stack">
         <Card tight>
-          <div className="row" style={{ padding: "14px 16px", gap: 10 }}>
-            <select
-              className="select"
-              style={{ width: 210 }}
-              value={status}
-              onChange={(e) => {
-                setStatus(e.target.value);
-                setPage(1);
-              }}
-            >
-              {STATUS_OPTIONS.map(([value, text]) => (
-                <option key={value} value={value}>
-                  {text}
-                  {value !== "all" ? ` (${counts[value.split(",")[0]] ?? 0})` : ""}
-                </option>
-              ))}
-            </select>
-            <select
-              className="select"
-              style={{ width: 210 }}
-              value={campaignFilter}
-              onChange={(e) => {
-                setCampaignFilter(e.target.value);
-                setPage(1);
-              }}
-            >
-              <option value="all">Every campaign</option>
-              <option value="unassigned">Unassigned ({campaignCounts.unassigned ?? 0})</option>
-              {campaigns.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.name} ({campaignCounts[c.id] ?? 0})
-                </option>
-              ))}
-            </select>
-            <input
-              className="input"
-              style={{ maxWidth: 320 }}
-              placeholder="Search business, email, contact or industry"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") {
+          <div className="stack" style={{ padding: "14px 16px", gap: 12 }}>
+            {/* Primary Filter & Search Bar */}
+            <div className="row" style={{ gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+              <div style={{ position: "relative", flex: "1 1 240px", minWidth: 200 }}>
+                <input
+                  className="input"
+                  style={{ width: "100%" }}
+                  placeholder="Search business, contact, email, location…"
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      setQuery(search);
+                      setPage(1);
+                    }
+                  }}
+                />
+              </div>
+              <button
+                className="btn"
+                type="button"
+                onClick={() => {
                   setQuery(search);
                   setPage(1);
-                }
-              }}
-            />
-            <button
-              className="btn"
-              type="button"
-              onClick={() => {
-                setQuery(search);
-                setPage(1);
-              }}
-            >
-              Search
-            </button>
-            <div className="row-end">
-              <span className="tiny">{filtered.length} leads</span>
+                }}
+              >
+                Search
+              </button>
+
+              {/* Qualification Filter */}
+              <select
+                className="select"
+                style={{ width: 170 }}
+                value={qualFilter}
+                onChange={(e) => {
+                  setQualFilter(e.target.value as "all" | "qualified" | "not_qualified" | "needs_review");
+                  setPage(1);
+                }}
+                title="Filter by Qualification Status"
+              >
+                <option value="all">Qualification: All</option>
+                <option value="qualified">Qualified</option>
+                <option value="needs_review">Needs review</option>
+                <option value="not_qualified">Not qualified</option>
+              </select>
+
+              {/* Campaign Filter */}
+              <select
+                className="select"
+                style={{ width: 180 }}
+                value={campaignFilter}
+                onChange={(e) => {
+                  setCampaignFilter(e.target.value);
+                  setPage(1);
+                }}
+                title="Filter by Campaign"
+              >
+                <option value="all">All campaigns</option>
+                <option value="unassigned">Unassigned ({campaignCounts.unassigned ?? 0})</option>
+                {campaigns.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name} ({campaignCounts[c.id] ?? 0})
+                  </option>
+                ))}
+              </select>
+
+              {/* Sort Dropdown */}
+              <select
+                className="select"
+                style={{ width: 160 }}
+                value={sortOption}
+                onChange={(e) => setSortOption(e.target.value as any)}
+                title="Sort options"
+              >
+                <option value="newest">Sort: Newest first</option>
+                <option value="oldest">Sort: Oldest first</option>
+                <option value="score_desc">Sort: Highest score</option>
+                <option value="score_asc">Sort: Lowest score</option>
+                <option value="az">Sort: Business A-Z</option>
+                <option value="za">Sort: Business Z-A</option>
+              </select>
+
+              {/* Advanced Filters Toggle */}
+              <button
+                type="button"
+                className={`btn btn-sm ${showAdvancedFilters ? "btn-primary" : "btn-ghost"}`}
+                onClick={() => setShowAdvancedFilters((prev) => !prev)}
+                style={{ gap: 6 }}
+              >
+                <SlidersHorizontal size={13} aria-hidden="true" />
+                Filters
+              </button>
+            </div>
+
+            {/* Advanced Filters Drawer */}
+            {showAdvancedFilters && (
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))",
+                  gap: 12,
+                  padding: "12px 14px",
+                  borderRadius: 8,
+                  background: "var(--surface-sunken, rgba(0,0,0,0.03))",
+                  border: "1px solid var(--line)",
+                }}
+              >
+                <div>
+                  <label className="tiny strong" style={{ display: "block", marginBottom: 4 }}>Location</label>
+                  <input
+                    className="input"
+                    style={{ width: "100%", height: 32, fontSize: 12 }}
+                    placeholder="e.g. Austin, Lagos, London"
+                    value={locationFilter}
+                    onChange={(e) => {
+                      setLocationFilter(e.target.value);
+                      setPage(1);
+                    }}
+                  />
+                </div>
+
+                <div>
+                  <label className="tiny strong" style={{ display: "block", marginBottom: 4 }}>Industry / Niche</label>
+                  <input
+                    className="input"
+                    style={{ width: "100%", height: 32, fontSize: 12 }}
+                    placeholder="e.g. Dental, Legal, SaaS"
+                    value={industryFilter}
+                    onChange={(e) => {
+                      setIndustryFilter(e.target.value);
+                      setPage(1);
+                    }}
+                  />
+                </div>
+
+                <div>
+                  <label className="tiny strong" style={{ display: "block", marginBottom: 4 }}>Company Size</label>
+                  <select
+                    className="select"
+                    style={{ width: "100%", height: 32, fontSize: 12 }}
+                    value={companySizeFilter}
+                    onChange={(e) => {
+                      setCompanySizeFilter(e.target.value);
+                      setPage(1);
+                    }}
+                  >
+                    <option value="all">Any company size</option>
+                    <option value="1-10">1-10 employees</option>
+                    <option value="11-50">11-50 employees</option>
+                    <option value="51-200">51-200 employees</option>
+                    <option value="200+">200+ employees</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="tiny strong" style={{ display: "block", marginBottom: 4 }}>Date Added</label>
+                  <select
+                    className="select"
+                    style={{ width: "100%", height: 32, fontSize: 12 }}
+                    value={dateAddedFilter}
+                    onChange={(e) => {
+                      setDateAddedFilter(e.target.value as any);
+                      setPage(1);
+                    }}
+                  >
+                    <option value="all">All time</option>
+                    <option value="today">Added today</option>
+                    <option value="7d">Last 7 days</option>
+                    <option value="30d">Last 30 days</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="tiny strong" style={{ display: "block", marginBottom: 4 }}>Lead Score / Intent</label>
+                  <select
+                    className="select"
+                    style={{ width: "100%", height: 32, fontSize: 12 }}
+                    value={scoreFilter}
+                    onChange={(e) => {
+                      setScoreFilter(e.target.value as any);
+                      setPage(1);
+                    }}
+                  >
+                    <option value="all">All scores</option>
+                    <option value="high">High intent (80+)</option>
+                    <option value="medium">Medium intent (60-79)</option>
+                    <option value="low">Low intent (&lt;60)</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="tiny strong" style={{ display: "block", marginBottom: 4 }}>Contact Info Available</label>
+                  <div className="row" style={{ gap: 10, flexWrap: "wrap", marginTop: 4 }}>
+                    <label style={{ display: "inline-flex", alignItems: "center", gap: 4, cursor: "pointer", fontSize: 11.5 }}>
+                      <input
+                        type="checkbox"
+                        checked={hasEmailFilter}
+                        onChange={(e) => {
+                          setHasEmailFilter(e.target.checked);
+                          setPage(1);
+                        }}
+                      />
+                      Email
+                    </label>
+                    <label style={{ display: "inline-flex", alignItems: "center", gap: 4, cursor: "pointer", fontSize: 11.5 }}>
+                      <input
+                        type="checkbox"
+                        checked={hasPhoneFilter}
+                        onChange={(e) => {
+                          setHasPhoneFilter(e.target.checked);
+                          setPage(1);
+                        }}
+                      />
+                      Phone
+                    </label>
+                    <label style={{ display: "inline-flex", alignItems: "center", gap: 4, cursor: "pointer", fontSize: 11.5 }}>
+                      <input
+                        type="checkbox"
+                        checked={hasSocialFilter}
+                        onChange={(e) => {
+                          setHasSocialFilter(e.target.checked);
+                          setPage(1);
+                        }}
+                      />
+                      Social Handles
+                    </label>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Active Filter Chips & Results Count Bar */}
+            <div className="row" style={{ justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8, borderTop: "1px solid var(--line-soft)", paddingTop: 8 }}>
+              <div className="row" style={{ gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+                <span className="tiny strong" style={{ color: "var(--ink-2)" }}>
+                  Showing {filtered.length} of {allLeads.length} prospects
+                </span>
+
+                {qualFilter !== "all" && (
+                  <span
+                    className="tiny"
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: 4,
+                      padding: "2px 8px",
+                      borderRadius: 12,
+                      background: "var(--surface-sunken, #f1f5f9)",
+                      border: "1px solid var(--line)",
+                    }}
+                  >
+                    Status: {qualFilter.replace("_", " ")}
+                    <button type="button" onClick={() => setQualFilter("all")} style={{ border: 0, background: "none", cursor: "pointer", padding: 0 }}>
+                      <X size={10} />
+                    </button>
+                  </span>
+                )}
+
+                {campaignFilter !== "all" && (
+                  <span
+                    className="tiny"
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: 4,
+                      padding: "2px 8px",
+                      borderRadius: 12,
+                      background: "var(--surface-sunken, #f1f5f9)",
+                      border: "1px solid var(--line)",
+                    }}
+                  >
+                    Campaign: {campaignFilter === "unassigned" ? "Unassigned" : campaignNames[campaignFilter] ?? campaignFilter}
+                    <button type="button" onClick={() => setCampaignFilter("all")} style={{ border: 0, background: "none", cursor: "pointer", padding: 0 }}>
+                      <X size={10} />
+                    </button>
+                  </span>
+                )}
+
+                {locationFilter && (
+                  <span
+                    className="tiny"
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: 4,
+                      padding: "2px 8px",
+                      borderRadius: 12,
+                      background: "var(--surface-sunken, #f1f5f9)",
+                      border: "1px solid var(--line)",
+                    }}
+                  >
+                    Location: {locationFilter}
+                    <button type="button" onClick={() => setLocationFilter("")} style={{ border: 0, background: "none", cursor: "pointer", padding: 0 }}>
+                      <X size={10} />
+                    </button>
+                  </span>
+                )}
+
+                {industryFilter && (
+                  <span
+                    className="tiny"
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: 4,
+                      padding: "2px 8px",
+                      borderRadius: 12,
+                      background: "var(--surface-sunken, #f1f5f9)",
+                      border: "1px solid var(--line)",
+                    }}
+                  >
+                    Industry: {industryFilter}
+                    <button type="button" onClick={() => setIndustryFilter("")} style={{ border: 0, background: "none", cursor: "pointer", padding: 0 }}>
+                      <X size={10} />
+                    </button>
+                  </span>
+                )}
+
+                {companySizeFilter !== "all" && (
+                  <span
+                    className="tiny"
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: 4,
+                      padding: "2px 8px",
+                      borderRadius: 12,
+                      background: "var(--surface-sunken, #f1f5f9)",
+                      border: "1px solid var(--line)",
+                    }}
+                  >
+                    Size: {companySizeFilter}
+                    <button type="button" onClick={() => setCompanySizeFilter("all")} style={{ border: 0, background: "none", cursor: "pointer", padding: 0 }}>
+                      <X size={10} />
+                    </button>
+                  </span>
+                )}
+
+                {hasEmailFilter && (
+                  <span
+                    className="tiny"
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: 4,
+                      padding: "2px 8px",
+                      borderRadius: 12,
+                      background: "var(--surface-sunken, #f1f5f9)",
+                      border: "1px solid var(--line)",
+                    }}
+                  >
+                    Has Email
+                    <button type="button" onClick={() => setHasEmailFilter(false)} style={{ border: 0, background: "none", cursor: "pointer", padding: 0 }}>
+                      <X size={10} />
+                    </button>
+                  </span>
+                )}
+
+                {hasPhoneFilter && (
+                  <span
+                    className="tiny"
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: 4,
+                      padding: "2px 8px",
+                      borderRadius: 12,
+                      background: "var(--surface-sunken, #f1f5f9)",
+                      border: "1px solid var(--line)",
+                    }}
+                  >
+                    Has Phone
+                    <button type="button" onClick={() => setHasPhoneFilter(false)} style={{ border: 0, background: "none", cursor: "pointer", padding: 0 }}>
+                      <X size={10} />
+                    </button>
+                  </span>
+                )}
+
+                {hasSocialFilter && (
+                  <span
+                    className="tiny"
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: 4,
+                      padding: "2px 8px",
+                      borderRadius: 12,
+                      background: "var(--surface-sunken, #f1f5f9)",
+                      border: "1px solid var(--line)",
+                    }}
+                  >
+                    Has Socials
+                    <button type="button" onClick={() => setHasSocialFilter(false)} style={{ border: 0, background: "none", cursor: "pointer", padding: 0 }}>
+                      <X size={10} />
+                    </button>
+                  </span>
+                )}
+
+                {dateAddedFilter !== "all" && (
+                  <span
+                    className="tiny"
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: 4,
+                      padding: "2px 8px",
+                      borderRadius: 12,
+                      background: "var(--surface-sunken, #f1f5f9)",
+                      border: "1px solid var(--line)",
+                    }}
+                  >
+                    Added: {dateAddedFilter === "today" ? "Today" : dateAddedFilter === "7d" ? "Last 7 days" : "Last 30 days"}
+                    <button type="button" onClick={() => setDateAddedFilter("all")} style={{ border: 0, background: "none", cursor: "pointer", padding: 0 }}>
+                      <X size={10} />
+                    </button>
+                  </span>
+                )}
+
+                {scoreFilter !== "all" && (
+                  <span
+                    className="tiny"
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: 4,
+                      padding: "2px 8px",
+                      borderRadius: 12,
+                      background: "var(--surface-sunken, #f1f5f9)",
+                      border: "1px solid var(--line)",
+                    }}
+                  >
+                    Score: {scoreFilter === "high" ? "80+" : scoreFilter === "medium" ? "60-79" : "<60"}
+                    <button type="button" onClick={() => setScoreFilter("all")} style={{ border: 0, background: "none", cursor: "pointer", padding: 0 }}>
+                      <X size={10} />
+                    </button>
+                  </span>
+                )}
+
+                {query && (
+                  <span
+                    className="tiny"
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: 4,
+                      padding: "2px 8px",
+                      borderRadius: 12,
+                      background: "var(--surface-sunken, #f1f5f9)",
+                      border: "1px solid var(--line)",
+                    }}
+                  >
+                    Search: &ldquo;{query}&rdquo;
+                    <button type="button" onClick={() => { setQuery(""); setSearch(""); }} style={{ border: 0, background: "none", cursor: "pointer", padding: 0 }}>
+                      <X size={10} />
+                    </button>
+                  </span>
+                )}
+              </div>
+
+              {hasActiveFilters && (
+                <button
+                  type="button"
+                  className="btn btn-sm btn-ghost"
+                  onClick={clearAllFilters}
+                  style={{ fontSize: 11.5, color: "var(--danger, #dc2626)" }}
+                >
+                  Clear all filters
+                </button>
+              )}
             </div>
           </div>
 
@@ -579,24 +1166,42 @@ function LeadDetail({
   onDelete: () => void;
 }) {
   const [manual, setManual] = useState(lead?.manual_research ?? "");
+  const [askAiOpen, setAskAiOpen] = useState(false);
 
   if (!lead) return null;
 
   const research = lead.research;
   const qualification = lead.score_reason;
 
+  const narrative = `${lead.business || "Prospect"} in ${lead.location || "unspecified location"}. Status: ${label(lead.status)}. ${research?.summary ? `Research summary: ${research.summary}.` : "No research summary stored."} ${qualification?.opportunity ? `Observed opportunity: ${qualification.opportunity}.` : ""} ${qualification?.reasons?.length ? `Qualification reasons: ${qualification.reasons.join(". ")}.` : ""} ${qualification?.disqualify_reason ? `Disqualification reason: ${qualification.disqualify_reason}.` : ""}`;
+
   return (
-    <Modal open={Boolean(lead)} onClose={onClose} title={lead.business ?? "Prospect"} large>
-      <div className="row" style={{ marginBottom: 12 }}>
-        <Badge tone={statusTone(lead.status)}>{label(lead.status)}</Badge>
-        {lead.priority && <Badge tone={priorityTone(lead.priority)}>{label(lead.priority)} priority</Badge>}
-        {lead.score !== null && <Badge tone="info">Score {lead.score}</Badge>}
-        <div className="row-end">
-          <button className="btn btn-sm btn-danger" onClick={onDelete} type="button">
-            Delete lead
+    <>
+      <Modal open={Boolean(lead)} onClose={onClose} title={lead.business ?? "Prospect"} large>
+        <div className="row" style={{ marginBottom: 12, alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+          <Badge tone={statusTone(lead.status)}>{label(lead.status)}</Badge>
+          {lead.priority && <Badge tone={priorityTone(lead.priority)}>{label(lead.priority)} priority</Badge>}
+          {lead.score !== null && <Badge tone="info">Score {lead.score}</Badge>}
+
+          <NarratorControl text={narrative} />
+
+          <button
+            type="button"
+            className="btn btn-sm btn-ghost"
+            style={{ height: 26, padding: "0 8px", fontSize: 11.5, gap: 4 }}
+            onClick={() => setAskAiOpen(true)}
+            title="Chat with AI about this lead's research"
+          >
+            <Bot size={13} aria-hidden="true" />
+            Ask AI
           </button>
+
+          <div className="row-end">
+            <button className="btn btn-sm btn-danger" onClick={onDelete} type="button">
+              Delete lead
+            </button>
+          </div>
         </div>
-      </div>
 
       <dl className="kv" style={{ marginBottom: 16 }}>
         <dt>Email</dt>
@@ -780,5 +1385,15 @@ function LeadDetail({
         </div>
       </div>
     </Modal>
+
+    {askAiOpen && (
+      <AskAiResearchModal
+        open={askAiOpen}
+        onClose={() => setAskAiOpen(false)}
+        prospectName={lead.business || lead.email || "Prospect"}
+        prospectData={lead as unknown as Record<string, unknown>}
+      />
+    )}
+  </>
   );
 }

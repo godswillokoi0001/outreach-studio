@@ -96,3 +96,65 @@ test("sanitizeAgentContents rejects oversized media", () => {
   ]);
   assert.equal(contents[0]?.parts.filter((part) => part.inlineData).length, 0);
 });
+
+test("normalizeCandidate enforces evidence-based research and strict qualification verdict", async () => {
+  const { normalizeCandidate } = await import("./intelligence");
+
+  const rawCandidate = {
+    business: "Bright Smile Dental",
+    website: "https://brightsmiledental.example",
+    city: "Austin",
+    country: "United States",
+    contact: {
+      decision_maker_name: "Dr. Jane Smith",
+      decision_maker_role: "Lead Dentist & Owner",
+      email: "dr.smith@brightsmiledental.example",
+      email_status: "Verified",
+      phone: "+1 512 555 0199",
+      phone_status: "Verified",
+      socials: [
+        { platform: "LinkedIn", url: "https://linkedin.com/company/brightsmile", verification_status: "Verified" },
+      ],
+      sources: [
+        { url: "https://brightsmiledental.example/about", date_found: "2026-11-26", claim: "Found owner Dr. Jane Smith" },
+      ],
+    },
+    qualification_review: {
+      verdict: "qualified",
+      criteria: [
+        { name: "Website needs redesign", status: "met", evidence: "Site not mobile friendly" },
+        { name: "Active dental business in Austin", status: "met", evidence: "Google business profile active" },
+      ],
+      weaknesses_and_risks: ["Small team of 4"],
+      missing_information: ["No dedicated marketing contact"],
+    },
+  };
+
+  const normalized = normalizeCandidate(rawCandidate);
+
+  assert.equal(normalized.business, "Bright Smile Dental");
+  assert.equal(normalized.contact.decision_maker, "Dr. Jane Smith");
+  assert.equal(normalized.contact.email_status, "Verified");
+  assert.equal(normalized.contact.phone_status, "Verified");
+  assert.equal(normalized.contact.socials[0].platform, "LinkedIn");
+  assert.equal(normalized.contact.socials[0].verification_status, "Verified");
+  assert.equal(normalized.contact.sources[0].url, "https://brightsmiledental.example/about");
+  assert.equal(normalized.qualification_review?.verdict, "qualified");
+  assert.equal(normalized.qualification_review?.criteria.length, 2);
+  assert.equal(normalized.qualification_review?.weaknesses_and_risks[0], "Small team of 4");
+});
+
+test("normalizeCandidate defaults missing or uncertain reviews honestly", async () => {
+  const { normalizeCandidate } = await import("./intelligence");
+
+  const rawMinimal = {
+    business: "Unknown Cafe",
+  };
+
+  const normalized = normalizeCandidate(rawMinimal);
+
+  assert.equal(normalized.business, "Unknown Cafe");
+  assert.equal(normalized.contact.email_status, "Not found");
+  assert.equal(normalized.contact.phone_status, "Not found");
+  assert.equal(normalized.qualification_review?.verdict, "uncertain");
+});

@@ -1,17 +1,22 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import {
+  AlertCircle,
+  Bot,
   Building2,
+  CheckCircle2,
   ChevronDown,
   ExternalLink,
   Globe,
+  HelpCircle,
   Mail,
   MapPin,
   MessageCircle,
   Phone,
   ShieldQuestion,
+  Volume2,
 } from "lucide-react";
 import { useAuth } from "@/components/AuthProvider";
 import { BatchRunner } from "@/components/Runner";
@@ -19,6 +24,8 @@ import { BrandLoader } from "@/components/BrandLoader";
 import { CriteriaForm } from "@/components/CriteriaForm";
 import { LocationPicker } from "@/components/LocationPicker";
 import { Badge, Banner, Card, Empty } from "@/components/ui";
+import { NarratorControl } from "@/components/NarratorControl";
+import { AskAiResearchModal } from "@/components/AskAiResearchModal";
 import { DEFAULT_CRITERIA, criteriaToFocus, type ResearchCriteria } from "@/lib/criteria";
 import { EMPTY_GEO, geoSummary, rememberLocation, type GeoSelection } from "@/lib/geo";
 import { authedPost, errorMessage } from "@/lib/client";
@@ -26,26 +33,9 @@ import { buildLiveKnowledgeDigest } from "@/lib/pipeline-client";
 import { createLead, getSettings, listCampaigns, listLeads } from "@/lib/store";
 import { label, statusTone } from "@/lib/format";
 import type { Campaign, Lead } from "@/lib/types";
+import type { DiscoveryCandidate, VerificationStatus } from "@/lib/intelligence";
 
-interface Candidate {
-  business: string;
-  website: string;
-  location: string;
-  industry: string;
-  why: string;
-  source_url: string;
-  contact: {
-    decision_maker: string;
-    role: string;
-    email: string;
-    phone: string;
-    whatsapp: string;
-    address: string;
-    socials: { platform: string; url: string }[];
-    sources: { field: string; url: string; confidence: "high" | "medium" | "low" }[];
-  };
-  issues: { area: string; problem: string; evidence: string; severity: "high" | "medium" | "low" }[];
-  how_we_help: { issue: string; service: string; angle: string }[];
+interface Candidate extends DiscoveryCandidate {
   selected?: boolean;
 }
 
@@ -63,6 +53,8 @@ function ContactRow({
   href,
   confidence,
   sourceUrl,
+  verificationStatus,
+  dateFound,
 }: {
   icon: React.ReactNode;
   label: string;
@@ -70,14 +62,19 @@ function ContactRow({
   href?: string;
   confidence?: string;
   sourceUrl?: string;
+  verificationStatus?: VerificationStatus;
+  dateFound?: string;
 }) {
+  const isFound = Boolean(value && value !== NOT_FOUND);
+  const status: VerificationStatus = verificationStatus ?? (isFound ? (confidence === "high" ? "Verified" : "Unverified") : "Not found");
+
   return (
-    <div className="prospect-contact-row" data-missing={value ? "false" : "true"}>
+    <div className="prospect-contact-row" data-missing={isFound ? "false" : "true"}>
       <span className="prospect-contact-icon" aria-hidden="true">
         {icon}
       </span>
       <span className="prospect-contact-label">{fieldLabel}</span>
-      {value ? (
+      {isFound ? (
         href ? (
           <a className="prospect-contact-value" href={href} target="_blank" rel="noreferrer">
             {value}
@@ -88,30 +85,77 @@ function ContactRow({
       ) : (
         <span className="prospect-contact-value muted">{NOT_FOUND}</span>
       )}
-      {value && confidence ? (
-        <span className="prospect-confidence" data-level={confidence}>
-          {confidence}
+      <span
+        className="tiny"
+        style={{
+          padding: "1px 6px",
+          borderRadius: 4,
+          fontSize: 10,
+          fontWeight: 600,
+          background:
+            status === "Verified"
+              ? "rgba(22, 101, 52, 0.12)"
+              : status === "Unverified"
+                ? "rgba(202, 138, 4, 0.12)"
+                : "rgba(100, 116, 139, 0.12)",
+          color:
+            status === "Verified"
+              ? "var(--teal-deep, #15803d)"
+              : status === "Unverified"
+                ? "#b45309"
+                : "var(--muted, #64748b)",
+        }}
+      >
+        {status}
+      </span>
+      {isFound && sourceUrl ? (
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+          <a className="prospect-source-link" href={sourceUrl} target="_blank" rel="noreferrer" title={`Source: ${sourceUrl}${dateFound ? ` · Found ${dateFound}` : ""}`}>
+            <ExternalLink size={10} aria-hidden="true" />
+            <span className="sr-only">Source for {fieldLabel}</span>
+          </a>
+          {dateFound && <span className="tiny muted" style={{ fontSize: 9.5 }}>({dateFound})</span>}
         </span>
-      ) : null}
-      {value && sourceUrl ? (
-        <a className="prospect-source-link" href={sourceUrl} target="_blank" rel="noreferrer" title="Open the source">
-          <ExternalLink size={10} aria-hidden="true" />
-          <span className="sr-only">Source for {fieldLabel}</span>
-        </a>
       ) : null}
     </div>
   );
 }
 
+function generateCandidateNarrative(candidate: Candidate): string {
+  const q = candidate.qualification_review;
+  const verdictText = q?.verdict === "qualified"
+    ? "Qualified prospect meeting our selection criteria."
+    : q?.verdict === "uncertain"
+      ? "Needs review. Borderline prospect with partial verification."
+      : "Not qualified.";
+
+  const criteriaText = (q?.criteria ?? [])
+    .map((c) => `${c.name}: ${c.status === "met" ? "Met" : c.status === "not_met" ? "Not met" : "Unknown"} (${c.evidence || "no evidence"})`)
+    .join(". ");
+
+  const weaknessesText = (q?.weaknesses_and_risks ?? []).join("; ");
+  const issuesText = candidate.issues.map((i) => `${i.area}: ${i.problem}`).join(". ");
+  const contactText = candidate.contact.decision_maker
+    ? `Decision-maker is ${candidate.contact.decision_maker}, ${candidate.contact.role || "role unverified"}. Email: ${candidate.contact.email || "Not found"}. Phone: ${candidate.contact.phone || candidate.contact.whatsapp || "Not found"}.`
+    : "Decision-maker could not be verified from public sources.";
+
+  return `${candidate.business} located in ${candidate.location || "unspecified location"}, ${candidate.industry || "general industry"}. ${verdictText} Assessment: ${candidate.why}. Contact audit: ${contactText} Issues observed: ${issuesText}. Qualification review: ${criteriaText}. ${weaknessesText ? `Identified risks: ${weaknessesText}.` : ""}`;
+}
+
 function ProspectCard({
   candidate,
   onToggle,
+  onAskAi,
 }: {
   candidate: Candidate;
   onToggle: (selected: boolean) => void;
+  onAskAi: (candidate: Candidate) => void;
 }) {
   const [open, setOpen] = useState(false);
   const sourcesFor = (field: string) => candidate.contact.sources.find((source) => source.field.toLowerCase() === field.toLowerCase());
+  const review = candidate.qualification_review;
+  const verdict = review?.verdict ?? "uncertain";
+  const narrative = generateCandidateNarrative(candidate);
 
   return (
     <article className="prospect" data-selected={candidate.selected ? "true" : "false"}>
@@ -125,7 +169,14 @@ function ProspectCard({
           />
         </label>
         <div className="prospect-title">
-          <h3>{candidate.business || "Unnamed business"}</h3>
+          <div className="row" style={{ alignItems: "center", gap: 8 }}>
+            <h3 style={{ margin: 0 }}>{candidate.business || "Unnamed business"}</h3>
+            <Badge
+              tone={verdict === "qualified" ? "ok" : verdict === "uncertain" ? "warn" : "bad"}
+            >
+              {verdict === "qualified" ? "Qualified" : verdict === "uncertain" ? "Needs review" : "Not qualified"}
+            </Badge>
+          </div>
           <div className="prospect-meta">
             {candidate.industry ? <Badge>{candidate.industry}</Badge> : null}
             {candidate.location ? (
@@ -142,18 +193,99 @@ function ProspectCard({
             )}
           </div>
         </div>
-        <button
-          type="button"
-          className="btn btn-sm btn-ghost"
-          onClick={() => setOpen((value) => !value)}
-          aria-expanded={open}
-        >
-          <ChevronDown size={13} style={{ transform: open ? "rotate(180deg)" : "none" }} aria-hidden="true" />
-          <span>{open ? "Hide detail" : "Full detail"}</span>
-        </button>
+
+        <div className="row" style={{ gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+          <NarratorControl text={narrative} />
+          <button
+            type="button"
+            className="btn btn-sm btn-ghost"
+            style={{ height: 26, padding: "0 8px", fontSize: 11.5, gap: 4 }}
+            onClick={() => onAskAi(candidate)}
+            title="Chat with AI about this prospect's research"
+          >
+            <Bot size={13} aria-hidden="true" />
+            Ask AI
+          </button>
+          <button
+            type="button"
+            className="btn btn-sm btn-ghost"
+            onClick={() => setOpen((value) => !value)}
+            aria-expanded={open}
+            style={{ height: 26 }}
+          >
+            <ChevronDown size={13} style={{ transform: open ? "rotate(180deg)" : "none" }} aria-hidden="true" />
+            <span>{open ? "Hide" : "Detail"}</span>
+          </button>
+        </div>
       </div>
 
       {candidate.why ? <p className="prospect-why">{candidate.why}</p> : null}
+
+      {/* Qualification Review Bar */}
+      {review && (
+        <div
+          style={{
+            margin: "8px 0 10px",
+            padding: "8px 12px",
+            borderRadius: 6,
+            background: verdict === "qualified" ? "rgba(22, 101, 52, 0.05)" : verdict === "uncertain" ? "rgba(202, 138, 4, 0.05)" : "rgba(220, 38, 38, 0.05)",
+            border: `1px solid ${verdict === "qualified" ? "rgba(22, 101, 52, 0.2)" : verdict === "uncertain" ? "rgba(202, 138, 4, 0.2)" : "rgba(220, 38, 38, 0.2)"}`,
+          }}
+        >
+          <div className="row" style={{ justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+            <span className="tiny strong" style={{ textTransform: "uppercase", letterSpacing: "0.06em" }}>
+              Qualification Review: {verdict === "qualified" ? "Meets Criteria" : verdict === "uncertain" ? "Needs Review / Borderline" : "Disqualified"}
+            </span>
+            <span className="tiny muted">Strict evidence evaluation</span>
+          </div>
+
+          {review.criteria && review.criteria.length > 0 && (
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 6, marginTop: 6 }}>
+              {review.criteria.map((c, idx) => (
+                <div
+                  key={idx}
+                  style={{
+                    padding: "4px 8px",
+                    borderRadius: 4,
+                    background: "var(--surface, #fff)",
+                    border: "1px solid var(--line)",
+                    fontSize: 11,
+                  }}
+                >
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 4 }}>
+                    <span className="strong">{c.name}</span>
+                    <span
+                      style={{
+                        fontSize: 9.5,
+                        fontWeight: 700,
+                        textTransform: "uppercase",
+                        color: c.status === "met" ? "var(--teal-deep, #15803d)" : c.status === "not_met" ? "#dc2626" : "#b45309",
+                      }}
+                    >
+                      {c.status.replace("_", " ")}
+                    </span>
+                  </div>
+                  {c.evidence && <div className="tiny muted" style={{ marginTop: 2, fontSize: 10 }}>{c.evidence}</div>}
+                </div>
+              ))}
+            </div>
+          )}
+
+          {review.weaknesses_and_risks && review.weaknesses_and_risks.length > 0 && (
+            <div style={{ marginTop: 6, fontSize: 11, color: "var(--ink-2)" }}>
+              <span className="strong" style={{ color: "#b91c1c" }}>Risks / Weaknesses: </span>
+              {review.weaknesses_and_risks.join("; ")}
+            </div>
+          )}
+
+          {review.missing_information && review.missing_information.length > 0 && (
+            <div style={{ marginTop: 4, fontSize: 11, color: "var(--muted)" }}>
+              <span className="strong">Missing info: </span>
+              {review.missing_information.join("; ")}
+            </div>
+          )}
+        </div>
+      )}
 
       {candidate.issues.length > 0 ? (
         <div className="prospect-issues">
@@ -171,8 +303,23 @@ function ProspectCard({
 
       {open ? (
         <div className="prospect-detail">
+          {candidate.research_notes && (
+            <div
+              style={{
+                padding: "8px 10px",
+                borderRadius: 6,
+                background: "var(--surface-sunken, rgba(0,0,0,0.03))",
+                fontSize: 11.5,
+                lineHeight: 1.45,
+                marginBottom: 10,
+              }}
+            >
+              <strong>Research note:</strong> {candidate.research_notes}
+            </div>
+          )}
+
           <div className="prospect-section">
-            <div className="prospect-section-title">Contact details</div>
+            <div className="prospect-section-title">Contact details (Evidence & Verification)</div>
             <div className="prospect-contacts">
               <ContactRow
                 icon={<Building2 size={12} />}
@@ -184,6 +331,8 @@ function ProspectCard({
                 }
                 confidence={sourcesFor("decision_maker")?.confidence}
                 sourceUrl={sourcesFor("decision_maker")?.url}
+                verificationStatus={sourcesFor("decision_maker")?.verification_status}
+                dateFound={sourcesFor("decision_maker")?.date_found}
               />
               <ContactRow
                 icon={<Mail size={12} />}
@@ -192,6 +341,8 @@ function ProspectCard({
                 href={candidate.contact.email ? `mailto:${candidate.contact.email}` : undefined}
                 confidence={sourcesFor("email")?.confidence}
                 sourceUrl={sourcesFor("email")?.url}
+                verificationStatus={sourcesFor("email")?.verification_status}
+                dateFound={sourcesFor("email")?.date_found}
               />
               <ContactRow
                 icon={<Phone size={12} />}
@@ -200,6 +351,8 @@ function ProspectCard({
                 href={candidate.contact.phone ? `tel:${candidate.contact.phone}` : undefined}
                 confidence={sourcesFor("phone")?.confidence}
                 sourceUrl={sourcesFor("phone")?.url}
+                verificationStatus={sourcesFor("phone")?.verification_status}
+                dateFound={sourcesFor("phone")?.date_found}
               />
               <ContactRow
                 icon={<MessageCircle size={12} />}
@@ -207,6 +360,8 @@ function ProspectCard({
                 value={candidate.contact.whatsapp}
                 confidence={sourcesFor("whatsapp")?.confidence}
                 sourceUrl={sourcesFor("whatsapp")?.url}
+                verificationStatus={sourcesFor("whatsapp")?.verification_status}
+                dateFound={sourcesFor("whatsapp")?.date_found}
               />
               <ContactRow
                 icon={<MapPin size={12} />}
@@ -214,6 +369,8 @@ function ProspectCard({
                 value={candidate.contact.address}
                 confidence={sourcesFor("address")?.confidence}
                 sourceUrl={sourcesFor("address")?.url}
+                verificationStatus={sourcesFor("address")?.verification_status}
+                dateFound={sourcesFor("address")?.date_found}
               />
               <ContactRow
                 icon={<Globe size={12} />}
@@ -222,13 +379,19 @@ function ProspectCard({
                 href={candidate.website || undefined}
                 confidence={sourcesFor("website")?.confidence}
                 sourceUrl={sourcesFor("website")?.url}
+                verificationStatus={sourcesFor("website")?.verification_status}
+                dateFound={sourcesFor("website")?.date_found}
               />
             </div>
             {candidate.contact.socials.length > 0 ? (
-              <div className="prospect-socials">
+              <div className="prospect-socials" style={{ marginTop: 8 }}>
                 {candidate.contact.socials.map((social) => (
-                  <a key={social.url} className="tiny" href={social.url} target="_blank" rel="noreferrer">
-                    <ExternalLink size={11} aria-hidden="true" /> {social.platform || "Profile"}
+                  <a key={social.url} className="tiny" href={social.url} target="_blank" rel="noreferrer" style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+                    <ExternalLink size={11} aria-hidden="true" />
+                    <span>{social.platform || "Profile"}</span>
+                    {social.verification_status && (
+                      <span className="tiny muted" style={{ fontSize: 9.5 }}>({social.verification_status})</span>
+                    )}
                   </a>
                 ))}
               </div>
@@ -236,12 +399,13 @@ function ProspectCard({
               <p className="tiny muted">No social profiles found.</p>
             )}
             {candidate.contact.sources.length > 0 ? (
-              <details className="prospect-sources">
+              <details className="prospect-sources" style={{ marginTop: 8 }}>
                 <summary className="tiny">Where these details came from ({candidate.contact.sources.length})</summary>
                 <ul>
                   {candidate.contact.sources.map((source, index) => (
                     <li key={`${source.field}-${index}`} className="tiny">
-                      <strong>{source.field || "detail"}</strong> · {source.confidence} confidence ·{" "}
+                      <strong>{source.field || "detail"}</strong> · {source.verification_status ?? source.confidence} confidence
+                      {source.date_found ? ` · Found ${source.date_found}` : ""} ·{" "}
                       <a href={source.url} target="_blank" rel="noreferrer">
                         source
                       </a>
@@ -298,6 +462,10 @@ export default function ResearchPage() {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [lastBrief, setLastBrief] = useState<string[]>([]);
+  const [chatCandidate, setChatCandidate] = useState<Candidate | null>(null);
+  const [highlightResults, setHighlightResults] = useState(false);
+
+  const resultsRef = useRef<HTMLDivElement>(null);
 
   const reload = useCallback(async () => {
     try {
@@ -361,7 +529,11 @@ export default function ResearchPage() {
         knowledge,
         model: settings.model,
       });
-      setCandidates(result.candidates ?? []);
+      const incoming = (result.candidates ?? []).map((c) => ({
+        ...c,
+        selected: c.qualification_review?.verdict === "qualified",
+      }));
+      setCandidates(incoming);
       setGroundingUrls(result.groundingUrls ?? []);
       setNotes(result.notes ?? null);
       setLastBrief([
@@ -371,11 +543,22 @@ export default function ResearchPage() {
         ...criteria.services,
       ].filter((item) => item && item !== "Any presence"));
       rememberLocation(geo);
-      if ((result.candidates ?? []).length === 0) {
+      if (incoming.length === 0) {
         setNotice("No prospects came back for that brief. Widen the filters or the location and try again.");
+      } else {
+        setTimeout(() => {
+          if (resultsRef.current) {
+            resultsRef.current.scrollIntoView({ behavior: "smooth", block: "start" });
+            setHighlightResults(true);
+            setTimeout(() => setHighlightResults(false), 2800);
+          }
+        }, 120);
       }
     } catch (err) {
       setError(errorMessage(err));
+      if (typeof window !== "undefined") {
+        window.scrollTo({ top: 0, behavior: "smooth" });
+      }
     } finally {
       setBusy(null);
     }
@@ -579,7 +762,10 @@ export default function ResearchPage() {
           )}
 
           {candidates.length > 0 && (
-            <div className="prospect-list">
+            <div
+              ref={resultsRef}
+              className={`prospect-list ${highlightResults ? "analysis-highlight" : ""}`}
+            >
               {candidates.map((candidate, index) => (
                 <ProspectCard
                   key={`${candidate.business}-${index}`}
@@ -587,6 +773,7 @@ export default function ResearchPage() {
                   onToggle={(selected) =>
                     setCandidates((prev) => prev.map((item, i) => (i === index ? { ...item, selected } : item)))
                   }
+                  onAskAi={(cand) => setChatCandidate(cand)}
                 />
               ))}
             </div>
@@ -608,6 +795,15 @@ export default function ResearchPage() {
           )}
         </Card>
       </div>
+
+      {chatCandidate && (
+        <AskAiResearchModal
+          open={Boolean(chatCandidate)}
+          onClose={() => setChatCandidate(null)}
+          prospectName={chatCandidate.business || "Prospect"}
+          prospectData={chatCandidate as unknown as Record<string, unknown>}
+        />
+      )}
     </main>
   );
 }

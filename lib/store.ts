@@ -37,6 +37,7 @@ import {
   getLocalSendParts,
   sanitizeId,
 } from "./outreach-utils";
+import { authedPost } from "./client";
 import {
   DEFAULT_SETTINGS,
   type AuditLog,
@@ -476,6 +477,13 @@ export async function listAuditLogs(uid: string): Promise<AuditLog[]> {
   } catch (err) {
     handleDataError(err, OperationType.LIST, path);
   }
+}
+
+export async function clearRecentActivity(
+  _uid: string,
+  range: "all" | "7d" | "30d" = "all",
+): Promise<void> {
+  await authedPost<{ ok: boolean }>("/api/activity/clear", { range });
 }
 
 // ---------------------------------------------------------------------------
