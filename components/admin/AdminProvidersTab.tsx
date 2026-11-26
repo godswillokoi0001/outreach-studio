@@ -91,7 +91,8 @@ export function AdminProvidersTab({
   }, [sessionToken]);
 
   useEffect(() => {
-    void loadData();
+    const t = window.setTimeout(() => void loadData(), 0);
+    return () => window.clearTimeout(t);
   }, [loadData]);
 
   const mutateProvider = async (

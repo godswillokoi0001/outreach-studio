@@ -1,10 +1,9 @@
 "use client";
 
 import Link from "next/link";
-import { Suspense, useEffect, useState } from "react";
+import { Suspense, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import {
-  CheckCircle2,
   ChevronDown,
   ChevronUp,
   ExternalLink,
@@ -53,16 +52,11 @@ function GrowthAdvisorContent() {
   } = useGrowthAdvisor(user.uid, { autoResearch: true });
 
   const [categoryFilter, setCategoryFilter] = useState<"all" | RecommendationCategory>("all");
-  const [profileExpanded, setProfileExpanded] = useState(false);
+  const [profileExpandedOverride, setProfileExpanded] = useState<boolean | null>(null);
   const [executeRec, setExecuteRec] = useState<GrowthRecommendation | null>(null);
   const [executeOpen, setExecuteOpen] = useState(false);
 
-  // Auto-open profile editor when required details are missing
-  useEffect(() => {
-    if (!loading && !completeness.complete) {
-      setProfileExpanded(true);
-    }
-  }, [loading, completeness.complete]);
+  const profileExpanded = profileExpandedOverride ?? (!loading && !completeness.complete);
 
   const handleSaveProfile = async (e: React.FormEvent) => {
     e.preventDefault();

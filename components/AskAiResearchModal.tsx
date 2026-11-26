@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { ArrowRight, Bot, ExternalLink, MessageSquare, Send, Sparkles, User } from "lucide-react";
+import { Bot, ExternalLink, Send, Sparkles } from "lucide-react";
 import { Modal } from "./ui";
 import { FormattedChatMessage } from "./FormattedChatMessage";
 import { authedPost, errorMessage } from "@/lib/client";
@@ -32,6 +32,7 @@ export function AskAiResearchModal({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const endRef = useRef<HTMLDivElement>(null);
+  const idCounterRef = useRef(0);
 
   const starterQuestions = [
     `Why was ${prospectName} qualified or rejected?`,
@@ -51,7 +52,7 @@ export function AskAiResearchModal({
     if (!questionText || busy) return;
 
     const userMsg: ChatMessage = {
-      id: `u-${Date.now()}`,
+      id: `u-${++idCounterRef.current}`,
       role: "user",
       content: questionText,
     };
@@ -78,7 +79,7 @@ export function AskAiResearchModal({
       });
 
       const assistantMsg: ChatMessage = {
-        id: `a-${Date.now()}`,
+        id: `a-${++idCounterRef.current}`,
         role: "assistant",
         content: res.answer,
         sources: res.sources,

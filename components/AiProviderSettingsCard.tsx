@@ -58,7 +58,8 @@ export function AiProviderSettingsCard() {
   }, []);
 
   useEffect(() => {
-    void loadState();
+    const t = window.setTimeout(() => void loadState(), 0);
+    return () => window.clearTimeout(t);
   }, [loadState]);
 
   const postAction = async (payload: Record<string, unknown>, busyKey: string, successTitle?: string) => {

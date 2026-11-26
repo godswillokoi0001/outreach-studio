@@ -3,20 +3,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import {
-  AlertCircle,
   Bot,
   Building2,
-  CheckCircle2,
   ChevronDown,
   ExternalLink,
   Globe,
-  HelpCircle,
   Mail,
   MapPin,
   MessageCircle,
   Phone,
   ShieldQuestion,
-  Volume2,
 } from "lucide-react";
 import { useAuth } from "@/components/AuthProvider";
 import { BatchRunner } from "@/components/Runner";

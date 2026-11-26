@@ -1,7 +1,6 @@
 import type { Content } from "@google/genai";
 import { NextRequest, NextResponse } from "next/server";
 import { AGENT_TOOLS, sanitizeAgentContents } from "@/lib/agent-tools";
-import { MUTATING_TOOLS } from "@/lib/agent-meta";
 import { handleApiError } from "@/lib/api-helpers";
 import { resolveAiConfigForRequest, runWithAiConfig } from "@/lib/ai/context";
 import { verifyRequest } from "@/lib/server-auth";

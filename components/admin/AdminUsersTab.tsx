@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Ban,
   CheckCircle2,
@@ -78,6 +78,7 @@ export function AdminUsersTab({
   const [bulkMsgOpen, setBulkMsgOpen] = useState(false);
   const [bulkMsgTitle, setBulkMsgTitle] = useState("");
   const [bulkMsgBody, setBulkMsgBody] = useState("");
+  const exportCounterRef = useRef(0);
 
   const loadUsers = useCallback(async () => {
     setLoading(true);
@@ -108,7 +109,8 @@ export function AdminUsersTab({
   }, [search, statusFilter, roleFilter, onboardingFilter, keySourceFilter, sortBy, sortDir, page, sessionToken]);
 
   useEffect(() => {
-    void loadUsers();
+    const t = window.setTimeout(() => void loadUsers(), 0);
+    return () => window.clearTimeout(t);
   }, [loadUsers]);
 
   const openUserDetail = async (ownerId: string) => {
@@ -241,7 +243,7 @@ export function AdminUsersTab({
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");
         a.href = url;
-        a.download = `bulk-users-export-${Date.now()}.json`;
+        a.download = `bulk-users-export-${++exportCounterRef.current}.json`;
         a.click();
         URL.revokeObjectURL(url);
         toast.success("Bulk export ready");

@@ -106,8 +106,7 @@ export async function authedPost<T>(
   void rotateAiProvider;
 
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    let res: Response;
-    res = await fetch(path, {
+    const res = await fetch(path, {
       method: "POST",
       headers,
       body: serialized,

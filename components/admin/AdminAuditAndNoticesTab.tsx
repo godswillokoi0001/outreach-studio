@@ -47,7 +47,8 @@ export function AdminAuditAndNoticesTab({
   }, [sessionToken]);
 
   useEffect(() => {
-    void loadAll();
+    const t = window.setTimeout(() => void loadAll(), 0);
+    return () => window.clearTimeout(t);
   }, [loadAll]);
 
   const publishNotice = async (e: React.FormEvent) => {

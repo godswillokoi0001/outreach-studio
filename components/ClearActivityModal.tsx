@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { AlertTriangle, Clock, Trash2 } from "lucide-react";
+import { Clock, Trash2 } from "lucide-react";
 import { Modal } from "./ui";
 import { useToast } from "./Feedback";
 import { clearRecentActivity } from "@/lib/store";

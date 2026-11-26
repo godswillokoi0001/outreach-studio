@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { Activity, BarChart3, Cpu, Lock, Shield, Users } from "lucide-react";
+import { Activity, BarChart3, CheckSquare, Cpu, Lock, Shield, Users } from "lucide-react";
 import { useAuth } from "@/components/AuthProvider";
 import { BrandLoader } from "@/components/BrandLoader";
 import { Badge, Banner, Card } from "@/components/ui";
@@ -11,8 +11,9 @@ import { AdminOverviewTab } from "@/components/admin/AdminOverviewTab";
 import { AdminUsersTab } from "@/components/admin/AdminUsersTab";
 import { AdminProvidersTab } from "@/components/admin/AdminProvidersTab";
 import { AdminAuditAndNoticesTab } from "@/components/admin/AdminAuditAndNoticesTab";
+import { AdminSystemCheckTab } from "@/components/admin/AdminSystemCheckTab";
 
-type AdminTab = "overview" | "users" | "providers" | "audit";
+type AdminTab = "overview" | "users" | "providers" | "audit" | "system_check";
 
 export default function AdminPage() {
   const { user } = useAuth();
@@ -46,7 +47,8 @@ export default function AdminPage() {
   }, [sessionToken]);
 
   useEffect(() => {
-    void loadGate(null);
+    const t = window.setTimeout(() => void loadGate(null), 0);
+    return () => window.clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user.uid]);
 
@@ -143,6 +145,13 @@ export default function AdminPage() {
         >
           <Activity size={13} /> Audit Log &amp; Notices
         </button>
+        <button
+          type="button"
+          className={`btn btn-sm ${activeTab === "system_check" ? "btn-primary" : ""}`}
+          onClick={() => setActiveTab("system_check")}
+        >
+          <CheckSquare size={13} /> System Check
+        </button>
       </div>
 
       {activeTab === "overview" && (
@@ -166,6 +175,9 @@ export default function AdminPage() {
       )}
       {activeTab === "audit" && (
         <AdminAuditAndNoticesTab role={role} sessionToken={sessionToken} />
+      )}
+      {activeTab === "system_check" && (
+        <AdminSystemCheckTab role={role} sessionToken={sessionToken} />
       )}
 
       <AdminReauthModal

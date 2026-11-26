@@ -81,7 +81,8 @@ export function AdminOverviewTab({
   }, [range, userFilter, actionFilter, sessionToken]);
 
   useEffect(() => {
-    void loadOverview();
+    const t = window.setTimeout(() => void loadOverview(), 0);
+    return () => window.clearTimeout(t);
   }, [loadOverview]);
 
   if (loading && !data) return <BrandLoader />;

@@ -43,6 +43,9 @@ export async function POST(req: NextRequest) {
     if (auditRes.error) {
       throw new Error(`Failed to clear activity logs: ${auditRes.error.message}`);
     }
+    if (eventRes.error) {
+      console.warn("[activity/clear] lead_events notice:", eventRes.error.message);
+    }
 
     return NextResponse.json({ ok: true, range });
   } catch (err) {

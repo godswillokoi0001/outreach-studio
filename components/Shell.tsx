@@ -153,17 +153,30 @@ function ShellInner({ children }: { children: ReactNode }) {
   const [latest, setLatest] = useState<{ open: string; reply: string }>({ open: "", reply: "" });
   const [onboardingChecked, setOnboardingChecked] = useState(false);
   const [onboardingDone, setOnboardingDone] = useState(true);
-  const [announcements, setAnnouncements] = useState<ClientAnnouncement[]>([]);
+  const [dismissedAnnouncementIds, setDismissedAnnouncementIds] = useState<string[]>([]);
   const uid = user?.uid ?? "";
 
-  useEffect(() => {
+  const storedAnnouncementsRaw = useSyncExternalStore(
+    () => () => {},
+    () => {
+      try {
+        return window.sessionStorage.getItem("os:announcements") ?? "[]";
+      } catch {
+        return "[]";
+      }
+    },
+    () => "[]",
+  );
+  const announcements: ClientAnnouncement[] = (() => {
     try {
-      const raw = window.sessionStorage.getItem("os:announcements");
-      if (raw) setAnnouncements(JSON.parse(raw) as ClientAnnouncement[]);
+      const parsed = JSON.parse(storedAnnouncementsRaw) as ClientAnnouncement[];
+      return Array.isArray(parsed)
+        ? parsed.filter((a) => !dismissedAnnouncementIds.includes(a.id))
+        : [];
     } catch {
-      /* ignore */
+      return [];
     }
-  }, []);
+  })();
 
   useEffect(() => {
     if (!uid) return;
@@ -703,7 +716,7 @@ function ShellInner({ children }: { children: ReactNode }) {
                   <button
                     type="button"
                     className="btn btn-sm btn-ghost"
-                    onClick={() => setAnnouncements((prev) => prev.filter((a) => a.id !== ann.id))}
+                    onClick={() => setDismissedAnnouncementIds((prev) => [...prev, ann.id])}
                     aria-label="Dismiss announcement"
                   >
                     <X size={13} />

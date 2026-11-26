@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import { Pause, Play, RotateCcw, Square, Volume2, VolumeX } from "lucide-react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { Pause, Play, Square, Volume2, VolumeX } from "lucide-react";
 
 interface NarratorControlProps {
   /** The full text to read aloud */
@@ -12,10 +12,14 @@ interface NarratorControlProps {
 }
 
 export function NarratorControl({ text, onSentenceChange, className }: NarratorControlProps) {
-  const [supported, setSupported] = useState(false);
+  const supported = useSyncExternalStore(
+    () => () => {},
+    () => typeof window !== "undefined" && "speechSynthesis" in window,
+    () => false,
+  );
   const [status, setStatus] = useState<"idle" | "playing" | "paused">("idle");
   const [speed, setSpeed] = useState<number>(1);
-  const [currentIndex, setCurrentIndex] = useState<number>(-1);
+  const [activeSentence, setActiveSentence] = useState<string>("");
 
   const sentencesRef = useRef<string[]>([]);
   const currentIndexRef = useRef<number>(-1);
@@ -29,12 +33,6 @@ export function NarratorControl({ text, onSentenceChange, className }: NarratorC
   useEffect(() => {
     statusRef.current = status;
   }, [status]);
-
-  useEffect(() => {
-    if (typeof window !== "undefined" && "speechSynthesis" in window) {
-      setSupported(true);
-    }
-  }, []);
 
   // Split text into readable sentences
   useEffect(() => {
@@ -54,14 +52,14 @@ export function NarratorControl({ text, onSentenceChange, className }: NarratorC
     if (index >= sentencesRef.current.length) {
       synth.cancel();
       setStatus("idle");
-      setCurrentIndex(-1);
+      setActiveSentence("");
       onSentenceChange?.(-1, "");
       return;
     }
 
     currentIndexRef.current = index;
-    setCurrentIndex(index);
     const sentence = sentencesRef.current[index];
+    setActiveSentence(sentence);
     onSentenceChange?.(index, sentence);
 
     synth.cancel();
@@ -78,7 +76,7 @@ export function NarratorControl({ text, onSentenceChange, className }: NarratorC
     utterance.onerror = (e) => {
       if (e.error !== "canceled" && e.error !== "interrupted") {
         setStatus("idle");
-        setCurrentIndex(-1);
+        setActiveSentence("");
         onSentenceChange?.(-1, "");
       }
     };
@@ -108,7 +106,7 @@ export function NarratorControl({ text, onSentenceChange, className }: NarratorC
     if (typeof window === "undefined" || !("speechSynthesis" in window)) return;
     window.speechSynthesis.cancel();
     setStatus("idle");
-    setCurrentIndex(-1);
+    setActiveSentence("");
     currentIndexRef.current = -1;
     onSentenceChange?.(-1, "");
   };
@@ -225,6 +223,24 @@ export function NarratorControl({ text, onSentenceChange, className }: NarratorC
             </button>
           ))}
         </div>
+      )}
+      {status !== "idle" && activeSentence && (
+        <span
+          className="tiny"
+          style={{
+            maxWidth: 260,
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+            padding: "1px 6px",
+            borderRadius: 4,
+            background: "rgba(15, 118, 110, 0.12)",
+            color: "var(--teal-deep)",
+          }}
+          title={activeSentence}
+        >
+          {activeSentence}
+        </span>
       )}
     </div>
   );

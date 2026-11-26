@@ -104,13 +104,21 @@ export function GrowthExecuteModal({
   };
 
   useEffect(() => {
-    if (open) {
-      void runGeneration();
-    } else {
-      setBlueprint(null);
-      setError(null);
-      setSavedResult(null);
-    }
+    let cancelled = false;
+    const t = window.setTimeout(() => {
+      if (cancelled) return;
+      if (open) {
+        void runGeneration();
+      } else {
+        setBlueprint(null);
+        setError(null);
+        setSavedResult(null);
+      }
+    }, 0);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(t);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, recommendation?.id]);
 

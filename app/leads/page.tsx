@@ -3,7 +3,7 @@
 import { BrandLoader } from "@/components/BrandLoader";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Bot, CheckSquare, Filter, Plus, SlidersHorizontal, Square, X } from "lucide-react";
+import { Bot, Plus, SlidersHorizontal, X } from "lucide-react";
 import { useAuth } from "@/components/AuthProvider";
 import { Badge, Banner, Card, Empty, Field, Modal, Pager } from "@/components/ui";
 import { confirmDialog } from "@/components/Feedback";
@@ -21,27 +21,13 @@ import {
 import { fmtDate, label, priorityTone, scoreClass, statusTone } from "@/lib/format";
 import type { Campaign, Lead, LeadStatus } from "@/lib/types";
 
-const STATUS_OPTIONS = [
-  ["all", "All leads"],
-  ["new", "Unprocessed"],
-  ["queued_research", "Awaiting research"],
-  ["researched", "Researched"],
-  ["qualified", "Qualified"],
-  ["email_generated", "Email drafted"],
-  ["approved", "Approved"],
-  ["sent", "Sent"],
-  ["replied,converted", "Replied"],
-  ["followup_pending", "Follow-up pending"],
-  ["disqualified,needs_research", "Disqualified / needs research"],
-  ["suppressed,unsubscribed,bounced", "Suppressed / bounced"],
-] as const;
-
 const PAGE_SIZE = 20;
 
 export default function LeadsPage() {
   const { user } = useAuth();
   const [allLeads, setAllLeads] = useState<Lead[]>([]);
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
+  const [renderNow] = useState(() => Date.now());
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -117,14 +103,6 @@ export default function LeadsPage() {
     };
   }, [user.uid]);
 
-  const counts = useMemo(() => {
-    const map: Record<string, number> = {};
-    for (const l of allLeads) {
-      map[l.status] = (map[l.status] ?? 0) + 1;
-    }
-    return map;
-  }, [allLeads]);
-
   const campaignNames = useMemo(() => {
     const map: Record<string, string> = {};
     for (const c of campaigns) map[c.id] = c.name;
@@ -144,8 +122,8 @@ export default function LeadsPage() {
     const q = query.trim().toLowerCase();
     const loc = locationFilter.trim().toLowerCase();
     const ind = industryFilter.trim().toLowerCase();
-    const now = Date.now();
-    const startOfToday = new Date();
+    const now = renderNow;
+    const startOfToday = new Date(renderNow);
     startOfToday.setHours(0, 0, 0, 0);
 
     const result = allLeads.filter((l) => {
@@ -267,6 +245,7 @@ export default function LeadsPage() {
     return result;
   }, [
     allLeads,
+    renderNow,
     campaignFilters,
     campaignFilter,
     qualFilter,
@@ -505,7 +484,7 @@ export default function LeadsPage() {
                 className="select"
                 style={{ width: 160 }}
                 value={sortOption}
-                onChange={(e) => setSortOption(e.target.value as any)}
+                onChange={(e) => setSortOption(e.target.value as typeof sortOption)}
                 title="Sort options"
               >
                 <option value="newest">Sort: Newest first</option>
@@ -595,7 +574,7 @@ export default function LeadsPage() {
                     style={{ width: "100%", height: 32, fontSize: 12 }}
                     value={dateAddedFilter}
                     onChange={(e) => {
-                      setDateAddedFilter(e.target.value as any);
+                      setDateAddedFilter(e.target.value as typeof dateAddedFilter);
                       setPage(1);
                     }}
                   >
@@ -613,7 +592,7 @@ export default function LeadsPage() {
                     style={{ width: "100%", height: 32, fontSize: 12 }}
                     value={scoreFilter}
                     onChange={(e) => {
-                      setScoreFilter(e.target.value as any);
+                      setScoreFilter(e.target.value as typeof scoreFilter);
                       setPage(1);
                     }}
                   >

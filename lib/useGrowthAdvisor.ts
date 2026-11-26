@@ -127,7 +127,6 @@ export function useGrowthAdvisor(
   // Initial load of profile, knowledge, settings, metrics, and cached report
   useEffect(() => {
     let active = true;
-    setLoading(true);
     Promise.all([
       getGrowthProfile(uid),
       getKnowledgeBundle(uid),
