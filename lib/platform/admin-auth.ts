@@ -1,10 +1,7 @@
 import type { NextRequest } from "next/server";
 import { AuthError } from "../server-auth";
 import { findAdminAccountById, type AdminAccountRecord } from "./admin-credentials";
-import {
-  readAdminReauthFromRequest,
-  readAdminSessionFromRequest,
-} from "./admin-session";
+import { readAdminSessionFromRequest } from "./admin-session";
 import { ROLE_RANK, type AdminRole } from "./types";
 
 export interface AdminContext {
@@ -60,7 +57,6 @@ export async function requireAdmin(
   void options?.requireReauth;
   void options?.inlineTotpCode;
   const reauthenticated = true;
-  void readAdminReauthFromRequest;
 
   const nowIso = new Date().toISOString();
   return {
