@@ -1,11 +1,14 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse, after } from "next/server";
 import { handleApiError } from "@/lib/api-helpers";
 import {
   advanceBackgroundJobStep,
   completeBackgroundJob,
   createOrReuseBackgroundJob,
   failBackgroundJob,
+  failStalledBackgroundJob,
   getLatestBackgroundJobForOwner,
+  JOB_HEARTBEAT_MS,
+  touchBackgroundJob,
   type BackgroundJobStep,
 } from "@/lib/background-jobs";
 import type { GrowthProfile } from "@/lib/growth-advisor";
@@ -18,12 +21,34 @@ import type { Settings } from "@/lib/types";
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
+// The function is killed at maxDuration. Stop before that so we can mark the job
+// failed with a readable reason instead of leaving a frozen progress bar.
+const RESEARCH_DEADLINE_MS = 48_000;
+// A fresh run replaces a stalled one after this long without a heartbeat.
+const STALE_RUN_MS = 90_000;
+
 const GROWTH_RESEARCH_STEPS: BackgroundJobStep[] = [
   { key: "searching_businesses", label: "Searching for businesses like yours", status: "pending", weightSec: 6 },
   { key: "reading_sources", label: "Reading live sources & benchmarks", status: "pending", weightSec: 12 },
   { key: "checking_niche", label: "Checking what's working in your niche", status: "pending", weightSec: 9 },
   { key: "ranking_recommendations", label: "Ranking personalized recommendations", status: "pending", weightSec: 4 },
 ];
+
+function withDeadline<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(message)), ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (err) => {
+        clearTimeout(timer);
+        reject(err);
+      },
+    );
+  });
+}
 
 async function runGrowthResearchPipeline(
   ownerId: string,
@@ -38,20 +63,37 @@ async function runGrowthResearchPipeline(
   },
 ): Promise<void> {
   let activeStage = "searching_businesses";
+  // Keeps updatedAt fresh while a long model call runs, so the stall check only
+  // fires when the process really died.
+  const heartbeat = setInterval(() => {
+    void touchBackgroundJob(ownerId, jobId).catch(() => {});
+  }, JOB_HEARTBEAT_MS);
+
   try {
     await advanceBackgroundJobStep(ownerId, jobId, "searching_businesses", "done");
 
     activeStage = "reading_sources";
     await advanceBackgroundJobStep(ownerId, jobId, "reading_sources", "in_progress");
-    const report = await generateGrowthAdvisorReportServer({
-      ownerId,
-      profile: input.profile,
-      knowledgeDigest: input.knowledgeDigest,
-      settings: input.settings,
-      metricsSummary: input.metricsSummary,
-      analyticsInsight: input.analyticsInsight,
-      fingerprint: input.fingerprint,
-    });
+    const report = await withDeadline(
+      generateGrowthAdvisorReportServer({
+        ownerId,
+        profile: input.profile,
+        knowledgeDigest: input.knowledgeDigest,
+        settings: input.settings,
+        metricsSummary: input.metricsSummary,
+        analyticsInsight: input.analyticsInsight,
+        fingerprint: input.fingerprint,
+      }),
+      RESEARCH_DEADLINE_MS,
+      "Live market research took too long to answer. Tap Retry research to run it again.",
+    );
+
+    if (!Array.isArray(report.recommendations) || report.recommendations.length === 0) {
+      throw new Error(
+        "Market research came back without usable recommendations. Tap Retry research to run it again.",
+      );
+    }
+
     await advanceBackgroundJobStep(
       ownerId,
       jobId,
@@ -61,7 +103,13 @@ async function runGrowthResearchPipeline(
     );
 
     activeStage = "checking_niche";
-    await advanceBackgroundJobStep(ownerId, jobId, "checking_niche", "done");
+    await advanceBackgroundJobStep(
+      ownerId,
+      jobId,
+      "checking_niche",
+      "done",
+      `${report.recommendations.length} recommendation(s) matched to your market`,
+    );
 
     activeStage = "ranking_recommendations";
     await advanceBackgroundJobStep(ownerId, jobId, "ranking_recommendations", "in_progress");
@@ -89,6 +137,8 @@ async function runGrowthResearchPipeline(
         ? err.message
         : "Market research could not finish. Please check your AI connection and try again.";
     await failBackgroundJob(ownerId, jobId, msg, activeStage);
+  } finally {
+    clearInterval(heartbeat);
   }
 }
 
@@ -96,8 +146,11 @@ export async function GET(req: NextRequest) {
   try {
     const user = await verifyRequest(req);
     const job = await getLatestBackgroundJobForOwner(user.ownerId, "growth_advisor_research");
+    // Reconcile a run whose server process disappeared (e.g. function frozen or
+    // killed at maxDuration) so the UI never shows the same percentage forever.
+    const reconciled = job ? await failStalledBackgroundJob(user.ownerId, job, STALE_RUN_MS) : null;
     return NextResponse.json(
-      { job },
+      { job: reconciled },
       { headers: { "Cache-Control": "private, no-store, max-age=0" } },
     );
   } catch (err) {
@@ -129,17 +182,23 @@ export async function POST(req: NextRequest) {
         fingerprint: body.fingerprint ?? "manual",
         industry: body.profile.industry || "",
       },
+      staleAfterMs: STALE_RUN_MS,
     });
 
     if (!reused) {
-      void runGrowthResearchPipeline(user.ownerId, job.id, {
-        profile: body.profile,
-        knowledgeDigest: body.knowledgeDigest ?? "",
-        settings: body.settings,
-        metricsSummary: body.metricsSummary ?? {},
-        analyticsInsight: body.analyticsInsight ?? null,
-        fingerprint: body.fingerprint ?? "manual",
-      });
+      // `after` keeps the function alive after the response is sent (waitUntil).
+      // A bare `void promise` is frozen by the platform, which is what left
+      // research stuck at its first step.
+      after(
+        runGrowthResearchPipeline(user.ownerId, job.id, {
+          profile: body.profile,
+          knowledgeDigest: body.knowledgeDigest ?? "",
+          settings: body.settings,
+          metricsSummary: body.metricsSummary ?? {},
+          analyticsInsight: body.analyticsInsight ?? null,
+          fingerprint: body.fingerprint ?? "manual",
+        }),
+      );
     }
 
     return NextResponse.json(

@@ -3,7 +3,12 @@ import test from "node:test";
 import { clearAllAccountClientData, syncActiveOwnerSessionMarker } from "./client-cleanup";
 import { NextRequest } from "next/server";
 import { sanitizeAgentContents } from "./agent-meta";
-import { computeJobProgressAndEta, type BackgroundJobStep } from "./background-jobs";
+import {
+  computeJobProgressAndEta,
+  isJobStalled,
+  JOB_STALL_MS,
+  type BackgroundJobStep,
+} from "./background-jobs";
 import {
   DEFAULT_CRITERIA,
   INDUSTRY_OPTIONS,
@@ -811,6 +816,55 @@ test("background jobs progress & ETA track stages deterministically", () => {
   );
   assert.equal(failed.estimatedSecondsRemaining, 0);
   assert.equal(failed.currentStep, "Scanning site");
+});
+
+test("growth research progress never reports a frozen fake percentage", () => {
+  // Regression: the pipeline used to stop after its first step, so the badge sat
+  // at 37% (searching done + reading_sources at 45% of its weight) forever.
+  const startedAt = new Date(Date.now() - 20_000).toISOString();
+  const steps: BackgroundJobStep[] = [
+    { key: "searching_businesses", label: "Searching", status: "done", weightSec: 6 },
+    { key: "reading_sources", label: "Reading", status: "in_progress", weightSec: 12 },
+    { key: "checking_niche", label: "Checking", status: "pending", weightSec: 9 },
+    { key: "ranking_recommendations", label: "Ranking", status: "pending", weightSec: 4 },
+  ];
+  const mid = computeJobProgressAndEta(steps, startedAt, "running");
+  assert.equal(mid.progressPct, 37);
+  assert.equal(mid.currentStep, "Reading");
+
+  const completed = computeJobProgressAndEta(
+    steps.map((s) => ({ ...s, status: "done" })),
+    startedAt,
+    "succeeded",
+  );
+  assert.equal(completed.progressPct, 100);
+});
+
+test("stalled background jobs are detected so the UI can offer a retry", () => {
+  const now = Date.now();
+  const running = {
+    status: "running" as const,
+    updatedAt: new Date(now - 5_000).toISOString(),
+  };
+  assert.equal(isJobStalled(running, now), false);
+
+  const silent = {
+    status: "running" as const,
+    updatedAt: new Date(now - JOB_STALL_MS - 1_000).toISOString(),
+  };
+  assert.equal(isJobStalled(silent, now), true);
+
+  // A finished job is never "stalled", however old the row is.
+  assert.equal(
+    isJobStalled({ status: "failed" as const, updatedAt: silent.updatedAt }, now),
+    false,
+  );
+  assert.equal(
+    isJobStalled({ status: "succeeded" as const, updatedAt: silent.updatedAt }, now),
+    false,
+  );
+  // A fresh job with a shorter window can be reclaimed immediately.
+  assert.equal(isJobStalled(running, now, 1_000), true);
 });
 
 test("Growth Advisor profile hydrates from Onboarding and updates fingerprint cleanly", () => {

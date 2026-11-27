@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse, after } from "next/server";
 import { runWithOwnerAiContext } from "@/lib/ai/context";
 import { handleApiError } from "@/lib/api-helpers";
 import {
@@ -6,7 +6,10 @@ import {
   completeBackgroundJob,
   createOrReuseBackgroundJob,
   failBackgroundJob,
+  failStalledBackgroundJob,
   getLatestBackgroundJobForOwner,
+  JOB_HEARTBEAT_MS,
+  touchBackgroundJob,
   type BackgroundJobStep,
 } from "@/lib/background-jobs";
 import {
@@ -25,6 +28,27 @@ import { saveOnboardingStateServer } from "../state/route";
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
+// Stay under maxDuration so a slow provider marks the job failed with a reason
+// instead of the platform killing the function mid-run.
+const COMPILE_DEADLINE_MS = 48_000;
+const STALE_RUN_MS = 90_000;
+
+function withDeadline<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(message)), ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (err) => {
+        clearTimeout(timer);
+        reject(err);
+      },
+    );
+  });
+}
+
 const ONBOARDING_COMPILE_STEPS: BackgroundJobStep[] = [
   { key: "saving_answers", label: "Saving your profile & answers", status: "pending", weightSec: 2 },
   { key: "scanning_website", label: "Scanning your website & online presence", status: "pending", weightSec: 7 },
@@ -41,6 +65,9 @@ async function runOnboardingCompilePipeline(
 ): Promise<void> {
   await runWithOwnerAiContext({ ownerId, feature: "onboarding_compile" }, async () => {
     let currentStepKey = "saving_answers";
+    const heartbeat = setInterval(() => {
+      void touchBackgroundJob(ownerId, jobId).catch(() => {});
+    }, JOB_HEARTBEAT_MS);
     try {
       await saveOnboardingStateServer(ownerId, {
         status: "in_progress",
@@ -99,10 +126,14 @@ async function runOnboardingCompilePipeline(
       currentStepKey = "drafting_sections";
       await advanceBackgroundJobStep(ownerId, jobId, "drafting_sections", "in_progress");
       const extraContext = [websiteNote, sourceDigest].filter(Boolean).join("\n\n");
-      const compiled = await generateKnowledgeBaseServer({
-        answers,
-        extraContext: extraContext || undefined,
-      });
+      const compiled = await withDeadline(
+        generateKnowledgeBaseServer({
+          answers,
+          extraContext: extraContext || undefined,
+        }),
+        COMPILE_DEADLINE_MS,
+        "Building your Knowledge Base took too long. Please retry the compile.",
+      );
       await advanceBackgroundJobStep(ownerId, jobId, "drafting_sections", "done");
 
       currentStepKey = "validating_facts";
@@ -126,6 +157,8 @@ async function runOnboardingCompilePipeline(
           ? err.message
           : "Something went wrong while building your Knowledge Base. Please try again.";
       await failBackgroundJob(ownerId, jobId, msg, currentStepKey);
+    } finally {
+      clearInterval(heartbeat);
     }
   });
 }
@@ -133,7 +166,9 @@ async function runOnboardingCompilePipeline(
 export async function GET(req: NextRequest) {
   try {
     const user = await verifyRequest(req);
-    const job = await getLatestBackgroundJobForOwner(user.ownerId, "onboarding_kb_compile");
+    const latest = await getLatestBackgroundJobForOwner(user.ownerId, "onboarding_kb_compile");
+    // Recover runs whose server process was frozen or killed at maxDuration.
+    const job = latest ? await failStalledBackgroundJob(user.ownerId, latest, STALE_RUN_MS) : null;
     return NextResponse.json(
       { job },
       { headers: { "Cache-Control": "private, no-store, max-age=0" } },
@@ -172,10 +207,13 @@ export async function POST(req: NextRequest) {
       jobType: "onboarding_kb_compile",
       steps: ONBOARDING_COMPILE_STEPS,
       payload: { stepCount: 12 },
+      staleAfterMs: STALE_RUN_MS,
     });
 
     if (!reused) {
-      void runOnboardingCompilePipeline(user.ownerId, job.id, normalizedAnswers);
+      // `after` keeps the worker alive past the response (waitUntil); a bare
+      // floating promise is frozen by the platform and never advances.
+      after(runOnboardingCompilePipeline(user.ownerId, job.id, normalizedAnswers));
     }
 
     return NextResponse.json(

@@ -36,6 +36,25 @@ export interface BackgroundJobRecord {
 
 const FALLBACK_CATEGORY = "system_background_jobs";
 const STALE_JOB_MS = 20 * 60 * 1000;
+// A running job writes progress (or a heartbeat) at least this often. If it goes
+// quiet for longer than JOB_STALL_MS the server that owned it is gone - on
+// serverless platforms a function is frozen as soon as its response is sent, so
+// silence is the only reliable signal that the run died.
+export const JOB_HEARTBEAT_MS = 10_000;
+export const JOB_STALL_MS = 90_000;
+export const STALLED_JOB_MESSAGE =
+  "Market research stopped before it finished because the server ran out of time. Tap Retry research to run it again — nothing already saved is lost.";
+
+export function isJobStalled(
+  job: Pick<BackgroundJobRecord, "status" | "updatedAt">,
+  nowMs: number = Date.now(),
+  stallMs: number = JOB_STALL_MS,
+): boolean {
+  if (job.status !== "running" && job.status !== "queued") return false;
+  const updated = new Date(job.updatedAt).getTime();
+  if (!Number.isFinite(updated)) return true;
+  return nowMs - updated > stallMs;
+}
 
 function mapSqlRow(row: Record<string, unknown>): BackgroundJobRecord {
   return {
@@ -264,13 +283,15 @@ export async function createOrReuseBackgroundJob(input: {
   steps: BackgroundJobStep[];
   payload?: Record<string, unknown>;
   forceRestartIfFailed?: boolean;
+  staleAfterMs?: number;
 }): Promise<{ job: BackgroundJobRecord; reused: boolean }> {
   const existingList = await listBackgroundJobsForOwner(input.ownerId, input.jobType, 3);
   const active = existingList.find((j) => j.status === "queued" || j.status === "running");
+  const staleMs = input.staleAfterMs ?? STALE_JOB_MS;
 
   if (active) {
     const ageMs = Date.now() - new Date(active.updatedAt).getTime();
-    if (ageMs < STALE_JOB_MS) {
+    if (ageMs < staleMs) {
       return { job: active, reused: true };
     }
     // Mark stale zombie job failed cleanly before starting a fresh one
@@ -344,6 +365,42 @@ export async function advanceBackgroundJobStep(
   };
   await saveJobRecord(updated);
   return updated;
+}
+
+export async function touchBackgroundJob(
+  ownerId: string,
+  jobId: string,
+): Promise<BackgroundJobRecord | null> {
+  const job = await getBackgroundJobForOwner(ownerId, jobId);
+  if (!job) return null;
+  if (job.status !== "running" && job.status !== "queued") return job;
+
+  const nowIso = new Date().toISOString();
+  const metrics = computeJobProgressAndEta(job.steps, job.startedAt, job.status);
+  const updated: BackgroundJobRecord = {
+    ...job,
+    currentStep: metrics.currentStep,
+    progressPct: metrics.progressPct,
+    estimatedSecondsRemaining: metrics.estimatedSecondsRemaining,
+    updatedAt: nowIso,
+  };
+  await saveJobRecord(updated);
+  return updated;
+}
+
+/**
+ * Fail a job whose owner process died mid-run so the UI stops showing a frozen
+ * percentage forever and the user can retry.
+ */
+export async function failStalledBackgroundJob(
+  ownerId: string,
+  job: BackgroundJobRecord,
+  stallMs: number = JOB_STALL_MS,
+): Promise<BackgroundJobRecord> {
+  if (!isJobStalled(job, Date.now(), stallMs)) return job;
+  const activeStep = job.steps.find((s) => s.status === "in_progress");
+  const failed = await failBackgroundJob(ownerId, job.id, STALLED_JOB_MESSAGE, activeStep?.key);
+  return failed ?? job;
 }
 
 export async function completeBackgroundJob(
