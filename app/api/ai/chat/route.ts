@@ -7,6 +7,8 @@ import { buildOrchestratedSystemPrompt } from "@/lib/ai/orchestrator";
 import { LLMGateway } from "@/lib/llm/gateway";
 import { verifyRequest } from "@/lib/server-auth";
 
+// Node runtime is required: the gateway and key vault use node:crypto.
+export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 

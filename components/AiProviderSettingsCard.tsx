@@ -13,7 +13,7 @@ import {
   Zap,
 } from "lucide-react";
 import { getAccessToken } from "@/lib/auth";
-import { authedPost, errorMessage } from "@/lib/client";
+import { authedPost, describeError, errorMessage } from "@/lib/client";
 import {
   getProviderMeta,
   type AiExecutionLogRecord,
@@ -80,8 +80,20 @@ export function AiProviderSettingsCard() {
         headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
         cache: "no-store",
       });
-      const json = (await res.json()) as UserGatewayStatePayload & { error?: string };
-      if (!res.ok) throw new Error(json.error || "Failed to load AI provider settings.");
+      // A platform crash returns HTML, so never assume the body is JSON.
+      const raw = await res.text();
+      let json: (UserGatewayStatePayload & { error?: unknown }) | null = null;
+      try {
+        json = raw ? (JSON.parse(raw) as UserGatewayStatePayload & { error?: unknown }) : null;
+      } catch {
+        json = null;
+      }
+      if (!res.ok || !json || typeof json !== "object") {
+        throw new Error(
+          describeError(json?.error) ??
+            `Failed to load AI provider settings (HTTP ${res.status}). Reload and try again.`,
+        );
+      }
       setState(json);
     } catch (err) {
       setError(errorMessage(err));
@@ -204,10 +216,20 @@ export function AiProviderSettingsCard() {
       const token = await getAccessToken();
       const res = await fetch(`/api/account/ai-provider?id=${encodeURIComponent(id)}`, {
         method: "DELETE",
-        headers: { Authorization: `Bearer ${token}` },
+        headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
       });
-      const json = (await res.json()) as UserGatewayStatePayload & { error?: string };
-      if (!res.ok) throw new Error(json.error || "Could not delete API key.");
+      const raw = await res.text();
+      let json: (UserGatewayStatePayload & { error?: unknown }) | null = null;
+      try {
+        json = raw ? (JSON.parse(raw) as UserGatewayStatePayload & { error?: unknown }) : null;
+      } catch {
+        json = null;
+      }
+      if (!res.ok || !json || typeof json !== "object") {
+        throw new Error(
+          describeError(json?.error) ?? `Could not delete API key (HTTP ${res.status}).`,
+        );
+      }
       setState(json);
       setActiveProof(null);
       toast.success("Key deleted permanently");

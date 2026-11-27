@@ -6,6 +6,8 @@ import { LLMGateway } from "@/lib/llm/gateway";
 import { checkKeyTestRateLimit } from "@/lib/platform/store-server";
 import { verifyRequest } from "@/lib/server-auth";
 
+// Node runtime is required: the gateway and key vault use node:crypto.
+export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 

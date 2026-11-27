@@ -33,6 +33,29 @@ let adminKeysCache: { value: AdminAiKeyRecord[]; exp: number } | null = null;
 const userSettingsCache = new Map<string, { value: UserAiSettings; exp: number }>();
 const userKeysCache = new Map<string, { value: UserAiKeyRecord[]; exp: number }>();
 
+/**
+ * Owners whose legacy BYOK document is currently being migrated. Without this
+ * guard the migration called saveUserAiSettings(), which called
+ * getUserAiSettings() again, which restarted the migration forever and made
+ * every AI request hang until the platform killed it at 60 seconds.
+ */
+const legacyMigrationInFlight = new Set<string>();
+
+function describeUnknownError(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  if (typeof err === "string") return err;
+  if (err && typeof err === "object") {
+    const rec = err as Record<string, unknown>;
+    if (typeof rec.message === "string" && rec.message) return rec.message;
+    try {
+      return JSON.stringify(err);
+    } catch {
+      return "Unknown error";
+    }
+  }
+  return String(err);
+}
+
 export function invalidateAdminAiCaches(): void {
   adminSettingsCache = null;
   adminKeysCache = null;
@@ -662,62 +685,75 @@ export async function getUserAiSettings(ownerId: string): Promise<UserAiSettings
     );
   }
 
-  // Migrate legacy system_user_byok_${ownerId} silently if present and no new setting yet
-  if (!resolved) {
-    const legacy = await readKnowledgeDoc<{
-      mode?: string;
-      allowFallbackOnError?: boolean;
-      activePersonalProviderId?: string;
-      providers?: {
-        id: string;
-        provider: string;
-        label: string;
-        encryptedKey: string;
-        maskedKey: string;
-        baseUrl?: string;
-        model: string;
-        models?: { id: string; label: string }[];
-      }[];
-    }>(ownerId, `system_user_byok_${ownerId}`);
+  // Migrate legacy system_user_byok_${ownerId} once, if present and no new setting yet.
+  if (!resolved && !legacyMigrationInFlight.has(ownerId)) {
+    legacyMigrationInFlight.add(ownerId);
+    // Seed the cache BEFORE migrating: saveUserAiSettings() below re-enters
+    // getUserAiSettings(), and it must not start the migration again.
+    userSettingsCache.set(ownerId, { value: fallbackDefault, exp: Date.now() + CACHE_TTL_MS });
+    try {
+      const legacy = await readKnowledgeDoc<{
+        mode?: string;
+        allowFallbackOnError?: boolean;
+        activePersonalProviderId?: string;
+        providers?: {
+          id: string;
+          provider: string;
+          label: string;
+          encryptedKey: string;
+          maskedKey: string;
+          baseUrl?: string;
+          model: string;
+          models?: { id: string; label: string }[];
+        }[];
+      }>(ownerId, `system_user_byok_${ownerId}`);
 
-    if (legacy && legacy.providers && legacy.providers.length > 0) {
-      const now = new Date().toISOString();
-      for (const lp of legacy.providers) {
-        const { provider, impliedBaseUrl } = normalizeGatewayProviderId(lp.provider);
-        const meta = getProviderMeta(provider);
-        await saveUserAiKey(ownerId, {
-          id: lp.id,
-          ownerId,
-          provider,
-          label: lp.label || meta.label,
-          encryptedKey: lp.encryptedKey,
-          maskedKey: lp.maskedKey,
-          baseUrl: lp.baseUrl || impliedBaseUrl || meta.baseUrl || null,
-          models:
-            lp.models?.map((m) => ({
-              id: m.id,
-              displayName: m.label || m.id,
-              enabled: true,
-              seats: ["smart", "balanced", "fast"],
-              capabilities: { json: true, tools: true, vision: false, reasoning: false },
-            })) ?? meta.defaultModels,
-          lastVerifiedAt: now,
-          lastError: null,
-          createdAt: now,
-          updatedAt: now,
-        });
+      if (legacy && legacy.providers && legacy.providers.length > 0) {
+        const now = new Date().toISOString();
+        for (const lp of legacy.providers) {
+          const { provider, impliedBaseUrl } = normalizeGatewayProviderId(lp.provider);
+          const meta = getProviderMeta(provider);
+          await saveUserAiKey(ownerId, {
+            id: lp.id,
+            ownerId,
+            provider,
+            label: lp.label || meta.label,
+            encryptedKey: lp.encryptedKey,
+            maskedKey: lp.maskedKey,
+            baseUrl: lp.baseUrl || impliedBaseUrl || meta.baseUrl || null,
+            models:
+              lp.models?.map((m) => ({
+                id: m.id,
+                displayName: m.label || m.id,
+                enabled: true,
+                seats: ["smart", "balanced", "fast"],
+                capabilities: { json: true, tools: true, vision: false, reasoning: false },
+              })) ?? meta.defaultModels,
+            lastVerifiedAt: now,
+            lastError: null,
+            createdAt: now,
+            updatedAt: now,
+          });
+        }
+        const chosen =
+          legacy.providers.find((x) => x.id === legacy.activePersonalProviderId) ?? legacy.providers[0];
+        if (legacy.mode === "personal" && chosen) {
+          resolved = await saveUserAiSettings(ownerId, {
+            mode: "byok",
+            activeKeyId: chosen.id,
+            activeProvider: normalizeGatewayProviderId(chosen.provider).provider,
+            activeModel: chosen.model,
+            fallbackToSystemAuto: Boolean(legacy.allowFallbackOnError),
+          });
+        }
       }
-      const chosen =
-        legacy.providers.find((x) => x.id === legacy.activePersonalProviderId) ?? legacy.providers[0];
-      if (legacy.mode === "personal" && chosen) {
-        resolved = await saveUserAiSettings(ownerId, {
-          mode: "byok",
-          activeKeyId: chosen.id,
-          activeProvider: normalizeGatewayProviderId(chosen.provider).provider,
-          activeModel: chosen.model,
-          fallbackToSystemAuto: Boolean(legacy.allowFallbackOnError),
-        });
-      }
+    } catch (err) {
+      // A failed migration must never block the account from using AI.
+      console.error(
+        `[llm/store] legacy BYOK migration failed for ${ownerId}: ${describeUnknownError(err)}`,
+      );
+    } finally {
+      legacyMigrationInFlight.delete(ownerId);
     }
   }
 
@@ -885,6 +921,19 @@ export function encryptGatewayKey(plaintext: string): { encryptedKey: string; ma
 export async function appendAiExecutionLog(
   entry: Omit<AiExecutionLogRecord, "id" | "createdAt">,
 ): Promise<void> {
+  // Receipt logging is a side effect: it must never fail a working AI call.
+  try {
+    await appendAiExecutionLogUnsafe(entry);
+  } catch (err) {
+    if (process.env.NODE_ENV !== "test") {
+      console.warn(`[llm/store] execution log skipped: ${describeUnknownError(err)}`);
+    }
+  }
+}
+
+async function appendAiExecutionLogUnsafe(
+  entry: Omit<AiExecutionLogRecord, "id" | "createdAt">,
+): Promise<void> {
   if (!supabaseServer) return;
   const id = `exec_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
   const nowIso = new Date().toISOString();
@@ -942,6 +991,20 @@ export async function appendAiExecutionLog(
 }
 
 export async function listAiExecutionLogs(options?: {
+  ownerId?: string;
+  limit?: number;
+}): Promise<AiExecutionLogRecord[]> {
+  try {
+    return await listAiExecutionLogsUnsafe(options);
+  } catch (err) {
+    if (process.env.NODE_ENV !== "test") {
+      console.warn(`[llm/store] execution log read skipped: ${describeUnknownError(err)}`);
+    }
+    return [];
+  }
+}
+
+async function listAiExecutionLogsUnsafe(options?: {
   ownerId?: string;
   limit?: number;
 }): Promise<AiExecutionLogRecord[]> {

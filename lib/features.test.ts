@@ -20,6 +20,7 @@ import {
   hydrateGrowthProfileFromOnboarding,
 } from "./growth-advisor";
 import { generateTotpAt, generateTotpSecret, verifyTotpCode, encryptSecret, decryptSecret } from "./key-vault";
+import { extractErrorCode, extractErrorMessage, handleApiError } from "./api-helpers";
 import { LLMGateway, LLMGatewayError } from "./llm/gateway";
 import {
   clearRouterStateForTests,
@@ -31,6 +32,7 @@ import {
 import { GatewayProviderError } from "./llm/providers";
 import {
   encryptGatewayKey,
+  getUserAiSettings,
   resetGatewayCachesForTests,
   seedGatewayCachesForTests,
 } from "./llm/store";
@@ -1417,4 +1419,111 @@ test("ENCRYPTION_KEY is required in production and gateway key ciphertext never 
     if (prevEnc === undefined) delete prevEnv.ENCRYPTION_KEY;
     else prevEnv.ENCRYPTION_KEY = prevEnc;
   }
+});
+
+test("error normalizer never renders [object Object] and keeps readable messages", () => {
+  assert.equal(
+    extractErrorMessage({ code: "42501", message: "permission denied", details: null }),
+    "permission denied",
+  );
+  assert.equal(extractErrorMessage({ error: { message: "relation does not exist" } }), "relation does not exist");
+  assert.equal(extractErrorMessage(new Error("boom")), "boom");
+  assert.equal(extractErrorMessage(new Error('[object Object]')), "Something went wrong on the server. Please try again.");
+  assert.equal(extractErrorMessage("[object Object]"), "Something went wrong on the server. Please try again.");
+  assert.equal(extractErrorMessage('{"error":{"message":"quota exhausted"}}'), "quota exhausted");
+  assert.equal(extractErrorMessage(null), "Something went wrong on the server. Please try again.");
+  assert.doesNotMatch(extractErrorMessage({}), /\[object Object\]/);
+
+  assert.equal(extractErrorCode({ code: "42501", message: "permission denied" }), "42501");
+  assert.equal(extractErrorCode(new Error("plain")), "INTERNAL_ERROR");
+});
+
+test("handleApiError always answers with clean JSON { error: string, code }", async () => {
+  // Supabase/PostgREST failures arrive as plain objects, not Error instances.
+  const dbErr = handleApiError({ code: "42501", message: "permission denied for table user_ai_settings" });
+  assert.equal(dbErr.status, 500);
+  const dbBody = (await dbErr.json()) as { error: unknown; code: unknown };
+  assert.equal(typeof dbBody.error, "string");
+  assert.equal(dbBody.error, "permission denied for table user_ai_settings");
+  assert.equal(dbBody.code, "42501");
+  assert.doesNotMatch(JSON.stringify(dbBody), /\[object Object\]/);
+
+  // A non-Error throw still produces JSON, never an HTML crash page.
+  const oddErr = handleApiError({ unexpected: { nested: true } });
+  assert.equal(oddErr.status, 500);
+  assert.equal(oddErr.headers.get("content-type")?.includes("application/json"), true);
+  const oddBody = (await oddErr.json()) as { error: unknown; code: unknown };
+  assert.equal(typeof oddBody.error, "string");
+  assert.equal(typeof oddBody.code, "string");
+
+  // User-facing validation errors stay 400.
+  const validation = handleApiError(new Error("Add and save an API key first."));
+  assert.equal(validation.status, 400);
+  assert.equal((await validation.json()).error, "Add and save an API key first.");
+});
+
+test("regular non-admin owner on system_auto runs on the pooled admin key without BYOK setup", async () => {
+  const prevFetch = globalThis.fetch;
+  let sawAdminKey = false;
+
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = typeof input === "string" ? input : input.toString();
+    const auth = new Headers(init?.headers).get("authorization") ?? "";
+    if (url.includes("api.groq.com") && auth === "Bearer gsk_RegularUserPoolKey") {
+      sawAdminKey = true;
+    }
+    return new Response(
+      JSON.stringify({ choices: [{ message: { content: "OK" } }] }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    );
+  }) as typeof fetch;
+
+  try {
+    resetGatewayCachesForTests();
+    clearRouterStateForTests();
+
+    const regularOwner = "owner-regular-non-admin";
+    seedGatewayCachesForTests({
+      adminSettings: makeSampleAdminSettings(),
+      adminKeys: [makeSampleAdminKey("adm_pool", "groq", "gsk_RegularUserPoolKey")],
+      // No BYOK: brand-new account defaults to the managed engine.
+      userSettings: {
+        [regularOwner]: {
+          ownerId: regularOwner,
+          mode: "system_auto",
+          activeKeyId: null,
+          activeProvider: null,
+          activeModel: null,
+          fallbackToSystemAuto: false,
+          updatedAt: new Date().toISOString(),
+        },
+      },
+      userKeys: { [regularOwner]: [] },
+    });
+
+    const receiptResult = await LLMGateway.testActiveModel(regularOwner);
+    assert.equal(receiptResult.text, "OK");
+    assert.equal(receiptResult.receipt.actualProvider, "groq");
+    assert.equal(receiptResult.receipt.actualKeyId, "adm_pool");
+    assert.equal(receiptResult.receipt.requestedMode, "system_auto");
+    assert.equal(receiptResult.receipt.status, "success");
+    assert.equal(sawAdminKey, true);
+  } finally {
+    globalThis.fetch = prevFetch;
+    resetGatewayCachesForTests();
+    clearRouterStateForTests();
+  }
+});
+
+test("getUserAiSettings resolves a default for a new account without hanging", async () => {
+  resetGatewayCachesForTests();
+  const settings = await Promise.race([
+    getUserAiSettings("owner-brand-new-account"),
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error("getUserAiSettings did not settle")), 3_000),
+    ),
+  ]);
+  assert.equal(settings.mode, "system_auto");
+  assert.equal(settings.activeKeyId, null);
+  resetGatewayCachesForTests();
 });
