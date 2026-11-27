@@ -1,0 +1,565 @@
+export type GatewayProviderId =
+  | "google"
+  | "nvidia"
+  | "zai"
+  | "cloudflare"
+  | "openrouter"
+  | "groq"
+  | "cerebras"
+  | "anthropic"
+  | "openai"
+  | "custom";
+
+export type TaskSeat = "smart" | "balanced" | "fast";
+export type RoutingStrategy = "balanced" | "smartest" | "fastest" | "reliable";
+export type KeyHealthStatus = "healthy" | "cooldown" | "invalid";
+
+export interface ModelCapabilities {
+  json: boolean;
+  tools: boolean;
+  vision: boolean;
+  reasoning: boolean;
+  grounding?: boolean;
+}
+
+export interface GatewayModelConfig {
+  id: string;
+  displayName: string;
+  enabled: boolean;
+  seats: TaskSeat[];
+  capabilities: ModelCapabilities;
+  isFreeTier?: boolean;
+}
+
+export interface ProviderCatalogMeta {
+  id: GatewayProviderId;
+  label: string;
+  blurb: string;
+  style: "google" | "openai_compat" | "zai" | "cloudflare" | "anthropic";
+  baseUrl: string;
+  modelsPath: string;
+  keyPrefixes: string[];
+  docsUrl: string;
+  docsLabel: string;
+  freeTierDefault: boolean;
+  requiresAccountId?: boolean;
+  requiresBaseUrl?: boolean;
+  defaultRpmLimit: number;
+  defaultRpdLimit: number;
+  defaultModels: GatewayModelConfig[];
+}
+
+export const PROVIDER_CATALOG: ProviderCatalogMeta[] = [
+  {
+    id: "google",
+    label: "Google AI Studio",
+    blurb: "Free-tier Gemini Flash/Pro & Gemma models with native Google Search grounding.",
+    style: "google",
+    baseUrl: "https://generativelanguage.googleapis.com/v1beta",
+    modelsPath: "/models",
+    keyPrefixes: ["AIza", "AQ."],
+    docsUrl: "https://aistudio.google.com/apikey",
+    docsLabel: "Google AI Studio",
+    freeTierDefault: true,
+    defaultRpmLimit: 15,
+    defaultRpdLimit: 1500,
+    defaultModels: [
+      {
+        id: "gemini-2.5-flash",
+        displayName: "Gemini 2.5 Flash",
+        enabled: true,
+        seats: ["balanced", "fast", "smart"],
+        capabilities: { json: true, tools: true, vision: true, reasoning: true, grounding: true },
+        isFreeTier: true,
+      },
+      {
+        id: "gemini-2.5-pro",
+        displayName: "Gemini 2.5 Pro",
+        enabled: true,
+        seats: ["smart"],
+        capabilities: { json: true, tools: true, vision: true, reasoning: true, grounding: true },
+        isFreeTier: true,
+      },
+      {
+        id: "gemini-2.0-flash",
+        displayName: "Gemini 2.0 Flash",
+        enabled: true,
+        seats: ["fast", "balanced"],
+        capabilities: { json: true, tools: true, vision: true, reasoning: false, grounding: true },
+        isFreeTier: true,
+      },
+      {
+        id: "gemma-3-27b-it",
+        displayName: "Gemma 3 27B IT",
+        enabled: true,
+        seats: ["fast", "balanced"],
+        capabilities: { json: true, tools: false, vision: true, reasoning: false, grounding: false },
+        isFreeTier: true,
+      },
+    ],
+  },
+  {
+    id: "nvidia",
+    label: "NVIDIA NIM",
+    blurb: "Free NVIDIA inference for DeepSeek R1/V3, GLM, Llama 3.3 70B & Qwen with live /models catalog.",
+    style: "openai_compat",
+    baseUrl: "https://integrate.api.nvidia.com/v1",
+    modelsPath: "/models",
+    keyPrefixes: ["nvapi-"],
+    docsUrl: "https://build.nvidia.com/",
+    docsLabel: "NVIDIA Build",
+    freeTierDefault: true,
+    defaultRpmLimit: 40,
+    defaultRpdLimit: 2000,
+    defaultModels: [
+      {
+        id: "deepseek-ai/deepseek-v3.2",
+        displayName: "DeepSeek V3.2 (NIM)",
+        enabled: true,
+        seats: ["smart", "balanced"],
+        capabilities: { json: true, tools: true, vision: false, reasoning: true },
+        isFreeTier: true,
+      },
+      {
+        id: "meta/llama-3.3-70b-instruct",
+        displayName: "Llama 3.3 70B Instruct (NIM)",
+        enabled: true,
+        seats: ["balanced", "smart"],
+        capabilities: { json: true, tools: true, vision: false, reasoning: false },
+        isFreeTier: true,
+      },
+      {
+        id: "qwen/qwen2.5-72b-instruct",
+        displayName: "Qwen 2.5 72B Instruct (NIM)",
+        enabled: true,
+        seats: ["smart", "balanced"],
+        capabilities: { json: true, tools: true, vision: false, reasoning: false },
+        isFreeTier: true,
+      },
+      {
+        id: "z-ai/glm4.7",
+        displayName: "GLM 4.7 (NIM)",
+        enabled: true,
+        seats: ["smart", "balanced"],
+        capabilities: { json: true, tools: true, vision: false, reasoning: true },
+        isFreeTier: true,
+      },
+    ],
+  },
+  {
+    id: "zai",
+    label: "Z.ai / Zhipu",
+    blurb: "Free GLM-4.7-Flash & GLM-4-Flash across global (api.z.ai) and Zhipu endpoints.",
+    style: "zai",
+    baseUrl: "https://api.z.ai/api/paas/v4",
+    modelsPath: "/models",
+    keyPrefixes: [],
+    docsUrl: "https://z.ai/manage-apikey/apikey-list",
+    docsLabel: "Z.ai Console",
+    freeTierDefault: true,
+    defaultRpmLimit: 20,
+    defaultRpdLimit: 1000,
+    defaultModels: [
+      {
+        id: "glm-4.5-flash",
+        displayName: "GLM 4.5 Flash (Free)",
+        enabled: true,
+        seats: ["balanced", "fast", "smart"],
+        capabilities: { json: true, tools: true, vision: false, reasoning: true },
+        isFreeTier: true,
+      },
+      {
+        id: "glm-4-flash",
+        displayName: "GLM 4 Flash (Free)",
+        enabled: true,
+        seats: ["fast", "balanced"],
+        capabilities: { json: true, tools: true, vision: false, reasoning: false },
+        isFreeTier: true,
+      },
+    ],
+  },
+  {
+    id: "cloudflare",
+    label: "Cloudflare Workers AI",
+    blurb: "10,000 free daily neurons using Account ID + API Token across fast open-weight models.",
+    style: "cloudflare",
+    baseUrl: "https://api.cloudflare.com/client/v4",
+    modelsPath: "",
+    keyPrefixes: [],
+    docsUrl: "https://dash.cloudflare.com/",
+    docsLabel: "Cloudflare Workers AI",
+    freeTierDefault: true,
+    requiresAccountId: true,
+    defaultRpmLimit: 30,
+    defaultRpdLimit: 800,
+    defaultModels: [
+      {
+        id: "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+        displayName: "Llama 3.3 70B FP8 Fast (CF)",
+        enabled: true,
+        seats: ["balanced", "smart"],
+        capabilities: { json: true, tools: true, vision: false, reasoning: false },
+        isFreeTier: true,
+      },
+      {
+        id: "@cf/zai-org/glm-4.7-flash",
+        displayName: "GLM 4.7 Flash (CF)",
+        enabled: true,
+        seats: ["smart", "balanced"],
+        capabilities: { json: true, tools: true, vision: false, reasoning: true },
+        isFreeTier: true,
+      },
+      {
+        id: "@cf/meta/llama-3.1-8b-instruct-fast",
+        displayName: "Llama 3.1 8B Fast (CF)",
+        enabled: true,
+        seats: ["fast"],
+        capabilities: { json: true, tools: false, vision: false, reasoning: false },
+        isFreeTier: true,
+      },
+    ],
+  },
+  {
+    id: "openrouter",
+    label: "OpenRouter",
+    blurb: "Unified access to dozens of `:free` tier models (DeepSeek, Llama, Qwen, Gemma).",
+    style: "openai_compat",
+    baseUrl: "https://openrouter.ai/api/v1",
+    modelsPath: "/models",
+    keyPrefixes: ["sk-or-"],
+    docsUrl: "https://openrouter.ai/keys",
+    docsLabel: "OpenRouter Keys",
+    freeTierDefault: true,
+    defaultRpmLimit: 20,
+    defaultRpdLimit: 1000,
+    defaultModels: [
+      {
+        id: "meta-llama/llama-3.3-70b-instruct:free",
+        displayName: "Llama 3.3 70B (:free)",
+        enabled: true,
+        seats: ["smart", "balanced"],
+        capabilities: { json: true, tools: true, vision: false, reasoning: false },
+        isFreeTier: true,
+      },
+      {
+        id: "deepseek/deepseek-chat-v3-0324:free",
+        displayName: "DeepSeek V3 (:free)",
+        enabled: true,
+        seats: ["smart", "balanced"],
+        capabilities: { json: true, tools: true, vision: false, reasoning: false },
+        isFreeTier: true,
+      },
+      {
+        id: "qwen/qwen-2.5-72b-instruct:free",
+        displayName: "Qwen 2.5 72B (:free)",
+        enabled: true,
+        seats: ["smart", "balanced"],
+        capabilities: { json: true, tools: true, vision: false, reasoning: false },
+        isFreeTier: true,
+      },
+      {
+        id: "google/gemma-3-27b-it:free",
+        displayName: "Gemma 3 27B (:free)",
+        enabled: true,
+        seats: ["fast", "balanced"],
+        capabilities: { json: true, tools: false, vision: true, reasoning: false },
+        isFreeTier: true,
+      },
+    ],
+  },
+  {
+    id: "groq",
+    label: "Groq",
+    blurb: "Ultra-fast LPU inference on free developer tier for Llama 3.3, Qwen & instant checks.",
+    style: "openai_compat",
+    baseUrl: "https://api.groq.com/openai/v1",
+    modelsPath: "/models",
+    keyPrefixes: ["gsk_"],
+    docsUrl: "https://console.groq.com/keys",
+    docsLabel: "GroqCloud Console",
+    freeTierDefault: true,
+    defaultRpmLimit: 30,
+    defaultRpdLimit: 1000,
+    defaultModels: [
+      {
+        id: "llama-3.3-70b-versatile",
+        displayName: "Llama 3.3 70B Versatile",
+        enabled: true,
+        seats: ["balanced", "smart"],
+        capabilities: { json: true, tools: true, vision: false, reasoning: false },
+        isFreeTier: true,
+      },
+      {
+        id: "llama-3.1-8b-instant",
+        displayName: "Llama 3.1 8B Instant",
+        enabled: true,
+        seats: ["fast"],
+        capabilities: { json: true, tools: true, vision: false, reasoning: false },
+        isFreeTier: true,
+      },
+    ],
+  },
+  {
+    id: "cerebras",
+    label: "Cerebras",
+    blurb: "Sub-second wafer-scale inference free tier for rapid JSON, triage & drafting.",
+    style: "openai_compat",
+    baseUrl: "https://api.cerebras.ai/v1",
+    modelsPath: "/models",
+    keyPrefixes: ["csk-"],
+    docsUrl: "https://cloud.cerebras.ai/",
+    docsLabel: "Cerebras Cloud",
+    freeTierDefault: true,
+    defaultRpmLimit: 30,
+    defaultRpdLimit: 1000,
+    defaultModels: [
+      {
+        id: "llama-3.3-70b",
+        displayName: "Llama 3.3 70B (Cerebras)",
+        enabled: true,
+        seats: ["balanced", "smart", "fast"],
+        capabilities: { json: true, tools: true, vision: false, reasoning: false },
+        isFreeTier: true,
+      },
+      {
+        id: "llama3.1-8b",
+        displayName: "Llama 3.1 8B (Cerebras)",
+        enabled: true,
+        seats: ["fast"],
+        capabilities: { json: true, tools: true, vision: false, reasoning: false },
+        isFreeTier: true,
+      },
+    ],
+  },
+  {
+    id: "anthropic",
+    label: "Anthropic Claude",
+    blurb: "Claude Sonnet & Haiku models (BYOK or paid platform key).",
+    style: "anthropic",
+    baseUrl: "https://api.anthropic.com",
+    modelsPath: "/v1/models",
+    keyPrefixes: ["sk-ant-"],
+    docsUrl: "https://console.anthropic.com/settings/keys",
+    docsLabel: "Anthropic Console",
+    freeTierDefault: false,
+    defaultRpmLimit: 50,
+    defaultRpdLimit: 10000,
+    defaultModels: [
+      {
+        id: "claude-sonnet-4-5",
+        displayName: "Claude Sonnet 4.5",
+        enabled: true,
+        seats: ["smart", "balanced"],
+        capabilities: { json: true, tools: true, vision: true, reasoning: true },
+      },
+      {
+        id: "claude-haiku-4-5",
+        displayName: "Claude Haiku 4.5",
+        enabled: true,
+        seats: ["fast", "balanced"],
+        capabilities: { json: true, tools: true, vision: true, reasoning: false },
+      },
+    ],
+  },
+  {
+    id: "openai",
+    label: "OpenAI",
+    blurb: "GPT-4o / GPT-4.1 / GPT-5 series (BYOK or paid platform key).",
+    style: "openai_compat",
+    baseUrl: "https://api.openai.com/v1",
+    modelsPath: "/models",
+    keyPrefixes: ["sk-proj-", "sk-"],
+    docsUrl: "https://platform.openai.com/api-keys",
+    docsLabel: "OpenAI Platform",
+    freeTierDefault: false,
+    defaultRpmLimit: 60,
+    defaultRpdLimit: 10000,
+    defaultModels: [
+      {
+        id: "gpt-4o-mini",
+        displayName: "GPT-4o Mini",
+        enabled: true,
+        seats: ["fast", "balanced"],
+        capabilities: { json: true, tools: true, vision: true, reasoning: false },
+      },
+      {
+        id: "gpt-4o",
+        displayName: "GPT-4o",
+        enabled: true,
+        seats: ["smart", "balanced"],
+        capabilities: { json: true, tools: true, vision: true, reasoning: false },
+      },
+    ],
+  },
+  {
+    id: "custom",
+    label: "Custom OpenAI Endpoint",
+    blurb: "Any OpenAI-compatible URL (FreeLLMAPI instance, Ollama, vLLM, LiteLLM, DeepSeek, Mistral).",
+    style: "openai_compat",
+    baseUrl: "",
+    modelsPath: "/models",
+    keyPrefixes: [],
+    docsUrl: "",
+    docsLabel: "Custom Gateway / Endpoint",
+    freeTierDefault: false,
+    requiresBaseUrl: true,
+    defaultRpmLimit: 60,
+    defaultRpdLimit: 5000,
+    defaultModels: [
+      {
+        id: "auto",
+        displayName: "Auto (Remote Router)",
+        enabled: true,
+        seats: ["smart", "balanced", "fast"],
+        capabilities: { json: true, tools: true, vision: false, reasoning: false },
+      },
+    ],
+  },
+];
+
+const PROVIDER_BY_ID = new Map<GatewayProviderId, ProviderCatalogMeta>(
+  PROVIDER_CATALOG.map((p) => [p.id, p]),
+);
+
+const LEGACY_BASE_URLS: Record<string, string> = {
+  deepseek: "https://api.deepseek.com/v1",
+  mistral: "https://api.mistral.ai/v1",
+  xai: "https://api.x.ai/v1",
+  together: "https://api.together.xyz/v1",
+  fireworks: "https://api.fireworks.ai/inference/v1",
+  perplexity: "https://api.perplexity.ai",
+  numes: "https://api.numes.ai/api/v1",
+};
+
+export function normalizeGatewayProviderId(raw: unknown): {
+  provider: GatewayProviderId;
+  impliedBaseUrl?: string;
+} {
+  const clean = typeof raw === "string" ? raw.trim().toLowerCase() : "";
+  if (clean === "gemini") return { provider: "google" };
+  if (clean === "zhipu" || clean === "z.ai" || clean === "z-ai") return { provider: "zai" };
+  if (PROVIDER_BY_ID.has(clean as GatewayProviderId)) {
+    return { provider: clean as GatewayProviderId };
+  }
+  if (LEGACY_BASE_URLS[clean]) {
+    return { provider: "custom", impliedBaseUrl: LEGACY_BASE_URLS[clean] };
+  }
+  return { provider: "google" };
+}
+
+export function getProviderMeta(id: GatewayProviderId | string): ProviderCatalogMeta {
+  const { provider } = normalizeGatewayProviderId(id);
+  return PROVIDER_BY_ID.get(provider) ?? PROVIDER_CATALOG[0];
+}
+
+export function guessGatewayProvider(rawKey: string): GatewayProviderId | null {
+  const k = rawKey.trim();
+  if (!k) return null;
+  if (k.startsWith("AIza") || k.startsWith("AQ.")) return "google";
+  if (k.startsWith("nvapi-")) return "nvidia";
+  if (k.startsWith("gsk_")) return "groq";
+  if (k.startsWith("csk-")) return "cerebras";
+  if (k.startsWith("sk-or-")) return "openrouter";
+  if (k.startsWith("sk-ant-")) return "anthropic";
+  if (k.startsWith("sk-proj-") || k.startsWith("sk-")) return "openai";
+  return null;
+}
+
+export interface AdminAiSettings {
+  id: "default";
+  masterMode: "auto" | "manual";
+  strategy: RoutingStrategy;
+  fallbackChain: { provider: GatewayProviderId; model: string }[];
+  updatedAt: string;
+}
+
+export interface AdminAiKeyRecord {
+  id: string;
+  provider: GatewayProviderId;
+  label: string;
+  encryptedKey: string;
+  maskedKey: string;
+  accountId?: string | null;
+  baseUrl?: string | null;
+  enabled: boolean;
+  models: GatewayModelConfig[];
+  rpmLimit: number;
+  rpdLimit: number;
+  healthStatus: KeyHealthStatus;
+  cooldownUntil?: string | null;
+  cooldownStep: number;
+  lastError?: string | null;
+  lastCheckedAt?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AdminAiKeyPublic extends Omit<AdminAiKeyRecord, "encryptedKey"> {
+  hasKey: boolean;
+  rpmUsed?: number;
+  rpdUsed?: number;
+}
+
+export interface UserAiSettings {
+  ownerId: string;
+  mode: "system_auto" | "byok";
+  activeKeyId?: string | null;
+  activeProvider?: GatewayProviderId | null;
+  activeModel?: string | null;
+  fallbackToSystemAuto: boolean;
+  updatedAt: string;
+}
+
+export interface UserAiKeyRecord {
+  id: string;
+  ownerId: string;
+  provider: GatewayProviderId;
+  label: string;
+  encryptedKey: string;
+  maskedKey: string;
+  accountId?: string | null;
+  baseUrl?: string | null;
+  models: GatewayModelConfig[];
+  lastVerifiedAt?: string | null;
+  lastError?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type UserAiKeyPublic = Omit<UserAiKeyRecord, "encryptedKey">;
+
+export interface GatewayReceipt {
+  ownerId: string;
+  taskType: TaskSeat;
+  feature: string;
+  requestedMode: "system_auto" | "byok";
+  requestedModel?: string | null;
+  actualProvider: GatewayProviderId;
+  actualKeyId: string;
+  actualModel: string;
+  fallbackHops: number;
+  fallbackUsed: boolean;
+  grounded: boolean;
+  latencyMs: number;
+  status: "success" | "failed";
+  errorSummary?: string;
+}
+
+export interface AiExecutionLogRecord {
+  id: string;
+  ownerId: string;
+  taskType: TaskSeat;
+  feature: string;
+  requestedMode: "system_auto" | "byok";
+  requestedModel?: string | null;
+  actualProvider?: string | null;
+  actualKeyId?: string | null;
+  actualModel?: string | null;
+  fallbackHops: number;
+  fallbackUsed: boolean;
+  grounded: boolean;
+  latencyMs: number;
+  status: "success" | "failed";
+  errorSummary?: string | null;
+  createdAt: string;
+}

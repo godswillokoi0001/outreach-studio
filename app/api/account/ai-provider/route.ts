@@ -1,40 +1,54 @@
+import { randomBytes } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
-import { getProvider, guessProviderId, isProviderId } from "@/lib/ai/registry";
-import type { AiProviderId } from "@/lib/ai/types";
+import { isSafeProviderUrl } from "@/lib/ai/context";
 import { handleApiError } from "@/lib/api-helpers";
-import { encryptSecret, maskSecret, validateApiKeyInput } from "@/lib/key-vault";
+import { validateApiKeyInput } from "@/lib/key-vault";
+import { LLMGateway } from "@/lib/llm/gateway";
 import {
-  buildPublicPlatformModelList,
-  getInternalPlatformPolicy,
-  getUserByokPublicState,
-  getUserByokVault,
-  saveUserByokVault,
-  toPublicPlatformPolicy,
-  type InternalPersonalProvider,
-} from "@/lib/platform/store-server";
+  deleteUserAiKey,
+  encryptGatewayKey,
+  getUserAiSettings,
+  listAiExecutionLogs,
+  listUserAiKeys,
+  saveUserAiKey,
+  saveUserAiSettings,
+  toUserAiKeyPublic,
+} from "@/lib/llm/store";
+import {
+  getProviderMeta,
+  guessGatewayProvider,
+  normalizeGatewayProviderId,
+  PROVIDER_CATALOG,
+  type GatewayModelConfig,
+  type UserAiKeyRecord,
+} from "@/lib/llm/types";
 import { verifyRequest } from "@/lib/server-auth";
-import { supabaseServer } from "@/lib/supabase-server";
 
 export const dynamic = "force-dynamic";
+export const maxDuration = 60;
 
-async function logUserKeyEvent(ownerId: string, action: string, detail: Record<string, unknown>) {
-  if (!supabaseServer) return;
-  await supabaseServer.from("audit_logs").insert({
-    id: `key_evt_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-    owner_id: ownerId,
-    action,
-    entity: "byok_key",
-    entity_id: String(detail.provider ?? "ai"),
-    detail,
-    created_at: new Date().toISOString(),
-  } as never);
+async function buildPublicUserState(ownerId: string) {
+  const [settings, keys, recentLogs] = await Promise.all([
+    getUserAiSettings(ownerId),
+    listUserAiKeys(ownerId),
+    listAiExecutionLogs({ ownerId, limit: 15 }),
+  ]);
+
+  return {
+    settings,
+    keys: keys.map(toUserAiKeyPublic),
+    catalog: PROVIDER_CATALOG,
+    recentLogs,
+  };
 }
 
 export async function GET(req: NextRequest) {
   try {
     const user = await verifyRequest(req);
-    const state = await getUserByokPublicState(user.ownerId, user.email);
-    return NextResponse.json({ state }, { headers: { "Cache-Control": "no-store" } });
+    const payload = await buildPublicUserState(user.ownerId);
+    return NextResponse.json(payload, {
+      headers: { "Cache-Control": "private, no-store, max-age=0" },
+    });
   } catch (err) {
     return handleApiError(err);
   }
@@ -46,138 +60,157 @@ export async function POST(req: NextRequest) {
     const body = (await req.json().catch(() => ({}))) as {
       action?:
         | "set_mode"
-        | "select_platform_model"
-        | "save_personal_key"
-        | "select_personal_model"
-        | "set_fallback_permission";
-      mode?: "platform" | "personal";
+        | "save_key"
+        | "select_key_and_model"
+        | "set_fallback"
+        | "test_active";
+      mode?: "system_auto" | "byok";
+      keyId?: string;
       provider?: string;
+      label?: string;
       apiKey?: string;
+      accountId?: string;
       baseUrl?: string;
       model?: string;
-      models?: { id: string; label: string }[];
-      id?: string;
-      allowFallbackOnError?: boolean;
+      models?: GatewayModelConfig[];
+      fallbackToSystemAuto?: boolean;
     };
 
-    const vault = await getUserByokVault(user.ownerId);
+    if (body.action === "test_active") {
+      const res = await LLMGateway.testActiveModel(user.ownerId);
+      const meta = getProviderMeta(res.receipt.actualProvider);
+      return NextResponse.json(
+        {
+          verified: true,
+          providerLabel: meta.label,
+          receipt: res.receipt,
+          reply: res.text,
+        },
+        { headers: { "Cache-Control": "private, no-store, max-age=0" } },
+      );
+    }
 
     if (body.action === "set_mode") {
-      const nextMode = body.mode === "personal" ? "personal" : "platform";
-      if (nextMode === "personal" && vault.providers.length === 0) {
+      const nextMode = body.mode === "byok" ? "byok" : "system_auto";
+      const existingKeys = await listUserAiKeys(user.ownerId);
+      if (nextMode === "byok" && existingKeys.length === 0) {
         return NextResponse.json(
-          { error: "Add and save a personal API key first before switching to personal mode." },
+          { error: "Add and save an API key first before switching to BYOK mode." },
           { status: 400 },
         );
       }
-      vault.mode = nextMode;
-      await saveUserByokVault(user.ownerId, vault);
-      await logUserKeyEvent(user.ownerId, "ai_mode_switched", { mode: nextMode });
-      const state = await getUserByokPublicState(user.ownerId, user.email);
-      return NextResponse.json({ state }, { headers: { "Cache-Control": "no-store" } });
+      const cur = await getUserAiSettings(user.ownerId);
+      const fallbackKey =
+        (cur.activeKeyId ? existingKeys.find((k) => k.id === cur.activeKeyId) : undefined) ??
+        existingKeys[0];
+      await saveUserAiSettings(user.ownerId, {
+        mode: nextMode,
+        ...(nextMode === "byok" && fallbackKey
+          ? {
+              activeKeyId: fallbackKey.id,
+              activeProvider: fallbackKey.provider,
+              activeModel: cur.activeModel || fallbackKey.models[0]?.id || null,
+            }
+          : {}),
+      });
+      return NextResponse.json(await buildPublicUserState(user.ownerId), {
+        headers: { "Cache-Control": "private, no-store, max-age=0" },
+      });
     }
 
-    if (body.action === "select_platform_model") {
-      const providerId = String(body.provider ?? "").trim().toLowerCase() as AiProviderId;
-      const modelId = String(body.model ?? "").trim();
-      const policy = toPublicPlatformPolicy(await getInternalPlatformPolicy());
-      const allowed = buildPublicPlatformModelList(policy);
-      const match = allowed.find((m) => m.provider === providerId && m.model === modelId);
-      if (!match) {
-        return NextResponse.json(
-          { error: "That model is not enabled by the platform administrator." },
-          { status: 400 },
-        );
-      }
-      vault.selectedPlatformModel = { provider: providerId, model: modelId };
-      vault.mode = "platform";
-      await saveUserByokVault(user.ownerId, vault);
-      const state = await getUserByokPublicState(user.ownerId, user.email);
-      return NextResponse.json({ state }, { headers: { "Cache-Control": "no-store" } });
-    }
-
-    if (body.action === "save_personal_key") {
+    if (body.action === "save_key") {
       const validated = validateApiKeyInput(body.apiKey);
       if (!validated.ok) {
         return NextResponse.json({ error: validated.error }, { status: 400 });
       }
-      const requestedProvider = String(body.provider ?? "").trim().toLowerCase();
-      const guessed = guessProviderId(validated.value);
-      const providerId: AiProviderId | null = isProviderId(requestedProvider)
-        ? requestedProvider
-        : guessed;
+      const requestedProvider = String(body.provider ?? "").trim();
+      const guessed = guessGatewayProvider(validated.value);
+      const provider =
+        !requestedProvider || requestedProvider === "auto"
+          ? guessed ?? "google"
+          : normalizeGatewayProviderId(requestedProvider).provider;
+      const meta = getProviderMeta(provider);
 
-      if (!providerId) {
-        return NextResponse.json({ error: "Select a supported AI provider." }, { status: 400 });
+      const baseUrl = (body.baseUrl ?? "").trim() || meta.baseUrl || null;
+      if (baseUrl && !isSafeProviderUrl(baseUrl)) {
+        return NextResponse.json(
+          { error: "Use a public http(s) endpoint URL." },
+          { status: 400 },
+        );
       }
 
-      const meta = getProvider(providerId);
-      if (!meta) {
-        return NextResponse.json({ error: "Unsupported AI provider." }, { status: 400 });
-      }
+      const { encryptedKey, maskedKey } = encryptGatewayKey(validated.value);
+      const now = new Date().toISOString();
+      const keyId =
+        body.keyId?.trim() || `ukey_${Date.now().toString(36)}_${randomBytes(4).toString("hex")}`;
 
-      const encryptedKey = encryptSecret(validated.value);
-      const maskedKey = maskSecret(validated.value);
-      const entryId = body.id?.trim() || `byok_${providerId}_${Date.now()}`;
+      const models: GatewayModelConfig[] =
+        Array.isArray(body.models) && body.models.length > 0
+          ? body.models.slice(0, 100)
+          : meta.defaultModels;
 
-      const existingIdx = vault.providers.findIndex((p) => p.id === entryId || p.provider === providerId);
-      const record: InternalPersonalProvider = {
-        id: existingIdx >= 0 ? vault.providers[existingIdx].id : entryId,
-        provider: providerId,
-        label: meta.label,
+      const selectedModel =
+        (body.model ?? "").trim() || models[0]?.id || meta.defaultModels[0]?.id || "auto";
+
+      const record: UserAiKeyRecord = {
+        id: keyId,
+        ownerId: user.ownerId,
+        provider,
+        label: (body.label ?? "").trim() || meta.label,
         encryptedKey,
         maskedKey,
-        baseUrl: body.baseUrl?.trim() || meta.baseUrl,
-        model: String(body.model ?? "").trim() || meta.defaultModel,
-        models:
-          Array.isArray(body.models) && body.models.length > 0
-            ? body.models.slice(0, 80)
-            : meta.staticModels ?? [{ id: meta.defaultModel, label: meta.defaultModel }],
-        verifiedAt: new Date().toISOString(),
-        lastError: undefined,
+        accountId: body.accountId?.trim() || null,
+        baseUrl,
+        models,
+        lastVerifiedAt: now,
+        lastError: null,
+        createdAt: now,
+        updatedAt: now,
       };
 
-      const isRotation = existingIdx >= 0;
-      if (isRotation) {
-        vault.providers[existingIdx] = record;
-      } else {
-        vault.providers.push(record);
-      }
-      vault.activePersonalProviderId = record.id;
-      vault.mode = "personal";
-
-      await saveUserByokVault(user.ownerId, vault);
-      await logUserKeyEvent(user.ownerId, isRotation ? "personal_key_rotated" : "personal_key_added", {
-        provider: providerId,
-        maskedKey,
+      await saveUserAiKey(user.ownerId, record);
+      await saveUserAiSettings(user.ownerId, {
+        mode: "byok",
+        activeKeyId: record.id,
+        activeProvider: provider,
+        activeModel: selectedModel,
       });
 
-      const state = await getUserByokPublicState(user.ownerId, user.email);
-      return NextResponse.json({ state }, { headers: { "Cache-Control": "no-store" } });
+      return NextResponse.json(await buildPublicUserState(user.ownerId), {
+        headers: { "Cache-Control": "private, no-store, max-age=0" },
+      });
     }
 
-    if (body.action === "select_personal_model") {
-      const target = vault.providers.find((p) => p.id === body.id || p.id === vault.activePersonalProviderId);
-      if (!target) {
-        return NextResponse.json({ error: "Personal provider entry not found." }, { status: 404 });
+    if (body.action === "select_key_and_model") {
+      const keys = await listUserAiKeys(user.ownerId);
+      const chosen =
+        (body.keyId ? keys.find((k) => k.id === body.keyId) : undefined) ?? keys[0];
+      if (!chosen) {
+        return NextResponse.json({ error: "Saved API key not found." }, { status: 404 });
       }
-      if (body.model?.trim()) {
-        target.model = body.model.trim().slice(0, 200);
-      }
-      vault.activePersonalProviderId = target.id;
-      await saveUserByokVault(user.ownerId, vault);
-      const state = await getUserByokPublicState(user.ownerId, user.email);
-      return NextResponse.json({ state }, { headers: { "Cache-Control": "no-store" } });
+      const chosenModel =
+        (body.model ?? "").trim() || chosen.models[0]?.id || getProviderMeta(chosen.provider).defaultModels[0]?.id || "";
+      await saveUserAiSettings(user.ownerId, {
+        mode: "byok",
+        activeKeyId: chosen.id,
+        activeProvider: chosen.provider,
+        activeModel: chosenModel,
+      });
+      return NextResponse.json(await buildPublicUserState(user.ownerId), {
+        headers: { "Cache-Control": "private, no-store, max-age=0" },
+      });
     }
 
-    if (body.action === "set_fallback_permission") {
-      vault.allowFallbackOnError = Boolean(body.allowFallbackOnError);
-      await saveUserByokVault(user.ownerId, vault);
-      const state = await getUserByokPublicState(user.ownerId, user.email);
-      return NextResponse.json({ state }, { headers: { "Cache-Control": "no-store" } });
+    if (body.action === "set_fallback") {
+      await saveUserAiSettings(user.ownerId, {
+        fallbackToSystemAuto: Boolean(body.fallbackToSystemAuto),
+      });
+      return NextResponse.json(await buildPublicUserState(user.ownerId), {
+        headers: { "Cache-Control": "private, no-store, max-age=0" },
+      });
     }
 
-    return NextResponse.json({ error: "Unsupported AI provider action." }, { status: 400 });
+    return NextResponse.json({ error: "Unsupported AI setting action." }, { status: 400 });
   } catch (err) {
     return handleApiError(err);
   }
@@ -186,26 +219,26 @@ export async function POST(req: NextRequest) {
 export async function DELETE(req: NextRequest) {
   try {
     const user = await verifyRequest(req);
-    const id = req.nextUrl.searchParams.get("id")?.trim();
-    const vault = await getUserByokVault(user.ownerId);
-
-    const removed = id ? vault.providers.filter((p) => p.id === id) : vault.providers;
-    vault.providers = id ? vault.providers.filter((p) => p.id !== id) : [];
-    if (vault.providers.length === 0) {
-      vault.mode = "platform";
-      vault.activePersonalProviderId = undefined;
-    } else if (!vault.providers.some((p) => p.id === vault.activePersonalProviderId)) {
-      vault.activePersonalProviderId = vault.providers[0].id;
+    const keyId = req.nextUrl.searchParams.get("id")?.trim();
+    if (!keyId) {
+      return NextResponse.json({ error: "Key id is required." }, { status: 400 });
     }
 
-    await saveUserByokVault(user.ownerId, vault);
-    await logUserKeyEvent(user.ownerId, "personal_key_removed", {
-      count: removed.length,
-      providers: removed.map((r) => r.provider),
-    });
+    await deleteUserAiKey(user.ownerId, keyId);
+    const remaining = await listUserAiKeys(user.ownerId);
+    const cur = await getUserAiSettings(user.ownerId);
+    if (cur.activeKeyId === keyId || remaining.length === 0) {
+      await saveUserAiSettings(user.ownerId, {
+        mode: remaining.length > 0 && cur.mode === "byok" ? "byok" : "system_auto",
+        activeKeyId: remaining[0]?.id ?? null,
+        activeProvider: remaining[0]?.provider ?? null,
+        activeModel: remaining[0]?.models[0]?.id ?? null,
+      });
+    }
 
-    const state = await getUserByokPublicState(user.ownerId, user.email);
-    return NextResponse.json({ state }, { headers: { "Cache-Control": "no-store" } });
+    return NextResponse.json(await buildPublicUserState(user.ownerId), {
+      headers: { "Cache-Control": "private, no-store, max-age=0" },
+    });
   } catch (err) {
     return handleApiError(err);
   }

@@ -59,6 +59,11 @@ export type Database = {
       background_jobs: LooseTable;
       admin_accounts: LooseTable;
       admin_login_attempts: LooseTable;
+      admin_ai_settings: LooseTable;
+      admin_ai_keys: LooseTable;
+      user_ai_settings: LooseTable;
+      user_ai_keys: LooseTable;
+      ai_execution_logs: LooseTable;
     };
     views: Record<string, unknown>;
     functions: Record<string, unknown>;

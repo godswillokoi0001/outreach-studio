@@ -1,12 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { Type } from "@google/genai";
 import { handleApiError } from "@/lib/api-helpers";
-import { resolveAiConfigForRequest } from "@/lib/ai/context";
 import { buildOrchestratedSystemPrompt, stripUnresolvedPlaceholders } from "@/lib/ai/orchestrator";
-import { providerJSON } from "@/lib/ai/chat";
+import { LLMGateway } from "@/lib/llm/gateway";
 import { verifyRequest } from "@/lib/server-auth";
 
 export const dynamic = "force-dynamic";
+export const maxDuration = 60;
 
 const MAX_BODY = 8_000;
 
@@ -47,14 +47,6 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const aiConfig = await resolveAiConfigForRequest(req);
-    if (!aiConfig) {
-      return NextResponse.json(
-        { error: "Connect an AI provider in Settings before asking for a subject." },
-        { status: 400 },
-      );
-    }
-
     const taskInstructions = [
       "Suggest exactly three subject lines following Module 3 Subject Line Architecture (2-5 words, under 40 chars preferred, all-lowercase or natural sentence case, zero emojis, zero clickbait, zero ALL CAPS, zero exclamation marks).",
       "Every subject must stay strictly grounded in the message: never invent offers, numbers, or urgency, and never include raw {{...}} tags.",
@@ -73,9 +65,12 @@ export async function POST(req: NextRequest) {
       taskInstructions,
     });
 
-    const result = await providerJSON<{ subjects?: unknown }>(aiConfig, {
-      system: orchestrated.system,
-      user: `MESSAGE\n${text}`,
+    const { data: result } = await LLMGateway.completeJSON<{ subjects?: unknown }>({
+      ownerId: user.ownerId,
+      taskType: "fast",
+      feature: "subject",
+      systemPrompt: orchestrated.system,
+      messages: [{ role: "user", content: `MESSAGE\n${text}` }],
       schema: {
         type: Type.OBJECT,
         properties: {

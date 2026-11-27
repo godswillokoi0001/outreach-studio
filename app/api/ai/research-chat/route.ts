@@ -1,11 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { handleApiError } from "@/lib/api-helpers";
-import { resolveAiConfigForRequest, runWithAiConfig } from "@/lib/ai/context";
+import { LLMGateway } from "@/lib/llm/gateway";
 import { verifyRequest } from "@/lib/server-auth";
-import { geminiJSON } from "@/lib/gemini";
 import { Type, type Schema } from "@google/genai";
 
 export const dynamic = "force-dynamic";
+export const maxDuration = 60;
 
 interface ResearchChatRequest {
   prospect: Record<string, unknown>;
@@ -42,8 +42,7 @@ const RESPONSE_SCHEMA: Schema = {
 
 export async function POST(req: NextRequest) {
   try {
-    await verifyRequest(req);
-    const aiConfig = await resolveAiConfigForRequest(req);
+    const authUser = await verifyRequest(req);
     const body = (await req.json()) as ResearchChatRequest;
 
     if (!body.prospect || !body.question) {
@@ -72,14 +71,14 @@ QUESTION: ${body.question}
 
 Answer based ONLY on the research data above.`;
 
-    const result = await runWithAiConfig(aiConfig, () =>
-      geminiJSON<ResearchChatResponse>({
-        system,
-        user,
-        schema: RESPONSE_SCHEMA,
-        model: body.model,
-      }),
-    );
+    const { data: result } = await LLMGateway.completeJSON<ResearchChatResponse>({
+      ownerId: authUser.ownerId,
+      taskType: "balanced",
+      feature: "research_chat",
+      systemPrompt: system,
+      messages: [{ role: "user", content: user }],
+      schema: RESPONSE_SCHEMA,
+    });
 
     return NextResponse.json(result);
   } catch (err) {

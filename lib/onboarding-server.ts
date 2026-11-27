@@ -1,5 +1,6 @@
-import { geminiJSON } from "./gemini";
 import { Type, type Schema } from "@google/genai";
+import { getActiveOwnerAiContext } from "./ai/context";
+import { LLMGateway } from "./llm/gateway";
 import { isFetchableUrl } from "./outreach-utils";
 import {
   KB_SECTION_TEMPLATES,
@@ -120,7 +121,7 @@ export async function scanWebsiteForOnboardingServer(rawUrl: string, model?: str
     required: ["businessName", "description", "industry", "services", "offer", "location"],
   };
 
-  const data = await geminiJSON<{
+  const { data } = await LLMGateway.completeJSON<{
     businessName: string;
     description: string;
     industry: string;
@@ -128,12 +129,15 @@ export async function scanWebsiteForOnboardingServer(rawUrl: string, model?: str
     offer: string;
     location: string;
   }>({
-    system: `Extract factual business profile information strictly from the website text provided.
+    ownerId: getActiveOwnerAiContext()?.ownerId || "anonymous",
+    taskType: "balanced",
+    feature: "onboarding_scan",
+    systemPrompt: `Extract factual business profile information strictly from the website text provided.
 NEVER invent or guess anything not explicitly stated on the page. If a field is not stated, return an empty string "" or [].`,
-    user: `Website URL: ${url}\n\nVisible Website Text:\n${pageText}`,
+    messages: [{ role: "user", content: `Website URL: ${url}\n\nVisible Website Text:\n${pageText}` }],
     schema: SCAN_SCHEMA,
-    model,
   });
+  void model;
 
   const socials = {
     linkedin: findSocial(/linkedin\.com/i),
@@ -185,17 +189,25 @@ export async function improveAnswerServer(input: {
     required: ["improved"],
   };
 
-  return geminiJSON<{ improved: string }>({
-    system: `You are a sharp B2B messaging editor.
+  const { data } = await LLMGateway.completeJSON<{ improved: string }>({
+    ownerId: getActiveOwnerAiContext()?.ownerId || "anonymous",
+    taskType: "balanced",
+    feature: "onboarding_improve",
+    systemPrompt: `You are a sharp B2B messaging editor.
 Polish the user's draft answer to make it clearer, more specific, and better structured for an AI Knowledge Base.
 CRITICAL RULE: Use ONLY facts, services, numbers, and claims the user already provided. NEVER invent new metrics, pricing, clients, or guarantees.`,
-    user: `Question: ${input.questionTitle}
+    messages: [
+      {
+        role: "user",
+        content: `Question: ${input.questionTitle}
 Business context: ${input.businessContext || "Not specified"}
 User's current answer:
 ${input.answer}`,
+      },
+    ],
     schema: IMPROVE_SCHEMA,
-    model: input.model,
   });
+  return data;
 }
 
 export async function generateKnowledgeBaseServer(input: {
@@ -239,16 +251,23 @@ ${KB_SECTION_TEMPLATES.map((t) => `- key: "${t.key}", title: "${t.title}"`).join
 3. Where information for a section or sub-detail was skipped or left blank, write "Not provided" explicitly and list the missing detail in that section's missingGaps array AND in overallMissingGaps.
 4. Format each section's content cleanly in readable Markdown bullets or concise paragraphs.`;
 
-  const data = await geminiJSON<{
+  const { data } = await LLMGateway.completeJSON<{
     sections: { key: string; title: string; content: string; missingGaps: string[] }[];
     overallMissingGaps: string[];
   }>({
-    system,
-    user: `Today: ${today}\nOnboarding Answers JSON:\n${JSON.stringify(input.answers, null, 2)}${
-      input.extraContext ? `\n\nSupporting Website / Document Context (use strictly if consistent with user's answers):\n${input.extraContext.slice(0, 5000)}` : ""
-    }`,
+    ownerId: getActiveOwnerAiContext()?.ownerId || "anonymous",
+    taskType: "smart",
+    feature: "onboarding_kb_compile",
+    systemPrompt: system,
+    messages: [
+      {
+        role: "user",
+        content: `Today: ${today}\nOnboarding Answers JSON:\n${JSON.stringify(input.answers, null, 2)}${
+          input.extraContext ? `\n\nSupporting Website / Document Context (use strictly if consistent with user's answers):\n${input.extraContext.slice(0, 5000)}` : ""
+        }`,
+      },
+    ],
     schema: KB_SCHEMA,
-    model: input.model,
   });
 
   const nowIso = new Date().toISOString();
@@ -293,18 +312,26 @@ export async function regenerateSectionServer(input: {
     required: ["suggestedContent"],
   };
 
-  return geminiJSON<{ suggestedContent: string }>({
-    system: `You rewrite and polish a single Knowledge Base section.
+  const { data } = await LLMGateway.completeJSON<{ suggestedContent: string }>({
+    ownerId: getActiveOwnerAiContext()?.ownerId || "anonymous",
+    taskType: "balanced",
+    feature: "onboarding_regen_section",
+    systemPrompt: `You rewrite and polish a single Knowledge Base section.
 Use ONLY truthful facts already present in the current section text, onboarding answers, or workspace knowledge.
 NEVER invent statistics, metrics, guarantees, or claims. Return clear, well-structured Markdown.`,
-    user: `Section Title: ${input.sectionTitle}
+    messages: [
+      {
+        role: "user",
+        content: `Section Title: ${input.sectionTitle}
 Current Content:
 ${input.currentContent}
 
 ${input.userInstruction ? `User's specific request for this rewrite: ${input.userInstruction}\n` : ""}
 Additional Workspace Context:
 ${input.answers ? JSON.stringify(input.answers).slice(0, 4000) : input.knowledgeDigest?.slice(0, 4000) || "None"}`,
+      },
+    ],
     schema: REGEN_SCHEMA,
-    model: input.model,
   });
+  return data;
 }

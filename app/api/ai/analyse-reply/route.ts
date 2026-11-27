@@ -1,22 +1,22 @@
 import { NextRequest, NextResponse } from "next/server";
 import { handleApiError } from "@/lib/api-helpers";
-import { resolveAiConfigForRequest, runWithAiConfig } from "@/lib/ai/context";
+import { runWithOwnerAiContext } from "@/lib/ai/context";
 import { verifyRequest } from "@/lib/server-auth";
 import { analyseReplyServer } from "@/lib/intelligence";
 import { findCancellableFollowupMessageIds } from "@/lib/guardrails";
 import { supabaseServer } from "@/lib/supabase-server";
 import type { Lead, Message, Settings } from "@/lib/types";
 
+export const maxDuration = 60;
+
 export async function POST(req: NextRequest) {
   try {
     const user = await verifyRequest(req);
-    const aiConfig = await resolveAiConfigForRequest(req);
     const body = (await req.json()) as {
       replyText?: string;
       lead?: Lead;
       settings?: Settings;
       knowledge?: string;
-      model?: string;
       threadMessages?: Message[];
       applyHooks?: boolean;
     };
@@ -41,13 +41,13 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    const analysis = await runWithAiConfig(aiConfig, () =>
+    const analysis = await runWithOwnerAiContext({ ownerId: user.ownerId, feature: "analyse_reply" }, () =>
       analyseReplyServer(
         String(body.replyText ?? ""),
         body.lead!,
         body.settings!,
         body.knowledge ?? "",
-        body.model ?? body.settings!.model,
+        undefined,
         {
           ownerId: user.ownerId,
           threadMessages,

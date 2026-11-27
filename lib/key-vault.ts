@@ -12,19 +12,44 @@ const ENC_PREFIX = "enc:v1:";
 /**
  * Derives a deterministic 32-byte AES-256 encryption key from server secrets.
  * Never exposed to browsers or returned in logs.
+ * Fails loudly in production if ENCRYPTION_KEY is missing so keys are never
+ * encrypted with a weak or hardcoded fallback secret.
  */
 function vaultMasterKey(): Buffer {
-  const raw =
+  const configured =
+    process.env.ENCRYPTION_KEY?.trim() ||
     process.env.KEY_ENCRYPTION_SECRET?.trim() ||
+    process.env.TOKEN_ENCRYPTION_KEY?.trim();
+
+  if (configured) {
+    return createHash("sha256").update(`knowrevo-vault:${configured}`).digest();
+  }
+
+  if (process.env.NODE_ENV === "production") {
+    throw new Error(
+      "ENCRYPTION_KEY environment variable is required in production to encrypt/decrypt API keys.",
+    );
+  }
+
+  const devSecret =
     process.env.SUPABASE_SERVICE_ROLE_KEY?.trim() ||
-    process.env.GEMINI_API_KEY?.trim() ||
-    "knowrevo-dev-fallback-vault-secret";
-  return createHash("sha256").update(`knowrevo-vault:${raw}`).digest();
+    "knowrevo-dev-local-vault-key";
+  return createHash("sha256").update(`knowrevo-vault:${devSecret}`).digest();
+}
+
+function legacyVaultMasterKey(): Buffer | null {
+  const legacy =
+    process.env.SUPABASE_SERVICE_ROLE_KEY?.trim() ||
+    process.env.GEMINI_API_KEY?.trim();
+  if (!legacy) return null;
+  return createHash("sha256").update(`knowrevo-vault:${legacy}`).digest();
 }
 
 function hmacSigningKey(): Buffer {
   const raw =
+    process.env.ENCRYPTION_KEY?.trim() ||
     process.env.KEY_ENCRYPTION_SECRET?.trim() ||
+    process.env.TOKEN_ENCRYPTION_KEY?.trim() ||
     process.env.SUPABASE_SERVICE_ROLE_KEY?.trim() ||
     "knowrevo-dev-hmac-secret";
   return createHash("sha256").update(`knowrevo-hmac:${raw}`).digest();
@@ -48,8 +73,7 @@ export function decryptSecret(stored: string): string {
   const clean = stored.trim();
   if (!clean) return "";
   if (!clean.startsWith(ENC_PREFIX)) {
-    // Reject unencrypted secret unexpectedly stored directly unless migrating legacy value explicitly
-    return clean;
+    throw new Error("Encrypted key format is invalid (missing AES-GCM prefix).");
   }
 
   const parts = clean.slice(ENC_PREFIX.length).split(":");
@@ -62,9 +86,24 @@ export function decryptSecret(stored: string): string {
   const tag = Buffer.from(tagB64, "base64");
   const data = Buffer.from(dataB64, "base64");
 
-  const decipher = createDecipheriv("aes-256-gcm", vaultMasterKey(), iv);
-  decipher.setAuthTag(tag);
-  return Buffer.concat([decipher.update(data), decipher.final()]).toString("utf8");
+  const primaryKey = vaultMasterKey();
+  try {
+    const decipher = createDecipheriv("aes-256-gcm", primaryKey, iv);
+    decipher.setAuthTag(tag);
+    return Buffer.concat([decipher.update(data), decipher.final()]).toString("utf8");
+  } catch (err) {
+    const fallbackKey = legacyVaultMasterKey();
+    if (fallbackKey && !fallbackKey.equals(primaryKey)) {
+      try {
+        const legacyDecipher = createDecipheriv("aes-256-gcm", fallbackKey, iv);
+        legacyDecipher.setAuthTag(tag);
+        return Buffer.concat([legacyDecipher.update(data), legacyDecipher.final()]).toString("utf8");
+      } catch {
+        /* fall through to original error */
+      }
+    }
+    throw err;
+  }
 }
 
 export function maskSecret(raw: string): string {

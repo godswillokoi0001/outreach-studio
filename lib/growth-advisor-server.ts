@@ -1,5 +1,6 @@
 import { buildOrchestratedSystemPrompt, stripUnresolvedPlaceholders } from "./ai/orchestrator";
-import { geminiGroundedJSON } from "./gemini";
+import { getActiveOwnerAiContext } from "./ai/context";
+import { LLMGateway } from "./llm/gateway";
 import {
   type ExecutedCampaignBlueprint,
   type ExecutedProspect,
@@ -139,7 +140,8 @@ ${
 
 Generate 6 to 8 high-precision, diverse recommendations covering location, niche, messaging, channels_timing, and offer_strategy.`;
 
-  const { data, groundingUrls } = await geminiGroundedJSON<{
+  void input.model;
+  const { data, groundingUrls } = await LLMGateway.completeGroundedJSON<{
     overallStrategy?: string;
     recommendations?: Record<string, unknown>[];
     postAnalysisInsights?: {
@@ -148,9 +150,11 @@ Generate 6 to 8 high-precision, diverse recommendations covering location, niche
       nextMoves?: unknown[];
     };
   }>({
-    system: orchestrated.system,
-    user,
-    model: input.model,
+    ownerId: input.ownerId || getActiveOwnerAiContext()?.ownerId || "anonymous",
+    taskType: "smart",
+    feature: "growth_advisor",
+    systemPrompt: orchestrated.system,
+    messages: [{ role: "user", content: user }],
   });
 
   const recs: GrowthRecommendation[] = (Array.isArray(data.recommendations) ? data.recommendations : [])
@@ -292,7 +296,8 @@ ${targetContext}
 
 Output strictly JSON with keys: campaignName, targetAudience, targetLocation, targetIndustry, messagingAngle, hook, subjectLine, sampleEmailBody, channel, schedule { sendDays, windowStart, windowEnd, followupDays, dailyLimit }, goal, complianceChecklist[], prospects[].`;
 
-  const { data, groundingUrls } = await geminiGroundedJSON<{
+  void input.model;
+  const { data, groundingUrls } = await LLMGateway.completeGroundedJSON<{
     campaignName?: string;
     targetAudience?: string;
     targetLocation?: string;
@@ -313,9 +318,11 @@ Output strictly JSON with keys: campaignName, targetAudience, targetLocation, ta
     complianceChecklist?: unknown[];
     prospects?: Record<string, unknown>[];
   }>({
-    system: orchestrated.system,
-    user,
-    model: input.model,
+    ownerId: input.ownerId || getActiveOwnerAiContext()?.ownerId || "anonymous",
+    taskType: "smart",
+    feature: "growth_execute",
+    systemPrompt: orchestrated.system,
+    messages: [{ role: "user", content: user }],
   });
 
   const existingSet = new Set(input.existingEmails.map((e) => e.trim().toLowerCase()).filter(Boolean));

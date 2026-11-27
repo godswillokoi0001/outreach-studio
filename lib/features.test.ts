@@ -19,7 +19,22 @@ import {
   evaluateProfileCompleteness,
   hydrateGrowthProfileFromOnboarding,
 } from "./growth-advisor";
-import { generateTotpAt, generateTotpSecret, verifyTotpCode } from "./key-vault";
+import { generateTotpAt, generateTotpSecret, verifyTotpCode, encryptSecret, decryptSecret } from "./key-vault";
+import { LLMGateway, LLMGatewayError } from "./llm/gateway";
+import {
+  clearRouterStateForTests,
+  evaluateKeyHeadroom,
+  rankPoolCandidates,
+  recordCandidateFailure,
+  recordKeyUsageHit,
+} from "./llm/router";
+import { GatewayProviderError } from "./llm/providers";
+import {
+  encryptGatewayKey,
+  resetGatewayCachesForTests,
+  seedGatewayCachesForTests,
+} from "./llm/store";
+import type { AdminAiKeyRecord, AdminAiSettings, UserAiKeyRecord } from "./llm/types";
 import { DEFAULT_ONBOARDING_ANSWERS } from "./onboarding";
 import { requireAdmin } from "./platform/admin-auth";
 import { hashAdminPassword, verifyAdminPassword } from "./platform/admin-credentials";
@@ -898,5 +913,508 @@ test("cross-user browser storage cleanup clears account data on account switch w
     assert.equal(localMap.get("knowrevo:theme"), "dark");
   } finally {
     (globalThis as { window?: unknown }).window = prevWindow;
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Phase 5: Unified Multi-Key LLM Gateway & Bulletproof Model Switching Tests
+// ---------------------------------------------------------------------------
+
+function makeSampleAdminSettings(overrides: Partial<AdminAiSettings> = {}): AdminAiSettings {
+  return {
+    id: "default",
+    masterMode: "auto",
+    strategy: "balanced",
+    fallbackChain: [],
+    updatedAt: new Date().toISOString(),
+    ...overrides,
+  };
+}
+
+function makeSampleAdminKey(
+  id: string,
+  provider: AdminAiKeyRecord["provider"],
+  plaintextKey: string,
+  overrides: Partial<AdminAiKeyRecord> = {},
+): AdminAiKeyRecord {
+  const { encryptedKey, maskedKey } = encryptGatewayKey(plaintextKey);
+  const now = new Date().toISOString();
+  return {
+    id,
+    provider,
+    label: `${provider}-${id}`,
+    encryptedKey,
+    maskedKey,
+    accountId: null,
+    baseUrl: null,
+    enabled: true,
+    models: [
+      {
+        id: provider === "google" ? "gemini-2.5-flash" : `${provider}-default-model`,
+        displayName: `${provider} Default`,
+        enabled: true,
+        seats: ["smart", "balanced", "fast"],
+        capabilities: {
+          json: true,
+          tools: true,
+          vision: false,
+          reasoning: true,
+          grounding: provider === "google",
+        },
+      },
+    ],
+    rpmLimit: 15,
+    rpdLimit: 1500,
+    healthStatus: "healthy",
+    cooldownUntil: null,
+    cooldownStep: 0,
+    lastError: null,
+    lastCheckedAt: now,
+    createdAt: now,
+    updatedAt: now,
+    ...overrides,
+  };
+}
+
+test("BYOK mode switches models immediately across task seats and enforces strict tenant isolation", async () => {
+  const prevFetch = globalThis.fetch;
+  const calls: { url: string; model?: string; auth?: string }[] = [];
+
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = typeof input === "string" ? input : input.toString();
+    const rawBody = typeof init?.body === "string" ? init.body : "{}";
+    const body = JSON.parse(rawBody) as { model?: string };
+    const headers = (init?.headers ?? {}) as Record<string, string>;
+    calls.push({ url, model: body.model, auth: headers.Authorization || headers.authorization });
+
+    if (url.includes("generativelanguage.googleapis.com")) {
+      return new Response(
+        JSON.stringify({
+          candidates: [{ content: { parts: [{ text: JSON.stringify({ engine: "google-byok", ok: true }) }] } }],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }
+
+    return new Response(
+      JSON.stringify({
+        choices: [{ message: { content: JSON.stringify({ engine: "openai-byok", model: body.model }) } }],
+      }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    );
+  }) as typeof fetch;
+
+  try {
+    resetGatewayCachesForTests();
+    clearRouterStateForTests();
+
+    const ownerA = "owner-byok-a";
+    const ownerB = "owner-byok-b";
+    const keyGoogle = encryptGatewayKey("AIzaTestGoogleKey12345");
+    const keyOpenAi = encryptGatewayKey("sk-TestOpenAiKey12345");
+    const now = new Date().toISOString();
+
+    const googleRec: UserAiKeyRecord = {
+      id: "ukey_google",
+      ownerId: ownerA,
+      provider: "google",
+      label: "Google BYOK",
+      encryptedKey: keyGoogle.encryptedKey,
+      maskedKey: keyGoogle.maskedKey,
+      models: [
+        {
+          id: "gemini-2.5-pro",
+          displayName: "Gemini 2.5 Pro",
+          enabled: true,
+          seats: ["smart", "balanced", "fast"],
+          capabilities: { json: true, tools: true, vision: true, reasoning: true, grounding: true },
+        },
+      ],
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    const openAiRec: UserAiKeyRecord = {
+      id: "ukey_openai",
+      ownerId: ownerA,
+      provider: "openai",
+      label: "OpenAI BYOK",
+      encryptedKey: keyOpenAi.encryptedKey,
+      maskedKey: keyOpenAi.maskedKey,
+      models: [
+        {
+          id: "gpt-4o-mini",
+          displayName: "GPT-4o Mini",
+          enabled: true,
+          seats: ["smart", "balanced", "fast"],
+          capabilities: { json: true, tools: true, vision: true, reasoning: false },
+        },
+      ],
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    // Seed Owner A on Google gemini-2.5-pro, Owner B on System Auto (Groq)
+    seedGatewayCachesForTests({
+      adminSettings: makeSampleAdminSettings(),
+      adminKeys: [makeSampleAdminKey("adm_sys", "groq", "gsk_AdminFallbackKey99")],
+      userSettings: {
+        [ownerA]: {
+          ownerId: ownerA,
+          mode: "byok",
+          activeKeyId: googleRec.id,
+          activeProvider: "google",
+          activeModel: "gemini-2.5-pro",
+          fallbackToSystemAuto: false,
+          updatedAt: now,
+        },
+        [ownerB]: {
+          ownerId: ownerB,
+          mode: "system_auto",
+          activeKeyId: null,
+          activeProvider: null,
+          activeModel: null,
+          fallbackToSystemAuto: false,
+          updatedAt: now,
+        },
+      },
+      userKeys: {
+        [ownerA]: [googleRec, openAiRec],
+        [ownerB]: [],
+      },
+    });
+
+    // 1. Owner A runs "smart" seat (research) -> strictly hits gemini-2.5-pro
+    const res1 = await LLMGateway.completeJSON<{ engine: string }>({
+      ownerId: ownerA,
+      taskType: "smart",
+      feature: "research",
+      messages: [{ role: "user", content: "Research Acme" }],
+    });
+    assert.equal(res1.receipt.actualProvider, "google");
+    assert.equal(res1.receipt.actualModel, "gemini-2.5-pro");
+    assert.ok(calls[0].url.includes("gemini-2.5-pro"));
+
+    // 2. Owner A switches immediately to OpenAI gpt-4o-mini
+    seedGatewayCachesForTests({
+      userSettings: {
+        [ownerA]: {
+          ownerId: ownerA,
+          mode: "byok",
+          activeKeyId: openAiRec.id,
+          activeProvider: "openai",
+          activeModel: "gpt-4o-mini",
+          fallbackToSystemAuto: false,
+          updatedAt: new Date().toISOString(),
+        },
+      },
+    });
+
+    // Run both "smart" and "balanced" seats -> BOTH execute on gpt-4o-mini immediately
+    const res2 = await LLMGateway.completeJSON<{ engine: string; model: string }>({
+      ownerId: ownerA,
+      taskType: "smart",
+      feature: "research",
+      messages: [{ role: "user", content: "Research Acme" }],
+    });
+    const res3 = await LLMGateway.completeJSON<{ engine: string; model: string }>({
+      ownerId: ownerA,
+      taskType: "balanced",
+      feature: "email_compose",
+      messages: [{ role: "user", content: "Draft email" }],
+    });
+    assert.equal(res2.receipt.actualProvider, "openai");
+    assert.equal(res2.receipt.actualModel, "gpt-4o-mini");
+    assert.equal(res3.receipt.actualProvider, "openai");
+    assert.equal(res3.receipt.actualModel, "gpt-4o-mini");
+
+    // 3. Owner B in system_auto never touches Owner A's BYOK key
+    const resB = await LLMGateway.completeJSON<{ model: string }>({
+      ownerId: ownerB,
+      taskType: "fast",
+      feature: "reply_classify",
+      messages: [{ role: "user", content: "Classify" }],
+    });
+    assert.equal(resB.receipt.actualProvider, "groq");
+    assert.equal(calls.at(-1)?.auth, "Bearer gsk_AdminFallbackKey99");
+
+    // 4. When BYOK fails and fallbackToSystemAuto is OFF, throws LLMGatewayError without silently switching
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ error: { message: "Invalid API key" } }), {
+        status: 401,
+        headers: { "Content-Type": "application/json" },
+      })) as typeof fetch;
+
+    await assert.rejects(
+      () =>
+        LLMGateway.complete({
+          ownerId: ownerA,
+          taskType: "balanced",
+          feature: "email_compose",
+          messages: [{ role: "user", content: "Hello" }],
+        }),
+      (err: unknown) =>
+        err instanceof LLMGatewayError &&
+        err.code === "BYOK_CALL_FAILED" &&
+        err.canFallbackToSystemAuto === true,
+    );
+  } finally {
+    globalThis.fetch = prevFetch;
+    resetGatewayCachesForTests();
+    clearRouterStateForTests();
+  }
+});
+
+test("Admin AUTO mode fails over silently on 429 and escalates cooldowns (2m -> 10m -> 1h -> 24h)", async () => {
+  const prevFetch = globalThis.fetch;
+  const hitProviders: string[] = [];
+
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = typeof input === "string" ? input : input.toString();
+    if (url.includes("api.groq.com")) {
+      hitProviders.push("groq");
+      return new Response(JSON.stringify({ error: { message: "Rate limit exceeded" } }), {
+        status: 429,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    hitProviders.push("cerebras");
+    return new Response(
+      JSON.stringify({ choices: [{ message: { content: "Failover succeeded cleanly" } }] }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    );
+  }) as typeof fetch;
+
+  try {
+    resetGatewayCachesForTests();
+    clearRouterStateForTests();
+
+    const groqKey = makeSampleAdminKey("adm_groq", "groq", "gsk_PrimaryLimited", {
+      models: [
+        {
+          id: "llama-3.3-70b-versatile",
+          displayName: "Llama 3.3 70B",
+          enabled: true,
+          seats: ["fast", "balanced", "smart"],
+          capabilities: { json: true, tools: true, vision: false, reasoning: false },
+        },
+      ],
+    });
+    const cerebrasKey = makeSampleAdminKey("adm_cerebras", "cerebras", "csk_HealthyBackup", {
+      models: [
+        {
+          id: "llama-3.3-70b",
+          displayName: "Llama 3.3 70B Cerebras",
+          enabled: true,
+          seats: ["fast", "balanced", "smart"],
+          capabilities: { json: true, tools: true, vision: false, reasoning: false },
+        },
+      ],
+    });
+
+    seedGatewayCachesForTests({
+      adminSettings: makeSampleAdminSettings({
+        masterMode: "auto",
+        strategy: "fastest",
+        fallbackChain: [
+          { provider: "groq", model: "llama-3.3-70b-versatile" },
+          { provider: "cerebras", model: "llama-3.3-70b" },
+        ],
+      }),
+      adminKeys: [groqKey, cerebrasKey],
+      userSettings: {
+        "auto-user": {
+          ownerId: "auto-user",
+          mode: "system_auto",
+          fallbackToSystemAuto: false,
+          updatedAt: new Date().toISOString(),
+        },
+      },
+      userKeys: { "auto-user": [] },
+    });
+
+    // Call #1 hits groq (429) -> fails over silently to cerebras
+    const res1 = await LLMGateway.complete({
+      ownerId: "auto-user",
+      taskType: "fast",
+      feature: "test",
+      messages: [{ role: "user", content: "Ping" }],
+    });
+    assert.equal(res1.receipt.actualProvider, "cerebras");
+    assert.equal(res1.receipt.fallbackUsed, true);
+    assert.equal(res1.receipt.fallbackHops, 1);
+    assert.deepEqual(hitProviders, ["groq", "cerebras"]);
+    assert.equal(groqKey.healthStatus, "cooldown");
+
+    // Call #2 skips groq completely because it is now in cooldown
+    hitProviders.length = 0;
+    const res2 = await LLMGateway.complete({
+      ownerId: "auto-user",
+      taskType: "fast",
+      feature: "test",
+      messages: [{ role: "user", content: "Ping 2" }],
+    });
+    assert.equal(res2.receipt.actualProvider, "cerebras");
+    assert.deepEqual(hitProviders, ["cerebras"]);
+
+    // Verify escalating cooldown ladder: 2m -> 10m -> 1h -> 24h
+    const testKey = makeSampleAdminKey("adm_ladder", "openai", "sk-LadderTest123");
+    const rateErr = new GatewayProviderError("429 busy", { status: 429, rateLimited: true });
+    const f1 = recordCandidateFailure(testKey, "m1", rateErr);
+    const f2 = recordCandidateFailure(testKey, "m1", rateErr);
+    const f3 = recordCandidateFailure(testKey, "m1", rateErr);
+    const f4 = recordCandidateFailure(testKey, "m1", rateErr);
+    assert.equal(f1.cooldownMs, 2 * 60_000);
+    assert.equal(f2.cooldownMs, 10 * 60_000);
+    assert.equal(f3.cooldownMs, 60 * 60_000);
+    assert.equal(f4.cooldownMs, 24 * 60 * 60_000);
+
+    // 401 benches the key as invalid immediately
+    const authErr = new GatewayProviderError("Invalid key", { status: 401, authFailed: true });
+    const fAuth = recordCandidateFailure(testKey, "m1", authErr);
+    assert.equal(fAuth.healthStatus, "invalid");
+    assert.equal(testKey.healthStatus, "invalid");
+  } finally {
+    globalThis.fetch = prevFetch;
+    resetGatewayCachesForTests();
+    clearRouterStateForTests();
+  }
+});
+
+test("Proactive 85% RPM headroom steering routes away before hitting 429", () => {
+  clearRouterStateForTests();
+  const keyBusy = makeSampleAdminKey("adm_busy", "groq", "gsk_BusyKey111", { rpmLimit: 10 });
+  const keyFresh = makeSampleAdminKey("adm_fresh", "cerebras", "csk_FreshKey222", { rpmLimit: 10 });
+
+  // Hit keyBusy 9 times out of 10 RPM (90% >= 85% threshold)
+  for (let i = 0; i < 9; i += 1) {
+    recordKeyUsageHit(keyBusy.id);
+  }
+
+  const headroom = evaluateKeyHeadroom(keyBusy);
+  assert.equal(headroom.rpmUsed, 9);
+  assert.equal(headroom.allowed, true);
+  assert.equal(headroom.lowHeadroom, true);
+
+  const ranked = rankPoolCandidates({
+    keys: [keyBusy, keyFresh],
+    settings: makeSampleAdminSettings({
+      masterMode: "auto",
+      strategy: "balanced",
+      // Even with fallbackChain listing keyBusy first, healthy headroom keyFresh wins cleanly!
+      fallbackChain: [{ provider: "groq", model: keyBusy.models[0].id }],
+    }),
+    taskType: "balanced",
+  });
+
+  assert.equal(ranked[0].key.id, keyFresh.id);
+  assert.equal(ranked[0].lowHeadroom, false);
+  clearRouterStateForTests();
+});
+
+test("completeGroundedJSON prioritizes Google Search grounding when available and degrades cleanly otherwise", async () => {
+  const prevFetch = globalThis.fetch;
+
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = typeof input === "string" ? input : input.toString();
+    if (url.includes("generativelanguage.googleapis.com")) {
+      return new Response(
+        JSON.stringify({
+          candidates: [
+            {
+              content: { parts: [{ text: JSON.stringify({ company: "Acme", verified: true }) }] },
+              groundingMetadata: {
+                groundingChunks: [{ web: { uri: "https://acme.example.com", title: "Acme Official" } }],
+              },
+            },
+          ],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }
+
+    return new Response(
+      JSON.stringify({
+        choices: [{ message: { content: JSON.stringify({ company: "Acme", verified: false }) } }],
+      }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    );
+  }) as typeof fetch;
+
+  try {
+    resetGatewayCachesForTests();
+    clearRouterStateForTests();
+
+    const nvidiaKey = makeSampleAdminKey("adm_nvidia", "nvidia", "nvapi-TestKey123");
+    const googleKey = makeSampleAdminKey("adm_google", "google", "AIzaTestKey123");
+
+    // 1. Only non-Google key in pool -> degrades cleanly without crashing, zero fabricated URLs
+    seedGatewayCachesForTests({
+      adminSettings: makeSampleAdminSettings(),
+      adminKeys: [nvidiaKey],
+      userSettings: {
+        "u-ground": {
+          ownerId: "u-ground",
+          mode: "system_auto",
+          fallbackToSystemAuto: false,
+          updatedAt: new Date().toISOString(),
+        },
+      },
+      userKeys: { "u-ground": [] },
+    });
+
+    const ungrounded = await LLMGateway.completeGroundedJSON<{ company: string }>({
+      ownerId: "u-ground",
+      taskType: "smart",
+      feature: "research",
+      messages: [{ role: "user", content: "Research Acme" }],
+    });
+    assert.equal(ungrounded.data.company, "Acme");
+    assert.equal(ungrounded.receipt.grounded, false);
+    assert.deepEqual(ungrounded.groundingUrls, []);
+
+    // 2. Google key healthy in pool alongside NVIDIA -> Google Search grounding is prioritized
+    seedGatewayCachesForTests({
+      adminKeys: [nvidiaKey, googleKey],
+    });
+
+    const grounded = await LLMGateway.completeGroundedJSON<{ company: string }>({
+      ownerId: "u-ground",
+      taskType: "smart",
+      feature: "research",
+      messages: [{ role: "user", content: "Research Acme" }],
+    });
+    assert.equal(grounded.receipt.actualProvider, "google");
+    assert.equal(grounded.receipt.grounded, true);
+    assert.equal(grounded.groundingUrls.length, 1);
+    assert.equal(grounded.groundingUrls[0].uri, "https://acme.example.com");
+  } finally {
+    globalThis.fetch = prevFetch;
+    resetGatewayCachesForTests();
+    clearRouterStateForTests();
+  }
+});
+
+test("ENCRYPTION_KEY is required in production and gateway key ciphertext never exposes plaintext", () => {
+  const prevEnv = process.env as Record<string, string | undefined>;
+  const prevNodeEnv = prevEnv.NODE_ENV;
+  const prevEnc = prevEnv.ENCRYPTION_KEY;
+
+  try {
+    prevEnv.NODE_ENV = "production";
+    delete prevEnv.ENCRYPTION_KEY;
+
+    assert.throws(() => encryptSecret("sk-secret-value-123"), /ENCRYPTION_KEY/);
+
+    prevEnv.ENCRYPTION_KEY = "unit-test-32-byte-encryption-secret-key!";
+    const { encryptedKey, maskedKey } = encryptGatewayKey("nvapi-SuperSecretTokenValue9876");
+    assert.equal(encryptedKey.includes("SuperSecretTokenValue"), false);
+    assert.equal(maskedKey.includes("SuperSecretTokenValue"), false);
+    assert.equal(decryptSecret(encryptedKey), "nvapi-SuperSecretTokenValue9876");
+  } finally {
+    if (prevNodeEnv === undefined) delete prevEnv.NODE_ENV;
+    else prevEnv.NODE_ENV = prevNodeEnv;
+    if (prevEnc === undefined) delete prevEnv.ENCRYPTION_KEY;
+    else prevEnv.ENCRYPTION_KEY = prevEnc;
   }
 });

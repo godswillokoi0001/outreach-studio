@@ -1,18 +1,18 @@
 import { NextRequest, NextResponse } from "next/server";
 import { handleApiError } from "@/lib/api-helpers";
-import { resolveAiConfigForRequest, runWithAiConfig } from "@/lib/ai/context";
 import { verifyRequest } from "@/lib/server-auth";
 import { analysePerformanceServer } from "@/lib/intelligence";
 
+export const maxDuration = 60;
+
 export async function POST(req: NextRequest) {
   try {
-    await verifyRequest(req);
-    const aiConfig = await resolveAiConfigForRequest(req);
-    const body = (await req.json()) as { metrics?: unknown; model?: string };
+    const user = await verifyRequest(req);
+    const body = (await req.json()) as { metrics?: unknown };
     if (!body.metrics) {
       return NextResponse.json({ error: "Analytics metrics payload is required." }, { status: 400 });
     }
-    const insight = await runWithAiConfig(aiConfig, () => analysePerformanceServer(body.metrics, body.model));
+    const insight = await analysePerformanceServer(body.metrics, undefined, user.ownerId);
     return NextResponse.json({ insight });
   } catch (err) {
     return handleApiError(err);

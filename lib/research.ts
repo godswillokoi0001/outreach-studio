@@ -1,7 +1,8 @@
 import { Type, type Schema } from "@google/genai";
 import { buildOrchestratedSystemPrompt } from "./ai/orchestrator";
+import { getActiveOwnerAiContext } from "./ai/context";
 import { normalizeWebsite } from "./columns";
-import { geminiJSON } from "./gemini";
+import { LLMGateway } from "./llm/gateway";
 import { isFetchableUrl } from "./outreach-utils";
 import type { Lead, ResearchResult } from "./types";
 
@@ -328,11 +329,14 @@ ${manual ? `OWNER-SUPPLIED RESEARCH (treat as reliable observations from the bus
 
 Run Workflow A (research_and_qualify) and return the complete structured JSON.`;
 
-  const result = await geminiJSON<ResearchResult>({
-    system: orchestrated.system,
-    user,
+  const ownerId = options?.ownerId ?? lead.ownerId ?? getActiveOwnerAiContext()?.ownerId ?? "anonymous";
+  const { data: result } = await LLMGateway.completeJSON<ResearchResult>({
+    ownerId,
+    taskType: "smart",
+    feature: "research",
+    systemPrompt: orchestrated.system,
+    messages: [{ role: "user", content: user }],
     schema: RESEARCH_SCHEMA,
-    model: options?.model,
   });
 
   const killSwitch = Boolean(result.kill_switch_triggered);

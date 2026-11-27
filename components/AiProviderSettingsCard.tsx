@@ -8,35 +8,68 @@ import {
   KeyRound,
   Loader2,
   ShieldCheck,
-  Sparkles,
   TestTube2,
   Trash2,
+  Zap,
 } from "lucide-react";
-import { AI_PROVIDERS, guessProviderId } from "@/lib/ai/registry";
-import type { AiProviderId } from "@/lib/ai/types";
-import { authedPost, errorMessage } from "@/lib/client";
 import { getAccessToken } from "@/lib/auth";
-import type { UserByokPublicState } from "@/lib/platform/types";
+import { authedPost, errorMessage } from "@/lib/client";
+import {
+  getProviderMeta,
+  type AiExecutionLogRecord,
+  type GatewayModelConfig,
+  type GatewayProviderId,
+  type GatewayReceipt,
+  type ProviderCatalogMeta,
+  type UserAiKeyPublic,
+  type UserAiSettings,
+} from "@/lib/llm/types";
 import { Badge, Banner, Card, Field } from "./ui";
 import { useConfirm, useToast } from "./Feedback";
+
+interface UserGatewayStatePayload {
+  settings: UserAiSettings;
+  keys: UserAiKeyPublic[];
+  catalog: ProviderCatalogMeta[];
+  recentLogs: AiExecutionLogRecord[];
+}
+
+interface VerifiedModelResult {
+  provider: GatewayProviderId;
+  providerLabel: string;
+  models: { id: string; label: string; isFreeTier?: boolean }[];
+  recommendedModel: string;
+  probe: { model: string; ms: number };
+  warning?: string;
+}
 
 export function AiProviderSettingsCard() {
   const confirmDialog = useConfirm();
   const toast = useToast();
 
-  const [state, setState] = useState<UserByokPublicState | null>(null);
+  const [state, setState] = useState<UserGatewayStatePayload | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  // Add / rotate personal key form (plaintext exists only in local component state before submit, cleared immediately!)
-  const [provider, setProvider] = useState<AiProviderId | "auto">("auto");
+  // Add personal key form
+  const [provider, setProvider] = useState<GatewayProviderId | "auto">("auto");
   const [apiKeyInput, setApiKeyInput] = useState("");
+  const [accountIdInput, setAccountIdInput] = useState("");
   const [baseUrlInput, setBaseUrlInput] = useState("");
-  const [testedModels, setTestedModels] = useState<{ id: string; label: string }[]>([]);
-  const [detectedProvider, setDetectedProvider] = useState<AiProviderId | null>(null);
+  const [freeTierOnly, setFreeTierOnly] = useState(true);
+  const [testedModels, setTestedModels] = useState<GatewayModelConfig[]>([]);
+  const [detectedProvider, setDetectedProvider] = useState<GatewayProviderId | null>(null);
   const [selectedModelInput, setSelectedModelInput] = useState("");
-  const [testNote, setTestNote] = useState<string | null>(null);
+  const [customModelInput, setCustomModelInput] = useState("");
+  const [verifyBanner, setVerifyBanner] = useState<string | null>(null);
+
+  // Live Proof Receipt from "Test Active Model"
+  const [activeProof, setActiveProof] = useState<{
+    providerLabel: string;
+    receipt: GatewayReceipt;
+    reply: string;
+  } | null>(null);
 
   const loadState = useCallback(async () => {
     setError(null);
@@ -47,9 +80,9 @@ export function AiProviderSettingsCard() {
         headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
         cache: "no-store",
       });
-      const json = (await res.json()) as { state?: UserByokPublicState; error?: string };
-      if (!res.ok) throw new Error(json.error || "Failed to load AI provider state.");
-      if (json.state) setState(json.state);
+      const json = (await res.json()) as UserGatewayStatePayload & { error?: string };
+      if (!res.ok) throw new Error(json.error || "Failed to load AI provider settings.");
+      setState(json);
     } catch (err) {
       setError(errorMessage(err));
     } finally {
@@ -62,14 +95,19 @@ export function AiProviderSettingsCard() {
     return () => window.clearTimeout(t);
   }, [loadState]);
 
-  const postAction = async (payload: Record<string, unknown>, busyKey: string, successTitle?: string) => {
+  const postAction = async (
+    payload: Record<string, unknown>,
+    busyKey: string,
+    successTitle?: string,
+  ): Promise<UserGatewayStatePayload | null> => {
     setBusy(busyKey);
     setError(null);
     try {
-      const res = await authedPost<{ state: UserByokPublicState }>("/api/account/ai-provider", payload);
-      setState(res.state);
+      const res = await authedPost<UserGatewayStatePayload>("/api/account/ai-provider", payload);
+      setState(res);
+      setActiveProof(null);
       if (successTitle) toast.success(successTitle);
-      return res.state;
+      return res;
     } catch (err) {
       const msg = errorMessage(err);
       setError(msg);
@@ -80,28 +118,40 @@ export function AiProviderSettingsCard() {
     }
   };
 
-  const handleTestPersonalKey = async () => {
+  const handleVerifyAndLoadModels = async () => {
     if (!apiKeyInput.trim()) return;
-    setBusy("test_key");
+    setBusy("verify_key");
     setError(null);
-    setTestNote(null);
+    setVerifyBanner(null);
     try {
-      const res = await authedPost<{
-        provider: AiProviderId;
-        providerLabel: string;
-        models: { id: string; label: string }[];
-        recommendedModel: string;
-        probe: { model: string; ms: number };
-      }>("/api/ai/provider", {
+      const res = await authedPost<VerifiedModelResult>("/api/ai/provider", {
         provider: provider === "auto" ? undefined : provider,
         apiKey: apiKeyInput.trim(),
+        accountId: accountIdInput.trim() || undefined,
         baseUrl: baseUrlInput.trim() || undefined,
+        freeTierOnly,
       });
+
+      const meta = getProviderMeta(res.provider);
+      const mappedModels: GatewayModelConfig[] =
+        res.models.length > 0
+          ? res.models.map((m) => ({
+              id: m.id,
+              displayName: m.label || m.id,
+              enabled: true,
+              seats: ["smart", "balanced", "fast"],
+              capabilities: { json: true, tools: true, vision: false, reasoning: true },
+              isFreeTier: m.isFreeTier,
+            }))
+          : meta.defaultModels;
+
       setDetectedProvider(res.provider);
       setProvider(res.provider);
-      setTestedModels(res.models);
-      setSelectedModelInput(res.recommendedModel || res.models[0]?.id || "");
-      setTestNote(`Verified ${res.providerLabel} key (${res.models.length} models · ${res.probe.ms}ms). Click Save key below.`);
+      setTestedModels(mappedModels);
+      setSelectedModelInput(res.recommendedModel || mappedModels[0]?.id || "");
+      setVerifyBanner(
+        `Verified ${res.providerLabel} key (${mappedModels.length} models · ${res.probe.ms}ms). Pick your exact model and click Save Key.${res.warning ? ` Note: ${res.warning}` : ""}`,
+      );
     } catch (err) {
       setError(errorMessage(err));
     } finally {
@@ -112,39 +162,38 @@ export function AiProviderSettingsCard() {
   const handleSavePersonalKey = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!apiKeyInput.trim()) return;
-    const guessed = provider === "auto" ? guessProviderId(apiKeyInput.trim()) : provider;
-    const finalProvider = detectedProvider || guessed;
-    if (!finalProvider) {
-      setError("Could not detect provider from key format. Please select the provider from the dropdown.");
-      return;
-    }
+    const chosenProvider = provider === "auto" ? detectedProvider || "google" : provider;
+    const meta = getProviderMeta(chosenProvider);
+    const chosenModel = customModelInput.trim() || selectedModelInput || testedModels[0]?.id || meta.defaultModels[0]?.id;
 
-    const saved = await postAction(
+    const updated = await postAction(
       {
-        action: "save_personal_key",
-        provider: finalProvider,
+        action: "save_key",
+        provider: chosenProvider,
         apiKey: apiKeyInput.trim(),
+        accountId: accountIdInput.trim() || undefined,
         baseUrl: baseUrlInput.trim() || undefined,
-        model: selectedModelInput || testedModels[0]?.id,
-        models: testedModels,
+        model: chosenModel,
+        models: testedModels.length > 0 ? testedModels : meta.defaultModels,
       },
       "save_key",
-      "Personal API key encrypted & saved",
+      "Personal API key encrypted & activated",
     );
 
-    if (saved) {
-      // Clear raw key from browser memory immediately after saving
+    if (updated) {
       setApiKeyInput("");
+      setAccountIdInput("");
       setBaseUrlInput("");
-      setTestNote(null);
+      setCustomModelInput("");
       setTestedModels([]);
+      setVerifyBanner(null);
     }
   };
 
   const handleDeletePersonalKey = async (id: string, label: string) => {
     const ok = await confirmDialog({
-      title: `Permanently delete your ${label} key?`,
-      message: "Your key will be deleted permanently from the encrypted server vault and new requests will switch back to platform models.",
+      title: `Delete your ${label} key?`,
+      message: "Your encrypted key will be permanently deleted from the server vault. If no other key remains, your account returns to Managed Free Engine.",
       confirmLabel: "Delete key permanently",
       tone: "bad",
     });
@@ -157,10 +206,11 @@ export function AiProviderSettingsCard() {
         method: "DELETE",
         headers: { Authorization: `Bearer ${token}` },
       });
-      const json = (await res.json()) as { state?: UserByokPublicState; error?: string };
-      if (!res.ok) throw new Error(json.error || "Could not remove key.");
-      if (json.state) setState(json.state);
-      toast.success("Personal key deleted", "Switched back to platform shared models.");
+      const json = (await res.json()) as UserGatewayStatePayload & { error?: string };
+      if (!res.ok) throw new Error(json.error || "Could not delete API key.");
+      setState(json);
+      setActiveProof(null);
+      toast.success("Key deleted permanently");
     } catch (err) {
       setError(errorMessage(err));
     } finally {
@@ -168,210 +218,266 @@ export function AiProviderSettingsCard() {
     }
   };
 
+  const handleTestActiveModel = async () => {
+    setBusy("test_active");
+    setError(null);
+    setActiveProof(null);
+    try {
+      const res = await authedPost<{
+        verified: boolean;
+        providerLabel: string;
+        receipt: GatewayReceipt;
+        reply: string;
+      }>("/api/account/ai-provider", { action: "test_active" });
+      setActiveProof({
+        providerLabel: res.providerLabel,
+        receipt: res.receipt,
+        reply: res.reply,
+      });
+      toast.success("Active model verified", `${res.providerLabel} · ${res.receipt.actualModel} (${res.receipt.latencyMs}ms)`);
+      void loadState();
+    } catch (err) {
+      const msg = errorMessage(err);
+      setError(msg);
+      toast.error("Active model check failed", msg);
+    } finally {
+      setBusy(null);
+    }
+  };
+
   if (loading) {
     return (
-      <Card title="AI Provider" sub="Loading key & model configuration…">
+      <Card title="AI Engine & Model Routing" sub="Loading active mode and keys…">
         <div className="row tiny muted" style={{ gap: 8 }}>
-          <Loader2 size={14} className="spin" /> Loading AI provider status…
+          <Loader2 size={14} className="spin" /> Loading AI engine settings…
         </div>
       </Card>
     );
   }
 
-  const activeMode = state?.mode ?? "platform";
-  const activePersonal = state?.activePersonalProvider ?? null;
+  const settings = state?.settings;
+  const mode = settings?.mode ?? "system_auto";
+  const keys = state?.keys ?? [];
+  const catalog = state?.catalog ?? [];
+  const activeKey = keys.find((k) => k.id === settings?.activeKeyId) ?? keys[0] ?? null;
+  const activeProviderMeta =
+    provider !== "auto" ? getProviderMeta(provider) : getProviderMeta("google");
+  const modelChoices =
+    testedModels.length > 0
+      ? testedModels
+      : provider !== "auto"
+        ? activeProviderMeta.defaultModels
+        : [];
 
   return (
     <Card
-      title="AI Provider"
-      sub="Choose between platform-managed shared models or your own encrypted API key."
+      title="AI Engine & API Key Mode"
+      sub="Switch cleanly between Managed Free Engine auto-routing or your own strict Bring-Your-Own-Key (BYOK) configuration."
       actions={
-        <Badge tone={activeMode === "personal" ? "ok" : "info"}>
-          {activeMode === "personal" && activePersonal
-            ? `Using your ${activePersonal.label} key (${activePersonal.maskedKey})`
-            : "Using platform key"}
+        <Badge tone={mode === "byok" && activeKey ? "ok" : "info"}>
+          {mode === "byok" && activeKey
+            ? `BYOK: ${getProviderMeta(activeKey.provider).label} · ${settings?.activeModel || activeKey.models[0]?.id}`
+            : "Managed Free Engine (Auto)"}
         </Badge>
       }
     >
-      <div className="stack" style={{ gap: 14 }}>
+      <div className="stack" style={{ gap: 16 }}>
         {error && <Banner tone="bad">{error}</Banner>}
 
-        {/* Active Mode Switcher */}
+        {/* Strict 2-Option Mode Switcher */}
         <div className="grid grid-2" style={{ gap: 10 }}>
           <button
             type="button"
             disabled={busy !== null}
-            onClick={() => void postAction({ action: "set_mode", mode: "platform" }, "mode_platform", "Switched to platform models")}
+            onClick={() =>
+              void postAction({ action: "set_mode", mode: "system_auto" }, "mode_auto", "Switched to Managed Free Engine (Auto)")
+            }
             style={{
               textAlign: "left",
               padding: 14,
               borderRadius: 10,
-              border: `1.5px solid ${activeMode === "platform" ? "var(--teal-deep, #0f766e)" : "var(--line)"}`,
-              background: activeMode === "platform" ? "var(--accent-soft, rgba(15,118,110,0.08))" : "var(--surface)",
+              border: `1.5px solid ${mode === "system_auto" ? "var(--teal-deep, #0f766e)" : "var(--line)"}`,
+              background: mode === "system_auto" ? "var(--accent-soft, rgba(15,118,110,0.08))" : "var(--surface)",
               cursor: "pointer",
             }}
           >
             <div className="row" style={{ gap: 8, marginBottom: 4 }}>
-              <Cpu size={15} style={{ color: "var(--teal-deep)" }} />
-              <span className="strong" style={{ fontSize: 13.5 }}>Use platform models</span>
-              {activeMode === "platform" && <Badge tone="ok">Active</Badge>}
+              <Zap size={15} style={{ color: "var(--teal-deep)" }} />
+              <span className="strong" style={{ fontSize: 13.5 }}>Auto (Managed Free Engine)</span>
+              {mode === "system_auto" && <Badge tone="ok">Active</Badge>}
             </div>
             <div className="tiny muted">
-              Zero setup. Runs on admin-managed shared keys and enabled models within your workspace quota.
+              Zero setup. Routes automatically across healthy free-tier keys with silent rate-limit failover.
             </div>
           </button>
 
           <button
             type="button"
-            disabled={busy !== null || !state || state.personalProviders.length === 0}
-            onClick={() => void postAction({ action: "set_mode", mode: "personal" }, "mode_personal", "Switched to your personal API key")}
+            disabled={busy !== null || keys.length === 0}
+            onClick={() =>
+              void postAction({ action: "set_mode", mode: "byok" }, "mode_byok", "Switched to your personal API key (BYOK)")
+            }
             style={{
               textAlign: "left",
               padding: 14,
               borderRadius: 10,
-              border: `1.5px solid ${activeMode === "personal" ? "var(--teal-deep, #0f766e)" : "var(--line)"}`,
-              background: activeMode === "personal" ? "var(--accent-soft, rgba(15,118,110,0.08))" : "var(--surface)",
-              cursor: state && state.personalProviders.length > 0 ? "pointer" : "not-allowed",
-              opacity: state && state.personalProviders.length === 0 ? 0.72 : 1,
+              border: `1.5px solid ${mode === "byok" ? "var(--teal-deep, #0f766e)" : "var(--line)"}`,
+              background: mode === "byok" ? "var(--accent-soft, rgba(15,118,110,0.08))" : "var(--surface)",
+              cursor: keys.length === 0 ? "not-allowed" : "pointer",
+              opacity: keys.length === 0 ? 0.65 : 1,
             }}
           >
             <div className="row" style={{ gap: 8, marginBottom: 4 }}>
-              <KeyRound size={15} style={{ color: "var(--teal-deep)" }} />
-              <span className="strong" style={{ fontSize: 13.5 }}>Use my own API key</span>
-              {activeMode === "personal" && <Badge tone="ok">Active</Badge>}
+              <KeyRound size={15} />
+              <span className="strong" style={{ fontSize: 13.5 }}>Use My Own API Key (BYOK)</span>
+              {mode === "byok" && <Badge tone="ok">Active</Badge>}
             </div>
             <div className="tiny muted">
-              Bring your own key (Anthropic, OpenAI, Gemini, OpenRouter, etc.). Does not count against platform quotas.
+              {keys.length > 0
+                ? "Strict isolation: every AI call executes only on your chosen saved key and exact model."
+                : "Save an API key below to unlock Bring-Your-Own-Key mode."}
             </div>
           </button>
         </div>
 
-        {/* Platform Mode Section */}
-        {activeMode === "platform" && state && (
-          <div
-            style={{
-              padding: 12,
-              borderRadius: 10,
-              border: "1px solid var(--line)",
-              background: "var(--surface-2)",
-            }}
-          >
-            <div className="stack" style={{ gap: 10 }}>
-              <div className="row" style={{ justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
-                <div>
-                  <div className="strong" style={{ fontSize: 13 }}>Enabled platform models</div>
-                  <div className="tiny muted">Only models enabled by your administrator are selectable here.</div>
-                </div>
-                <div className="tiny">
-                  Platform quota:{" "}
-                  <strong>
-                    {state.usageStats.platformRequestsToday}/{state.usageStats.platformDailyLimit}
-                  </strong>{" "}
-                  today ·{" "}
-                  <strong>
-                    {state.usageStats.platformRequestsMonth}/{state.usageStats.platformMonthlyLimit}
-                  </strong>{" "}
-                  this month
-                </div>
+        {/* Mandatory "Test Active Model" Live Verification Proof */}
+        <div
+          style={{
+            padding: 12,
+            borderRadius: 10,
+            border: "1px solid var(--line)",
+            background: "var(--surface)",
+          }}
+        >
+          <div className="row" style={{ justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+            <div>
+              <div className="strong" style={{ fontSize: 13 }}>Verify Active AI Execution</div>
+              <div className="tiny muted">
+                Runs a real server-side probe through the unified gateway and shows the exact provider and model that answered.
               </div>
-
-              {state.platformModels.length === 0 ? (
-                <Banner tone="warn">
-                  No platform models are currently enabled. Ask an administrator to add a platform key in the Admin
-                  Dashboard, or add your own API key below.
-                </Banner>
-              ) : (
-                <Field label="Preferred platform model (when overriding feature defaults)">
-                  <select
-                    className="input"
-                    value={
-                      state.selectedPlatformModel
-                        ? `${state.selectedPlatformModel.provider}::${state.selectedPlatformModel.model}`
-                        : ""
-                    }
-                    onChange={(e) => {
-                      const val = e.target.value;
-                      if (!val) return;
-                      const [prov, mod] = val.split("::");
-                      void postAction(
-                        { action: "select_platform_model", provider: prov, model: mod },
-                        "plat_model",
-                        "Platform model preference updated",
-                      );
-                    }}
-                  >
-                    <option value="">Use admin feature defaults automatically</option>
-                    {state.platformModels.map((m) => (
-                      <option key={`${m.provider}::${m.model}`} value={`${m.provider}::${m.model}`}>
-                        {m.providerLabel} — {m.displayName}
-                      </option>
-                    ))}
-                  </select>
-                </Field>
-              )}
             </div>
+            <button
+              type="button"
+              className="btn btn-primary btn-sm"
+              disabled={busy !== null}
+              onClick={() => void handleTestActiveModel()}
+            >
+              {busy === "test_active" ? <Loader2 size={13} className="spin" /> : <TestTube2 size={13} />}
+              Test Active Model
+            </button>
           </div>
-        )}
 
-        {/* Saved Personal Keys List */}
-        {state && state.personalProviders.length > 0 && (
-          <div className="stack" style={{ gap: 8 }}>
-            <div className="strong" style={{ fontSize: 13 }}>Your saved personal keys (encrypted at rest)</div>
-            {state.personalProviders.map((prov) => {
-              const isCurrent = state.activePersonalProviderId === prov.id;
+          {activeProof && (
+            <div style={{ marginTop: 10 }}>
+              <Banner tone="ok">
+                <div className="row" style={{ gap: 6, flexWrap: "wrap" }}>
+                  <CheckCircle2 size={14} />
+                  <strong>
+                    Verified: Answered by {activeProof.providerLabel} / {activeProof.receipt.actualModel} in {activeProof.receipt.latencyMs}ms
+                  </strong>
+                  <span className="tiny">
+                    (Mode: {activeProof.receipt.requestedMode} · Fallback hops: {activeProof.receipt.fallbackHops} · Reply: &ldquo;{activeProof.reply}&rdquo;)
+                  </span>
+                </div>
+              </Banner>
+            </div>
+          )}
+        </div>
+
+        {/* Saved Personal Keys & Exact Model Selector */}
+        {keys.length > 0 && (
+          <div className="stack" style={{ gap: 10 }}>
+            <div className="strong" style={{ fontSize: 13 }}>Saved Personal Keys &amp; Exact Model</div>
+            {keys.map((k) => {
+              const meta = getProviderMeta(k.provider);
+              const isSelected = mode === "byok" && activeKey?.id === k.id;
+              const currentModelForKey =
+                isSelected && settings?.activeModel
+                  ? settings.activeModel
+                  : k.models[0]?.id || meta.defaultModels[0]?.id || "";
+              const availableModels = k.models.length > 0 ? k.models : meta.defaultModels;
+
               return (
                 <div
-                  key={prov.id}
+                  key={k.id}
                   style={{
                     padding: 12,
                     borderRadius: 10,
-                    border: `1px solid ${isCurrent && activeMode === "personal" ? "var(--teal-deep)" : "var(--line)"}`,
+                    border: `1px solid ${isSelected ? "var(--teal-deep)" : "var(--line)"}`,
                     background: "var(--surface)",
                   }}
                 >
-                  <div className="row" style={{ justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
+                  <div className="row" style={{ justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
                     <div>
-                      <div className="row" style={{ gap: 8 }}>
-                        <span className="strong">{prov.label}</span>
-                        <Badge>{prov.maskedKey}</Badge>
-                        {isCurrent && activeMode === "personal" && <Badge tone="ok">Selected</Badge>}
+                      <div className="row" style={{ gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+                        <span className="strong">{k.label || meta.label}</span>
+                        <Badge>{meta.label}</Badge>
+                        <Badge>{k.maskedKey}</Badge>
+                        {isSelected && <Badge tone="ok">Active</Badge>}
                       </div>
-                      <div className="tiny muted" style={{ marginTop: 2 }}>
-                        Model: <strong>{prov.model}</strong>
-                        {prov.verifiedAt ? ` · Saved ${new Date(prov.verifiedAt).toLocaleDateString()}` : ""}
-                      </div>
+                      {k.lastError && (
+                        <div className="tiny" style={{ color: "#b91c1c", marginTop: 3 }}>
+                          Last error: {k.lastError}
+                        </div>
+                      )}
                     </div>
 
-                    <div className="row" style={{ gap: 6, flexWrap: "wrap" }}>
-                      {prov.models.length > 0 && (
-                        <select
-                          className="input"
-                          style={{ width: "auto", minWidth: 160 }}
-                          value={prov.model}
-                          onChange={(e) =>
+                    <div className="row" style={{ gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+                      <select
+                        aria-label={`Model for ${meta.label}`}
+                        value={currentModelForKey}
+                        disabled={busy !== null}
+                        onChange={(e) =>
+                          void postAction(
+                            {
+                              action: "select_key_and_model",
+                              keyId: k.id,
+                              model: e.target.value,
+                            },
+                            `select_${k.id}`,
+                            `Active model switched to ${e.target.value}`,
+                          )
+                        }
+                      >
+                        {!availableModels.some((m) => m.id === currentModelForKey) && currentModelForKey && (
+                          <option value={currentModelForKey}>{currentModelForKey}</option>
+                        )}
+                        {availableModels.map((m) => (
+                          <option key={m.id} value={m.id}>
+                            {m.displayName || m.id}
+                          </option>
+                        ))}
+                      </select>
+
+                      {!isSelected && (
+                        <button
+                          type="button"
+                          className="btn btn-sm"
+                          disabled={busy !== null}
+                          onClick={() =>
                             void postAction(
-                              { action: "select_personal_model", id: prov.id, model: e.target.value },
-                              `model_${prov.id}`,
-                              "Personal model updated",
+                              {
+                                action: "select_key_and_model",
+                                keyId: k.id,
+                                model: currentModelForKey,
+                              },
+                              `activate_${k.id}`,
+                              `Activated ${meta.label}`,
                             )
                           }
                         >
-                          {prov.models.map((m) => (
-                            <option key={m.id} value={m.id}>
-                              {m.label || m.id}
-                            </option>
-                          ))}
-                        </select>
+                          Use This Key
+                        </button>
                       )}
+
                       <button
                         type="button"
                         className="btn btn-sm btn-ghost"
-                        onClick={() => void handleDeletePersonalKey(prov.id, prov.label)}
-                        disabled={busy === `delete:${prov.id}`}
-                        title="Delete personal key permanently"
+                        disabled={busy !== null}
+                        onClick={() => void handleDeletePersonalKey(k.id, meta.label)}
+                        title="Delete personal key"
                       >
                         <Trash2 size={13} />
-                        Remove
                       </button>
                     </div>
                   </div>
@@ -379,124 +485,135 @@ export function AiProviderSettingsCard() {
               );
             })}
 
-            {/* Personal Key Failure Fallback Permission */}
-            <label className="row tiny" style={{ gap: 8, cursor: "pointer", paddingTop: 4 }}>
-              <input
-                type="checkbox"
-                checked={state.allowFallbackOnError}
-                onChange={(e) =>
-                  void postAction(
-                    { action: "set_fallback_permission", allowFallbackOnError: e.target.checked },
-                    "fallback_perm",
-                    e.target.checked
-                      ? "Automatic fallback to platform key enabled"
-                      : "Automatic fallback disabled",
-                  )
-                }
-              />
-              <span>
-                Allow automatic fallback to platform shared keys if my personal key fails or runs out of credit (if
-                unchecked, you&apos;ll be asked before any switch).
-              </span>
-            </label>
-
-            {/* Personal Usage Telemetry */}
+            {/* Explicit Fallback Warning Checkbox (OFF by default) */}
             <div
-              className="row tiny muted"
               style={{
-                justifyContent: "space-between",
-                padding: "8px 12px",
-                borderRadius: 8,
-                background: "var(--surface-2)",
+                padding: 12,
+                borderRadius: 10,
+                border: "1px solid var(--line)",
+                background: "var(--surface)",
               }}
             >
-              <span>
-                Your personal key usage this month:{" "}
-                <strong>{state.usageStats.personalRequestsMonth}</strong> requests ·{" "}
-                <strong>{state.usageStats.personalTokensMonth.toLocaleString()}</strong> tokens
-              </span>
-              <span>Est. cost: ${state.usageStats.personalCostMonthUsd.toFixed(4)}</span>
+              <label className="row" style={{ gap: 8, cursor: "pointer", alignItems: "flex-start" }}>
+                <input
+                  type="checkbox"
+                  checked={Boolean(settings?.fallbackToSystemAuto)}
+                  disabled={busy !== null}
+                  onChange={(e) =>
+                    void postAction(
+                      { action: "set_fallback", fallbackToSystemAuto: e.target.checked },
+                      "toggle_fallback",
+                      e.target.checked
+                        ? "Fallback to Managed Free Engine enabled"
+                        : "Strict BYOK isolation restored",
+                    )
+                  }
+                  style={{ marginTop: 3 }}
+                />
+                <div>
+                  <div className="strong" style={{ fontSize: 13 }}>
+                    Fall back to Managed Free Engine if my personal key fails or hits rate limits
+                  </div>
+                  <div className="tiny muted row" style={{ gap: 4, marginTop: 2 }}>
+                    <AlertTriangle size={12} />
+                    <span>
+                      Off by default so your chosen BYOK model never silently switches unless you opt in.
+                    </span>
+                  </div>
+                </div>
+              </label>
             </div>
           </div>
         )}
 
-        {/* Add or Replace Personal Key Form */}
+        {/* Add / Connect New Personal Key Form */}
         <form
-          onSubmit={handleSavePersonalKey}
+          onSubmit={(e) => void handleSavePersonalKey(e)}
+          className="stack"
           style={{
+            gap: 10,
             padding: 14,
             borderRadius: 10,
-            border: "1px dashed var(--line)",
-            background: "var(--surface-2)",
+            border: "1px solid var(--line)",
+            background: "var(--surface)",
           }}
         >
-          <div className="strong" style={{ fontSize: 13, marginBottom: 8 }}>
-            {state && state.personalProviders.length > 0 ? "Add or replace a personal API key" : "Add your own API key"}
+          <div className="row" style={{ gap: 6, alignItems: "center" }}>
+            <KeyRound size={14} />
+            <span className="strong" style={{ fontSize: 13.5 }}>Connect New API Key (BYOK)</span>
           </div>
 
-          <div className="grid grid-2" style={{ gap: 10, marginBottom: 10 }}>
-            <Field label="Provider">
+          <div className="grid grid-2" style={{ gap: 10 }}>
+            <Field label="AI Provider">
               <select
-                className="input"
                 value={provider}
-                onChange={(e) => setProvider(e.target.value as AiProviderId | "auto")}
+                onChange={(e) => {
+                  const val = e.target.value as GatewayProviderId | "auto";
+                  setProvider(val);
+                  setDetectedProvider(val === "auto" ? null : val);
+                  setTestedModels([]);
+                  setVerifyBanner(null);
+                  if (val !== "auto") {
+                    const meta = getProviderMeta(val);
+                    setBaseUrlInput(meta.baseUrl || "");
+                    setSelectedModelInput(meta.defaultModels[0]?.id || "");
+                  } else {
+                    setBaseUrlInput("");
+                    setSelectedModelInput("");
+                  }
+                }}
               >
-                <option value="auto">Auto-detect from key</option>
-                {AI_PROVIDERS.map((p) => (
+                <option value="auto">Auto-detect from key prefix</option>
+                {catalog.map((p) => (
                   <option key={p.id} value={p.id}>
                     {p.label}
                   </option>
                 ))}
               </select>
             </Field>
-            <Field label="API Key" hint="Stored AES-256-GCM encrypted on our server; shown masked after saving.">
+
+            <Field label="API Key" hint="Encrypted on server with AES-256-GCM. Never exposed back to the browser.">
               <input
-                className="input"
                 type="password"
                 autoComplete="off"
                 value={apiKeyInput}
                 onChange={(e) => setApiKeyInput(e.target.value)}
-                placeholder="Paste sk-..., AIza..., sk-ant-..."
+                placeholder="Paste your API key (AIza..., nvapi-..., gsk_..., sk-...)..."
               />
             </Field>
           </div>
 
-          {provider === "custom" && (
-            <div style={{ marginBottom: 10 }}>
-              <Field label="Custom OpenAI-compatible Base URL">
-                <input
-                  className="input"
-                  value={baseUrlInput}
-                  onChange={(e) => setBaseUrlInput(e.target.value)}
-                  placeholder="https://your-endpoint.example/v1"
-                />
-              </Field>
-            </div>
+          {provider === "cloudflare" && (
+            <Field label="Cloudflare Account ID" hint="Required by Cloudflare Workers AI.">
+              <input
+                type="text"
+                value={accountIdInput}
+                onChange={(e) => setAccountIdInput(e.target.value)}
+                placeholder="32-character Cloudflare Account ID"
+              />
+            </Field>
           )}
 
-          {testedModels.length > 0 && (
-            <div style={{ marginBottom: 10 }}>
-              <Field label="Model to use">
-                <select
-                  className="input"
-                  value={selectedModelInput}
-                  onChange={(e) => setSelectedModelInput(e.target.value)}
-                >
-                  {testedModels.map((m) => (
-                    <option key={m.id} value={m.id}>
-                      {m.label || m.id}
-                    </option>
-                  ))}
-                </select>
-              </Field>
-            </div>
+          {(provider === "custom" || provider === "zai") && (
+            <Field label="API Base URL" hint="Public https:// endpoint URL.">
+              <input
+                type="url"
+                value={baseUrlInput}
+                onChange={(e) => setBaseUrlInput(e.target.value)}
+                placeholder="https://api.example.com/v1"
+              />
+            </Field>
           )}
 
-          {testNote && (
-            <div className="tiny" style={{ color: "var(--teal-deep)", marginBottom: 8 }}>
-              <CheckCircle2 size={12} style={{ verticalAlign: "middle", marginRight: 4 }} />
-              {testNote}
-            </div>
+          {provider === "openrouter" && (
+            <label className="row tiny" style={{ gap: 8, cursor: "pointer" }}>
+              <input
+                type="checkbox"
+                checked={freeTierOnly}
+                onChange={(e) => setFreeTierOnly(e.target.checked)}
+              />
+              <span>Show free-tier `:free` OpenRouter models only</span>
+            </label>
           )}
 
           <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
@@ -504,37 +621,85 @@ export function AiProviderSettingsCard() {
               type="button"
               className="btn btn-sm"
               disabled={!apiKeyInput.trim() || busy !== null}
-              onClick={() => void handleTestPersonalKey()}
+              onClick={() => void handleVerifyAndLoadModels()}
             >
-              {busy === "test_key" ? <Loader2 size={12} className="spin" /> : <TestTube2 size={12} />}
-              {busy === "test_key" ? "Testing…" : "Test key"}
+              {busy === "verify_key" ? <Loader2 size={12} className="spin" /> : <Cpu size={12} />}
+              Verify &amp; Load Models
             </button>
+
             <button
               type="submit"
               className="btn btn-primary btn-sm"
               disabled={!apiKeyInput.trim() || busy !== null}
             >
-              {busy === "save_key" ? <Loader2 size={12} className="spin" /> : <Sparkles size={12} />}
-              {busy === "save_key" ? "Encrypting & saving…" : "Save encrypted key"}
+              {busy === "save_key" ? <Loader2 size={12} className="spin" /> : <ShieldCheck size={12} />}
+              Save Key &amp; Switch to BYOK
             </button>
           </div>
+
+          {verifyBanner && <Banner tone="ok">{verifyBanner}</Banner>}
+
+          {(modelChoices.length > 0 || customModelInput) && (
+            <div className="grid grid-2" style={{ gap: 10 }}>
+              <Field label="Exact Model">
+                <select
+                  value={selectedModelInput}
+                  onChange={(e) => setSelectedModelInput(e.target.value)}
+                >
+                  {modelChoices.map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.displayName || m.id}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+              <Field label="Or Custom Model ID (optional)">
+                <input
+                  type="text"
+                  value={customModelInput}
+                  onChange={(e) => setCustomModelInput(e.target.value)}
+                  placeholder="Overrides dropdown if filled"
+                />
+              </Field>
+            </div>
+          )}
         </form>
 
-        <div className="row tiny muted" style={{ gap: 6, alignItems: "flex-start" }}>
-          <ShieldCheck size={14} style={{ flexShrink: 0, marginTop: 2, color: "var(--teal-deep)" }} />
-          <span>
-            <strong>Zero browser key exposure:</strong> API keys are encrypted at rest on the server, never sent back to
-            your browser or stored in localStorage, and all AI calls execute strictly server-side. Administrators cannot
-            read your personal key, and regular users cannot view platform keys.
-          </span>
-        </div>
-        {activeMode === "platform" && state && state.usageStats.platformRequestsToday >= state.usageStats.platformDailyLimit && (
-          <Banner tone="warn">
-            <div className="row tiny" style={{ gap: 8 }}>
-              <AlertTriangle size={14} />
-              <span>You have reached your daily platform quota. Add your own key above to continue immediately.</span>
+        {/* Recent User Execution Receipts */}
+        {state && state.recentLogs.length > 0 && (
+          <div className="stack" style={{ gap: 6 }}>
+            <div className="strong tiny muted">Recent AI Execution Receipts (Account)</div>
+            <div style={{ overflowX: "auto" }}>
+              <table className="table" style={{ width: "100%", fontSize: 12 }}>
+                <thead>
+                  <tr>
+                    <th>Feature</th>
+                    <th>Seat</th>
+                    <th>Provider &amp; Model</th>
+                    <th>Hops</th>
+                    <th>Latency</th>
+                    <th>Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {state.recentLogs.slice(0, 6).map((log) => (
+                    <tr key={log.id}>
+                      <td>{log.feature}</td>
+                      <td>{log.taskType}</td>
+                      <td>
+                        <strong>{log.actualProvider || "—"}</strong> {log.actualModel || ""}
+                      </td>
+                      <td>{log.fallbackHops}</td>
+                      <td>{log.latencyMs}ms</td>
+                      <td>
+                        <Badge tone={log.status === "success" ? "ok" : "bad"}>{log.status}</Badge>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
-          </Banner>
+          </div>
         )}
       </div>
     </Card>

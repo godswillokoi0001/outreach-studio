@@ -16,10 +16,9 @@ import Link from "next/link";
 import { useAuth } from "@/components/AuthProvider";
 import { useToast } from "@/components/Feedback";
 import { Badge, Banner, Card } from "@/components/ui";
-import { getProvider } from "@/lib/ai/registry";
+import { getAccessToken } from "@/lib/auth";
+import { getProviderMeta, type UserAiKeyPublic, type UserAiSettings } from "@/lib/llm/types";
 import { authedPost, errorMessage } from "@/lib/client";
-import { getSettings } from "@/lib/store";
-import type { Settings } from "@/lib/types";
 import { workspaceStatus, type WorkspaceStatus } from "@/lib/workspace";
 
 export default function IntegrationsPage() {
@@ -29,7 +28,7 @@ export default function IntegrationsPage() {
   const [busy, setBusy] = useState<string | null>(null);
   const [note, setNote] = useState<{ tone: "ok" | "bad" | "info"; text: string } | null>(null);
   const [status, setStatus] = useState<WorkspaceStatus | null>(null);
-  const [aiSettings, setAiSettings] = useState<Settings | null>(null);
+  const [aiGatewayState, setAiGatewayState] = useState<{ settings: UserAiSettings; keys: UserAiKeyPublic[] } | null>(null);
 
   // Read the OAuth result from the URL on render instead of mirroring it into
   // state from an effect.
@@ -45,14 +44,23 @@ export default function IntegrationsPage() {
 
   useEffect(() => {
     let active = true;
-    getSettings(user.uid).then(
-      (settings) => {
-        if (active) setAiSettings(settings);
-      },
-      () => {
-        if (active) setAiSettings(null);
-      },
-    );
+    void (async () => {
+      try {
+        const token = await getAccessToken();
+        if (token) {
+          const res = await fetch("/api/account/ai-provider", {
+            headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
+            cache: "no-store",
+          });
+          if (res.ok && active) {
+            const payload = (await res.json()) as { settings: UserAiSettings; keys: UserAiKeyPublic[] };
+            setAiGatewayState(payload);
+          }
+        }
+      } catch {
+        if (active) setAiGatewayState(null);
+      }
+    })();
     workspaceStatus().then(
       (next) => {
         if (active) setStatus(next);
@@ -74,15 +82,17 @@ export default function IntegrationsPage() {
     setBusy("test");
     setNote(null);
     try {
-      const settings = await getSettings(user.uid);
-      const result = await authedPost<{ model: string; ms: number; reply: string; provider?: string }>("/api/ai/test", {
-        model: settings.model,
-      });
-      setAiSettings(settings);
-      const meta = getProvider(result.provider ?? settings.ai_provider);
+      const result = await authedPost<{
+        model: string;
+        ms: number;
+        reply: string;
+        provider?: string;
+        providerLabel?: string;
+      }>("/api/ai/test", {});
+      const label = result.providerLabel || getProviderMeta(result.provider ?? "google").label;
       setNote({
         tone: "ok",
-        text: `${meta?.label ?? "AI"} is live: ${result.model} replied "${result.reply}" in ${result.ms} ms.`,
+        text: `${label} is live: ${result.model} replied "${result.reply}" in ${result.ms} ms.`,
       });
     } catch (err) {
       setNote({ tone: "bad", text: errorMessage(err) });
@@ -240,22 +250,23 @@ export default function IntegrationsPage() {
         </Card>
 
         <Card
-          title="AI engine — any provider"
-          sub="Research, qualification scoring, email writing, reply classification and performance analysis."
+          title="AI engine — unified multi-provider gateway"
+          sub="Research, qualification scoring, email writing, reply classification, operator chat, and growth analysis."
           actions={
-            aiSettings?.ai_api_key ? (
-              <Badge tone="ok">{getProvider(aiSettings.ai_provider)?.label ?? "Connected"}</Badge>
+            aiGatewayState?.settings.mode === "byok" && aiGatewayState.settings.activeProvider ? (
+              <Badge tone="ok">
+                BYOK · {getProviderMeta(aiGatewayState.settings.activeProvider).label}
+              </Badge>
             ) : (
-              <Badge tone="warn">Server default</Badge>
+              <Badge tone="info">Managed Free Engine (Auto)</Badge>
             )
           }
         >
           <div className="row" style={{ gap: 10, marginBottom: 12 }}>
             <span style={{ fontSize: 13 }}>
-              {aiSettings?.ai_api_key
-                ? `Every AI call uses ${getProvider(aiSettings.ai_provider)?.label ?? aiSettings.ai_provider} · ${aiSettings.model}.`
-                : "No key connected, so calls fall back to the server Gemini key when one is configured."}{" "}
-              Calls run server-side with structured JSON schemas and automatic model fallback.
+              {aiGatewayState?.settings.mode === "byok" && aiGatewayState.settings.activeProvider
+                ? `Strict BYOK active: every AI call uses ${getProviderMeta(aiGatewayState.settings.activeProvider).label} · ${aiGatewayState.settings.activeModel || "default model"}.`
+                : "Managed Free Engine (Auto) is active with automatic multi-key headroom steering and silent failover across admin-configured providers."}
             </span>
           </div>
           <div className="row" style={{ gap: 10, flexWrap: "wrap" }}>

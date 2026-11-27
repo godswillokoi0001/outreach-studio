@@ -1,7 +1,8 @@
 import { Type, type Schema } from "@google/genai";
 import { buildOrchestratedSystemPrompt, stripUnresolvedPlaceholders } from "./ai/orchestrator";
+import { getActiveOwnerAiContext } from "./ai/context";
 import { addBusinessDaysIso, mapReplyClassMeta, type ReplyClassCode, type ReplySequenceAction } from "./guardrails";
-import { geminiGroundedJSON, geminiJSON } from "./gemini";
+import { LLMGateway } from "./llm/gateway";
 import { cleanEmailText } from "./outreach-utils";
 import type { CampaignConfig, Lead, Message, Settings } from "./types";
 
@@ -103,7 +104,9 @@ ${replyText.slice(0, 6000)}
 
 Run Workflow C (handle_reply) and return JSON with reply_class, sequence_action, snooze_until, suggested_reply, summary, and recommended_action.`;
 
-  const raw = await geminiJSON<{
+  const ownerId = options?.ownerId ?? lead.ownerId ?? getActiveOwnerAiContext()?.ownerId ?? "anonymous";
+  void model;
+  const { data: raw } = await LLMGateway.completeJSON<{
     reply_class?: ReplyClassCode;
     sequence_action?: ReplySequenceAction;
     snooze_until?: string | null;
@@ -111,10 +114,12 @@ Run Workflow C (handle_reply) and return JSON with reply_class, sequence_action,
     summary?: string;
     recommended_action?: string;
   }>({
-    system: orchestrated.system,
-    user,
+    ownerId,
+    taskType: "balanced",
+    feature: "analyse_reply",
+    systemPrompt: orchestrated.system,
+    messages: [{ role: "user", content: user }],
     schema: REPLY_SCHEMA,
-    model,
   });
 
   const validClass: ReplyClassCode =
@@ -247,12 +252,16 @@ Leads by status: ${JSON.stringify(context.availableLeads.byStatus)}
 Known industries in the database: ${context.availableLeads.industries.slice(0, 25).join(", ") || "(none)"}
 Recent campaigns: ${context.recentCampaigns.map((c) => `${c.name} (${c.status})`).join(", ") || "(none)"}`;
 
-  return geminiJSON<CampaignPlan>({
-    system: orchestrated.system,
-    user,
+  void model;
+  const { data } = await LLMGateway.completeJSON<CampaignPlan>({
+    ownerId: context.ownerId ?? getActiveOwnerAiContext()?.ownerId ?? "anonymous",
+    taskType: "smart",
+    feature: "plan",
+    systemPrompt: orchestrated.system,
+    messages: [{ role: "user", content: user }],
     schema: PLAN_SCHEMA,
-    model,
   });
+  return data;
 }
 
 export interface PerformanceInsight {
@@ -284,7 +293,12 @@ const INSIGHT_SCHEMA: Schema = {
   required: ["headline", "observations", "recommendations", "data_limits"],
 };
 
-export async function analysePerformanceServer(metrics: unknown, model?: string): Promise<PerformanceInsight> {
+export async function analysePerformanceServer(
+  metrics: unknown,
+  _model?: string,
+  ownerId?: string | null,
+): Promise<PerformanceInsight> {
+  void _model;
   const system = `You are a sales analyst reviewing real campaign metrics for a small web design business.
 
 Rules:
@@ -293,12 +307,15 @@ Rules:
 - Comments about industries, subject lines or angles are only allowed when the data actually separates them.
 - Be concrete and practical: what to change in the next campaign.`;
 
-  return geminiJSON<PerformanceInsight>({
-    system,
-    user: `METRICS\n${JSON.stringify(metrics, null, 2).slice(0, 12000)}`,
+  const { data } = await LLMGateway.completeJSON<PerformanceInsight>({
+    ownerId: ownerId ?? getActiveOwnerAiContext()?.ownerId ?? "anonymous",
+    taskType: "smart",
+    feature: "analytics",
+    systemPrompt: system,
+    messages: [{ role: "user", content: `METRICS\n${JSON.stringify(metrics, null, 2).slice(0, 12000)}` }],
     schema: INSIGHT_SCHEMA,
-    model,
   });
+  return data;
 }
 
 export type VerificationStatus = "Verified" | "Unverified" | "Not found";
@@ -419,13 +436,15 @@ Return ONLY valid JSON with a "candidates" array and short "notes" about verific
     return cached.value;
   }
 
-  const { data, groundingUrls } = await geminiGroundedJSON<{
+  const { data, groundingUrls } = await LLMGateway.completeGroundedJSON<{
     candidates: unknown[];
     notes: string;
   }>({
-    system: orchestrated.system,
-    user,
-    model: input.model,
+    ownerId: input.ownerId ?? getActiveOwnerAiContext()?.ownerId ?? "anonymous",
+    taskType: "smart",
+    feature: "discover",
+    systemPrompt: orchestrated.system,
+    messages: [{ role: "user", content: user }],
   });
 
   const seen = new Set<string>();

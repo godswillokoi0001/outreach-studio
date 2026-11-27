@@ -1,6 +1,4 @@
 import { NextRequest, NextResponse } from "next/server";
-import { resolveAiConfigForRequest, runWithAiConfig } from "@/lib/ai/context";
-import type { AiConfig } from "@/lib/ai/types";
 import { handleApiError } from "@/lib/api-helpers";
 import {
   advanceBackgroundJobStep,
@@ -37,9 +35,7 @@ async function runGrowthResearchPipeline(
     metricsSummary: Record<string, unknown>;
     analyticsInsight: PerformanceInsight | null;
     fingerprint: string;
-    model?: string;
   },
-  aiConfig: AiConfig | null,
 ): Promise<void> {
   let activeStage = "searching_businesses";
   try {
@@ -47,18 +43,15 @@ async function runGrowthResearchPipeline(
 
     activeStage = "reading_sources";
     await advanceBackgroundJobStep(ownerId, jobId, "reading_sources", "in_progress");
-    const report = await runWithAiConfig(aiConfig, () =>
-      generateGrowthAdvisorReportServer({
-        ownerId,
-        profile: input.profile,
-        knowledgeDigest: input.knowledgeDigest,
-        settings: input.settings,
-        metricsSummary: input.metricsSummary,
-        analyticsInsight: input.analyticsInsight,
-        fingerprint: input.fingerprint,
-        model: input.model,
-      }),
-    );
+    const report = await generateGrowthAdvisorReportServer({
+      ownerId,
+      profile: input.profile,
+      knowledgeDigest: input.knowledgeDigest,
+      settings: input.settings,
+      metricsSummary: input.metricsSummary,
+      analyticsInsight: input.analyticsInsight,
+      fingerprint: input.fingerprint,
+    });
     await advanceBackgroundJobStep(
       ownerId,
       jobId,
@@ -115,7 +108,6 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   try {
     const user = await verifyRequest(req);
-    const aiConfig = await resolveAiConfigForRequest(req);
     const body = (await req.json().catch(() => ({}))) as {
       profile?: GrowthProfile;
       knowledgeDigest?: string;
@@ -123,7 +115,6 @@ export async function POST(req: NextRequest) {
       metricsSummary?: Record<string, unknown>;
       analyticsInsight?: PerformanceInsight | null;
       fingerprint?: string;
-      model?: string;
     };
 
     if (!body.profile || !body.settings) {
@@ -141,20 +132,14 @@ export async function POST(req: NextRequest) {
     });
 
     if (!reused) {
-      void runGrowthResearchPipeline(
-        user.ownerId,
-        job.id,
-        {
-          profile: body.profile,
-          knowledgeDigest: body.knowledgeDigest ?? "",
-          settings: body.settings,
-          metricsSummary: body.metricsSummary ?? {},
-          analyticsInsight: body.analyticsInsight ?? null,
-          fingerprint: body.fingerprint ?? "manual",
-          model: body.model ?? body.settings.model,
-        },
-        aiConfig,
-      );
+      void runGrowthResearchPipeline(user.ownerId, job.id, {
+        profile: body.profile,
+        knowledgeDigest: body.knowledgeDigest ?? "",
+        settings: body.settings,
+        metricsSummary: body.metricsSummary ?? {},
+        analyticsInsight: body.analyticsInsight ?? null,
+        fingerprint: body.fingerprint ?? "manual",
+      });
     }
 
     return NextResponse.json(

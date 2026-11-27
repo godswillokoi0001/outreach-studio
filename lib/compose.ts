@@ -1,7 +1,8 @@
 import { Type, type Schema } from "@google/genai";
+import { getActiveOwnerAiContext } from "./ai/context";
 import { buildOrchestratedSystemPrompt, stripUnresolvedPlaceholders } from "./ai/orchestrator";
 import { checkSendingTierDeliverability } from "./guardrails";
-import { geminiJSON } from "./gemini";
+import { LLMGateway } from "./llm/gateway";
 import { cleanEmailText } from "./outreach-utils";
 import type { CampaignConfig, Lead, Message, ResearchResult, Settings } from "./types";
 
@@ -77,15 +78,21 @@ async function reviewDraft(
   knowledge: string,
   draft: ComposedEmail,
   sendingTier: string,
-  model?: string,
+  ownerId: string,
 ): Promise<{ passed: boolean; issues: string[]; kb_items_used: string[] }> {
   try {
-    const result = await geminiJSON<{ passed: boolean; issues: string[]; kb_items_used: string[] }>({
-      system:
+    const { data: result } = await LLMGateway.completeJSON<{
+      passed: boolean;
+      issues: string[];
+      kb_items_used: string[];
+    }>({
+      ownerId,
+      taskType: "fast",
+      feature: "compose_review",
+      systemPrompt:
         "You are a strict Module 2 Direct-Response Quality Gate reviewer. Judge the draft against the 8-point gate, user knowledge base, and campaign instructions. Report failures concisely; never rewrite.",
-      user: checklist(campaign, knowledge, draft, sendingTier),
+      messages: [{ role: "user", content: checklist(campaign, knowledge, draft, sendingTier) }],
       schema: CHECK_SCHEMA,
-      model,
     });
     return {
       passed: result.passed === true,
@@ -105,9 +112,9 @@ async function withKnowledgeCheck(
   knowledge: string,
   sendingTier: string,
   regenerate: (issues: string[]) => Promise<ComposedEmail>,
-  model?: string,
+  ownerId: string,
 ): Promise<ComposedEmail> {
-  const first = await reviewDraft(campaign, knowledge, draft, sendingTier, model);
+  const first = await reviewDraft(campaign, knowledge, draft, sendingTier, ownerId);
   if (first.passed) {
     return {
       ...draft,
@@ -126,7 +133,7 @@ async function withKnowledgeCheck(
       check: { ...first, regenerated: false },
     };
   }
-  const recheck = await reviewDraft(campaign, knowledge, second, sendingTier, model);
+  const recheck = await reviewDraft(campaign, knowledge, second, sendingTier, ownerId);
   return {
     ...second,
     rationale: withKbLine(second.rationale, recheck.kb_items_used.length ? recheck.kb_items_used : first.kb_items_used),
@@ -256,11 +263,15 @@ Extra instructions from the owner: ${campaign.extra_instructions || "(none)"}
 
 Select the optimal Module 3 template (T1-T12) and write the Touch 1 email passing all 8 Module 2 gates with ZERO raw {{...}} tags.`;
 
-  const draft = await geminiJSON<ComposedEmail>({
-    system: orchestrated.system,
-    user,
+  void model;
+  const ownerId = options?.ownerId ?? lead.ownerId ?? getActiveOwnerAiContext()?.ownerId ?? "anonymous";
+  const { data: draft } = await LLMGateway.completeJSON<ComposedEmail>({
+    ownerId,
+    taskType: "balanced",
+    feature: "compose_initial",
+    systemPrompt: orchestrated.system,
+    messages: [{ role: "user", content: user }],
     schema: SCHEMA,
-    model,
   });
   const cleaned = sanitizeComposedDraft(draft, true, sendingTier);
 
@@ -270,17 +281,24 @@ Select the optimal Module 3 template (T1-T12) and write the Touch 1 email passin
     knowledge,
     sendingTier,
     async (issues) => {
-      const revised = await geminiJSON<ComposedEmail>({
-        system: orchestrated.system,
-        user: `${user}\n\nYOUR PREVIOUS DRAFT FAILED THE 8-POINT QUALITY / KB CHECK:\n${issues
-          .map((issue) => `- ${issue}`)
-          .join("\n")}\n\nRewrite the email cleanly so every issue is fixed and ZERO {{...}} tags exist.`,
+      const { data: revised } = await LLMGateway.completeJSON<ComposedEmail>({
+        ownerId,
+        taskType: "balanced",
+        feature: "compose_initial",
+        systemPrompt: orchestrated.system,
+        messages: [
+          {
+            role: "user",
+            content: `${user}\n\nYOUR PREVIOUS DRAFT FAILED THE 8-POINT QUALITY / KB CHECK:\n${issues
+              .map((issue) => `- ${issue}`)
+              .join("\n")}\n\nRewrite the email cleanly so every issue is fixed and ZERO {{...}} tags exist.`,
+          },
+        ],
         schema: SCHEMA,
-        model,
       });
       return sanitizeComposedDraft(revised, true, sendingTier);
     },
-    model,
+    ownerId,
   );
 }
 
@@ -328,11 +346,15 @@ ${original.body}
 
 This is Touch #${step} in the Module 3 Follow-Up Matrix. Write a shorter same-thread follow-up adding a fresh angle or binary check with zero guilt-tripping and zero {{...}} placeholders.`;
 
-  const draft = await geminiJSON<ComposedEmail>({
-    system: orchestrated.system,
-    user,
+  void model;
+  const ownerId = options?.ownerId ?? lead.ownerId ?? getActiveOwnerAiContext()?.ownerId ?? "anonymous";
+  const { data: draft } = await LLMGateway.completeJSON<ComposedEmail>({
+    ownerId,
+    taskType: "balanced",
+    feature: "compose_followup",
+    systemPrompt: orchestrated.system,
+    messages: [{ role: "user", content: user }],
     schema: SCHEMA,
-    model,
   });
   const cleaned = sanitizeComposedDraft(draft, false, sendingTier);
 
@@ -342,16 +364,23 @@ This is Touch #${step} in the Module 3 Follow-Up Matrix. Write a shorter same-th
     knowledge,
     sendingTier,
     async (issues) => {
-      const revised = await geminiJSON<ComposedEmail>({
-        system: orchestrated.system,
-        user: `${user}\n\nYOUR PREVIOUS DRAFT FAILED THE 8-POINT QUALITY / KB CHECK:\n${issues
-          .map((issue) => `- ${issue}`)
-          .join("\n")}\n\nRewrite the follow-up cleanly so every point is fixed.`,
+      const { data: revised } = await LLMGateway.completeJSON<ComposedEmail>({
+        ownerId,
+        taskType: "balanced",
+        feature: "compose_followup",
+        systemPrompt: orchestrated.system,
+        messages: [
+          {
+            role: "user",
+            content: `${user}\n\nYOUR PREVIOUS DRAFT FAILED THE 8-POINT QUALITY / KB CHECK:\n${issues
+              .map((issue) => `- ${issue}`)
+              .join("\n")}\n\nRewrite the follow-up cleanly so every point is fixed.`,
+          },
+        ],
         schema: SCHEMA,
-        model,
       });
       return sanitizeComposedDraft(revised, false, sendingTier);
     },
-    model,
+    ownerId,
   );
 }

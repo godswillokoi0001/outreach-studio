@@ -1,6 +1,5 @@
 import { Type, type Schema } from "@google/genai";
 import { NextRequest, NextResponse } from "next/server";
-import { resolveAiConfigForRequest, runWithAiConfig } from "@/lib/ai/context";
 import { handleApiError } from "@/lib/api-helpers";
 import {
   BUDGET_OPTIONS,
@@ -13,7 +12,7 @@ import {
   sanitizeCriteria,
   type ResearchCriteria,
 } from "@/lib/criteria";
-import { geminiJSON } from "@/lib/gemini";
+import { LLMGateway } from "@/lib/llm/gateway";
 import { verifyRequest } from "@/lib/server-auth";
 
 export const dynamic = "force-dynamic";
@@ -54,14 +53,12 @@ const CRITERIA_SCHEMA: Schema = {
  */
 export async function POST(req: NextRequest) {
   try {
-    await verifyRequest(req);
-    const aiConfig = await resolveAiConfigForRequest(req);
+    const user = await verifyRequest(req);
     const body = (await req.json().catch(() => ({}))) as {
       instruction?: string;
       knowledge?: string;
       current?: Partial<ResearchCriteria>;
       mode?: "auto" | "instruction";
-      model?: string;
     };
 
     const instruction = String(body.instruction ?? "").trim().slice(0, 2000);
@@ -87,20 +84,20 @@ Choose ONLY values from the allowed lists. Never invent an option.
 Knowledge base (source of truth for the services and offers):
 ${knowledge || "(empty — use the allowed service list conservatively)"}`;
 
-    const user = instruction
+    const userPrompt = instruction
       ? `The user asked: "${instruction}"
 
 Fill the brief for exactly this request.`
       : `No instruction was given. Pick the strongest default brief for this business: which segment, which service, and which weakness to target.`;
 
-    const result = await runWithAiConfig(aiConfig, () =>
-      geminiJSON<Record<string, unknown>>({
-        system,
-        user,
-        schema: CRITERIA_SCHEMA,
-        model: body.model || aiConfig?.model,
-      }),
-    );
+    const { data: result } = await LLMGateway.completeJSON<Record<string, unknown>>({
+      ownerId: user.ownerId,
+      taskType: "fast",
+      feature: "criteria",
+      systemPrompt: system,
+      messages: [{ role: "user", content: userPrompt }],
+      schema: CRITERIA_SCHEMA,
+    });
 
     const criteria = sanitizeCriteria(
       { ...result, auto: true },

@@ -1,12 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { Type } from "@google/genai";
 import { handleApiError } from "@/lib/api-helpers";
-import { resolveAiConfigForRequest } from "@/lib/ai/context";
 import { buildOrchestratedSystemPrompt, stripUnresolvedPlaceholders } from "@/lib/ai/orchestrator";
-import { providerJSON } from "@/lib/ai/chat";
+import { LLMGateway } from "@/lib/llm/gateway";
 import { verifyRequest } from "@/lib/server-auth";
 
 export const dynamic = "force-dynamic";
+export const maxDuration = 60;
 
 const MAX_BODY = 14_000;
 const MAX_INSTRUCTION = 400;
@@ -42,34 +42,19 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const aiConfig = await resolveAiConfigForRequest(req);
-    if (!aiConfig) {
-      return NextResponse.json(
-        { error: "Connect an AI provider in Settings before refining a message." },
-        { status: 400 },
-      );
-    }
-
-    const taskInstructions = [
-      "Rewrite the message supplied by the user according to their edit instruction, while enforcing Module 2 plain-English copywriting, zero AI slop, and zero fabrication.",
-      "Rules:",
-      "- Return the rewritten message body only (light Markdown permitted if present). No subject line, no quotes around it, no commentary, no code fences.",
-      "- Preserve every verified fact, name, number, date, link, and scope boundary accurately; never invent new claims or insert unresolved {{...}} tags.",
-      "- Keep greeting and signature when present, unless instructed otherwise.",
-      isReply
-        ? "- Reply context (Module 4): calm, same-thread human response."
-        : "- Cold/follow-up context (Modules 2-3): concise, peer-level, deliverable-safe.",
-    ].join("\n");
-
     const orchestrated = await buildOrchestratedSystemPrompt({
       workflow: isReply ? "handle_reply" : "draft_outreach",
       ownerId: user.ownerId,
-      taskInstructions,
+      taskInstructions:
+        "Rewrite the supplied message faithfully according to the user's instruction without inventing claims or leaving placeholders.",
     });
 
-    const result = await providerJSON<{ text?: unknown }>(aiConfig, {
-      system: orchestrated.system,
-      user: `HOW TO CHANGE IT\n${instruction}\n\nMESSAGE TO REWRITE\n${text}`,
+    const { data: result } = await LLMGateway.completeJSON<{ text?: unknown }>({
+      ownerId: user.ownerId,
+      taskType: "balanced",
+      feature: "refine",
+      systemPrompt: orchestrated.system,
+      messages: [{ role: "user", content: `HOW TO CHANGE IT\n${instruction}\n\nMESSAGE TO REWRITE\n${text}` }],
       schema: {
         type: Type.OBJECT,
         properties: { text: { type: Type.STRING } },

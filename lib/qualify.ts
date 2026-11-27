@@ -1,6 +1,7 @@
 import { Type, type Schema } from "@google/genai";
 import { buildOrchestratedSystemPrompt } from "./ai/orchestrator";
-import { geminiJSON } from "./gemini";
+import { getActiveOwnerAiContext } from "./ai/context";
+import { LLMGateway } from "./llm/gateway";
 import type { CampaignConfig, Lead, QualificationResult, ResearchResult } from "./types";
 
 const SCHEMA: Schema = {
@@ -107,11 +108,15 @@ ${researchBlock}
 
 The campaign minimum score is ${minScore}. Always return an honest score; never inflate scores to pass threshold.`;
 
-  const raw = await geminiJSON<QualificationResult>({
-    system: orchestrated.system,
-    user,
+  void model;
+  const ownerId = options?.ownerId ?? lead.ownerId ?? getActiveOwnerAiContext()?.ownerId ?? "anonymous";
+  const { data: raw } = await LLMGateway.completeJSON<QualificationResult>({
+    ownerId,
+    taskType: "smart",
+    feature: "qualify",
+    systemPrompt: orchestrated.system,
+    messages: [{ role: "user", content: user }],
     schema: SCHEMA,
-    model,
   });
 
   const killSwitch = Boolean(raw.kill_switch_triggered || raw.category === "not_qualified");

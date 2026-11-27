@@ -1,11 +1,11 @@
 import type { Content } from "@google/genai";
 import { NextRequest, NextResponse } from "next/server";
 import { AGENT_TOOLS, sanitizeAgentContents } from "@/lib/agent-tools";
+import type { AgentContent } from "@/lib/agent-meta";
 import { handleApiError } from "@/lib/api-helpers";
-import { resolveAiConfigForRequest, runWithAiConfig } from "@/lib/ai/context";
 import { buildOrchestratedSystemPrompt } from "@/lib/ai/orchestrator";
+import { LLMGateway } from "@/lib/llm/gateway";
 import { verifyRequest } from "@/lib/server-auth";
-import { geminiAgentTurn } from "@/lib/gemini";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -130,11 +130,9 @@ WRITING FROM THE KNOWLEDGE BASE
 export async function POST(req: NextRequest) {
   try {
     const authUser = await verifyRequest(req);
-    const aiConfig = await resolveAiConfigForRequest(req);
     const body = (await req.json()) as {
       contents?: Content[];
       context?: ChatContext;
-      model?: string;
       mode?: OperatorMode;
     };
 
@@ -164,14 +162,15 @@ export async function POST(req: NextRequest) {
     // Chat mode has no tools. Agent and Developer modes have access to all tools to execute changes.
     const tools = mode === "chat" ? [] : AGENT_TOOLS;
 
-    const result = await runWithAiConfig(aiConfig, () =>
-      geminiAgentTurn({
-        system: orchestrated.system,
-        contents: trimmedContents,
-        tools,
-        model: body.model,
-      }),
-    );
+    const result = await LLMGateway.agentTurn({
+      ownerId: authUser.ownerId,
+      taskType: "balanced",
+      feature: "operator_chat",
+      systemPrompt: orchestrated.system,
+      messages: [],
+      agentContents: trimmedContents as unknown as AgentContent[],
+      tools,
+    });
 
     return NextResponse.json(result, {
       headers: { "Cache-Control": "no-store" },

@@ -120,6 +120,7 @@ function assertSafeClientRecordId(id: string): void {
     id.startsWith("system_user_meta_") ||
     id.startsWith("system_user_byok_") ||
     id.startsWith("system_user_settings_") ||
+    id.startsWith("system_llm_") ||
     id.startsWith("system_platform") ||
     id.startsWith("system_admin_") ||
     id.startsWith("system_job_") ||

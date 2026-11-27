@@ -2,36 +2,80 @@
 
 import { useCallback, useEffect, useState } from "react";
 import {
+  Activity,
   CheckCircle2,
   Cpu,
   KeyRound,
   Loader2,
+  Plus,
+  RefreshCw,
   RotateCcw,
   Save,
   Sliders,
   TestTube2,
   Trash2,
+  Zap,
 } from "lucide-react";
-import type { AiProviderId } from "@/lib/ai/types";
 import {
-  AI_FEATURE_LABELS,
-  type AdminRole,
-  type AiFeatureKey,
-  type PlatformModelOption,
-  type PlatformPolicyPublic,
-  type PlatformProviderPublic,
-  type PlatformQuotaConfig,
-} from "@/lib/platform/types";
+  getProviderMeta,
+  type AdminAiKeyPublic,
+  type AdminAiSettings,
+  type AiExecutionLogRecord,
+  type GatewayModelConfig,
+  type GatewayProviderId,
+  type ProviderCatalogMeta,
+  type RoutingStrategy,
+  type TaskSeat,
+} from "@/lib/llm/types";
+import type { AdminRole } from "@/lib/platform/types";
 import { Badge, Banner, Card, Empty, Field, Modal } from "../ui";
 import { BrandLoader } from "../BrandLoader";
 import { useConfirm, useToast } from "../Feedback";
 import { AdminClientError, adminFetch } from "./admin-client";
 
-interface BreakdownPayload {
-  byProvider: Record<string, { requests: number; tokens: number; costUsd: number; errors: number }>;
-  byModel: Record<string, { requests: number; tokens: number; costUsd: number }>;
-  byFeature: Record<string, { requests: number; tokens: number; costUsd: number }>;
-  byUser: { ownerId: string; email: string; requests: number; costUsd: number }[];
+interface GatewayAdminPayload {
+  settings: AdminAiSettings;
+  keys: AdminAiKeyPublic[];
+  catalog: ProviderCatalogMeta[];
+  executionLogs: AiExecutionLogRecord[];
+}
+
+const STRATEGY_DESCRIPTIONS: Record<RoutingStrategy, { label: string; desc: string }> = {
+  balanced: {
+    label: "Balanced (Default)",
+    desc: "Balances quality, speed, and free-tier headroom across healthy keys before any rate limit hits.",
+  },
+  smartest: {
+    label: "Smartest Quality",
+    desc: "Prioritizes reasoning-capable models (Gemini Pro, DeepSeek V3/R1, Anthropic, OpenAI) for deeper outputs.",
+  },
+  fastest: {
+    label: "Fastest Latency",
+    desc: "Prioritizes Groq, Cerebras, Cloudflare edge, and Gemini Flash keys for lowest response times.",
+  },
+  reliable: {
+    label: "Most Reliable",
+    desc: "Prioritizes Google AI Studio, OpenAI, Anthropic, and NVIDIA keys with strict error avoidance.",
+  },
+};
+
+const SEATS: TaskSeat[] = ["smart", "balanced", "fast"];
+
+function formatCooldownRemaining(cooldownUntil?: string | null): string | null {
+  if (!cooldownUntil) return null;
+  const diffMs = new Date(cooldownUntil).getTime() - Date.now();
+  if (diffMs <= 0) return null;
+  const mins = Math.ceil(diffMs / 60_000);
+  if (mins >= 60) return `${Math.ceil(mins / 60)}h left`;
+  return `${mins}m left`;
+}
+
+function formatTime(iso: string): string {
+  try {
+    return new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  } catch {
+    return iso;
+  }
 }
 
 export function AdminProvidersTab({
@@ -49,53 +93,60 @@ export function AdminProvidersTab({
   const toast = useToast();
   const isSuper = role === "super_admin";
 
-  const [policy, setPolicy] = useState<PlatformPolicyPublic | null>(null);
-  const [breakdown, setBreakdown] = useState<BreakdownPayload | null>(null);
+  const [data, setData] = useState<GatewayAdminPayload | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  // Per-provider key replacement modal
-  const [keyModalProvider, setKeyModalProvider] = useState<PlatformProviderPublic | null>(null);
-  const [newKeyInput, setNewKeyInput] = useState("");
+  // Settings draft
+  const [masterModeDraft, setMasterModeDraft] = useState<"auto" | "manual">("auto");
+  const [strategyDraft, setStrategyDraft] = useState<RoutingStrategy>("balanced");
+
+  // Add Key Modal state
+  const [addModalOpen, setAddModalOpen] = useState(false);
+  const [newProvider, setNewProvider] = useState<GatewayProviderId>("google");
+  const [newLabel, setNewLabel] = useState("");
+  const [newApiKey, setNewApiKey] = useState("");
+  const [newAccountId, setNewAccountId] = useState("");
   const [newBaseUrl, setNewBaseUrl] = useState("");
+  const [newRpmLimit, setNewRpmLimit] = useState(15);
+  const [newRpdLimit, setNewRpdLimit] = useState(1500);
+  const [newFreeOnly, setNewFreeOnly] = useState(true);
+  const [fetchedAddModels, setFetchedAddModels] = useState<GatewayModelConfig[]>([]);
+  const [addProbeNote, setAddProbeNote] = useState<string | null>(null);
 
-  // Per-provider model toggles modal
-  const [modelsModalProvider, setModelsModalProvider] = useState<PlatformProviderPublic | null>(null);
-  const [editedModels, setEditedModels] = useState<PlatformModelOption[]>([]);
+  // Edit Key / Models & Limits Modal state
+  const [editingKey, setEditingKey] = useState<AdminAiKeyPublic | null>(null);
+  const [editLabel, setEditLabel] = useState("");
+  const [editRpmLimit, setEditRpmLimit] = useState(15);
+  const [editRpdLimit, setEditRpdLimit] = useState(1500);
+  const [editModels, setEditModels] = useState<GatewayModelConfig[]>([]);
 
-  // Routing & quotas local edits
-  const [quotasDraft, setQuotasDraft] = useState<PlatformQuotaConfig | null>(null);
-  const [defaultsDraft, setDefaultsDraft] = useState<Record<
-    AiFeatureKey,
-    { provider: AiProviderId; model: string }
-  > | null>(null);
+  const applyPayload = useCallback((payload: GatewayAdminPayload) => {
+    setData(payload);
+    setMasterModeDraft(payload.settings.masterMode);
+    setStrategyDraft(payload.settings.strategy);
+  }, []);
 
   const loadData = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const res = await adminFetch<{ policy: PlatformPolicyPublic; breakdown: BreakdownPayload }>(
-        "/api/admin/providers",
-        { sessionToken },
-      );
-      setPolicy(res.policy);
-      setBreakdown(res.breakdown);
-      setQuotasDraft(res.policy.quotas);
-      setDefaultsDraft(res.policy.featureDefaults);
+      const res = await adminFetch<GatewayAdminPayload>("/api/admin/gateway", { sessionToken });
+      applyPayload(res);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not load providers.");
+      setError(err instanceof Error ? err.message : "Could not load AI gateway configuration.");
     } finally {
       setLoading(false);
     }
-  }, [sessionToken]);
+  }, [sessionToken, applyPayload]);
 
   useEffect(() => {
     const t = window.setTimeout(() => void loadData(), 0);
     return () => window.clearTimeout(t);
   }, [loadData]);
 
-  const mutateProvider = async (
+  const mutateGateway = async (
     label: string,
     payload: Record<string, unknown>,
     busyKey: string,
@@ -104,31 +155,39 @@ export function AdminProvidersTab({
     setBusy(busyKey);
     setError(null);
     try {
-      const res = await adminFetch<{ policy: PlatformPolicyPublic; probe?: { model: string; ms: number } }>(
-        "/api/admin/providers",
-        {
-          method: "POST",
-          sessionToken,
-          reauthToken: tokenOverride ?? reauthToken,
-          body: payload,
-        },
-      );
-      setPolicy(res.policy);
-      setQuotasDraft(res.policy.quotas);
-      setDefaultsDraft(res.policy.featureDefaults);
+      const res = await adminFetch<
+        GatewayAdminPayload & {
+          ok?: boolean;
+          probe?: { model: string; ms: number };
+          models?: GatewayModelConfig[];
+          payload?: GatewayAdminPayload;
+          warning?: string;
+        }
+      >("/api/admin/gateway", {
+        method: "POST",
+        sessionToken,
+        reauthToken: tokenOverride ?? reauthToken,
+        body: payload,
+      });
+
+      const nextPayload = res.payload ?? (res.settings && res.keys ? res : null);
+      if (nextPayload) applyPayload(nextPayload);
+
       toast.success(
         label,
-        res.probe ? `Verified ${res.probe.model} (${res.probe.ms}ms)` : "Updated platform settings.",
+        res.probe
+          ? `Verified ${res.probe.model} (${res.probe.ms}ms)${res.warning ? ` — ${res.warning}` : ""}`
+          : "Updated AI gateway pool.",
       );
       return true;
     } catch (err) {
       if (err instanceof AdminClientError && err.code === "ADMIN_REAUTH_REQUIRED") {
         onNeedReauth(label, async (fresh) => {
-          await mutateProvider(label, payload, busyKey, fresh);
+          await mutateGateway(label, payload, busyKey, fresh);
         });
         return false;
       }
-      const msg = err instanceof Error ? err.message : "Operation failed.";
+      const msg = err instanceof Error ? err.message : "Gateway action failed.";
       setError(msg);
       toast.error("Action failed", msg);
       return false;
@@ -137,24 +196,142 @@ export function AdminProvidersTab({
     }
   };
 
-  if (loading && !policy) return <BrandLoader />;
+  const openAddModalForProvider = (providerId: GatewayProviderId) => {
+    const meta = getProviderMeta(providerId);
+    setNewProvider(providerId);
+    setNewLabel("");
+    setNewApiKey("");
+    setNewAccountId("");
+    setNewBaseUrl(meta.baseUrl || "");
+    setNewRpmLimit(meta.defaultRpmLimit);
+    setNewRpdLimit(meta.defaultRpdLimit);
+    setNewFreeOnly(meta.freeTierDefault);
+    setFetchedAddModels(meta.defaultModels);
+    setAddProbeNote(null);
+    setAddModalOpen(true);
+  };
 
-  const allEnabledModels: { provider: AiProviderId; label: string; model: string; displayName: string }[] = [];
-  if (policy) {
-    for (const p of policy.providers) {
-      if (!p.enabled || !p.hasKey) continue;
-      for (const m of p.models) {
-        if (m.enabled) {
-          allEnabledModels.push({
-            provider: p.id,
-            label: p.label,
-            model: m.id,
-            displayName: m.displayName || m.id,
-          });
-        }
-      }
+  const handleTestNewKey = async () => {
+    if (!newApiKey.trim()) return;
+    setBusy("add_test");
+    setError(null);
+    setAddProbeNote(null);
+    try {
+      const res = await adminFetch<{
+        ok: boolean;
+        probe?: { model: string; ms: number; reply?: string };
+        models?: { id: string; label: string; isFreeTier?: boolean }[];
+        warning?: string;
+      }>("/api/admin/gateway", {
+        method: "POST",
+        sessionToken,
+        body: {
+          action: "test_key",
+          provider: newProvider,
+          apiKey: newApiKey.trim(),
+          accountId: newAccountId.trim() || undefined,
+          baseUrl: newBaseUrl.trim() || undefined,
+        },
+      });
+      setAddProbeNote(
+        res.probe
+          ? `Probe passed on ${res.probe.model} in ${res.probe.ms}ms.${res.warning ? ` (${res.warning})` : ""}`
+          : "Key verified.",
+      );
+      toast.success("Key verified", res.probe ? `${res.probe.model} (${res.probe.ms}ms)` : undefined);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Key probe failed.";
+      setError(msg);
+      toast.error("Key probe failed", msg);
+    } finally {
+      setBusy(null);
     }
-  }
+  };
+
+  const handleFetchNewModels = async () => {
+    if (!newApiKey.trim()) return;
+    setBusy("add_fetch");
+    setError(null);
+    try {
+      const res = await adminFetch<{ models: GatewayModelConfig[] }>("/api/admin/gateway", {
+        method: "POST",
+        sessionToken,
+        body: {
+          action: "fetch_models",
+          provider: newProvider,
+          apiKey: newApiKey.trim(),
+          accountId: newAccountId.trim() || undefined,
+          baseUrl: newBaseUrl.trim() || undefined,
+          freeTierOnly: newFreeOnly,
+        },
+      });
+      if (Array.isArray(res.models) && res.models.length > 0) {
+        setFetchedAddModels(res.models);
+        setAddProbeNote(`Fetched ${res.models.length} models from ${getProviderMeta(newProvider).label}.`);
+      } else {
+        setAddProbeNote("Endpoint responded but returned 0 filtered models; default models kept.");
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Failed to fetch models.";
+      setError(msg);
+      toast.error("Model fetch failed", msg);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const handleAddKeySubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newApiKey.trim()) return;
+    const ok = await mutateGateway(
+      `Add ${getProviderMeta(newProvider).label} key`,
+      {
+        action: "add_key",
+        provider: newProvider,
+        label: newLabel.trim() || undefined,
+        apiKey: newApiKey.trim(),
+        accountId: newAccountId.trim() || undefined,
+        baseUrl: newBaseUrl.trim() || undefined,
+        rpmLimit: Number(newRpmLimit) || 15,
+        rpdLimit: Number(newRpdLimit) || 1500,
+        models: fetchedAddModels,
+      },
+      "add_key",
+    );
+    if (ok) {
+      setNewApiKey("");
+      setAddModalOpen(false);
+    }
+  };
+
+  const openEditModal = (k: AdminAiKeyPublic) => {
+    setEditingKey(k);
+    setEditLabel(k.label);
+    setEditRpmLimit(k.rpmLimit);
+    setEditRpdLimit(k.rpdLimit);
+    setEditModels(k.models.map((m) => ({ ...m, seats: [...m.seats] })));
+  };
+
+  const toggleEditModelSeat = (modelId: string, seat: TaskSeat) => {
+    setEditModels((prev) =>
+      prev.map((m) => {
+        if (m.id !== modelId) return m;
+        const has = m.seats.includes(seat);
+        const nextSeats = has ? m.seats.filter((s) => s !== seat) : [...m.seats, seat];
+        return { ...m, seats: nextSeats.length > 0 ? nextSeats : [seat] };
+      }),
+    );
+  };
+
+  if (loading && !data) return <BrandLoader />;
+
+  const keys = data?.keys ?? [];
+  const catalog = data?.catalog ?? [];
+  const executionLogs = data?.executionLogs ?? [];
+  const healthyCount = keys.filter((k) => k.enabled && k.healthStatus === "healthy").length;
+  const cooldownCount = keys.filter((k) => k.healthStatus === "cooldown").length;
+  const invalidCount = keys.filter((k) => k.healthStatus === "invalid").length;
+  const selectedProviderMeta = getProviderMeta(newProvider);
 
   return (
     <div className="stack" style={{ gap: 16 }}>
@@ -162,517 +339,716 @@ export function AdminProvidersTab({
 
       {!isSuper && (
         <Banner tone="info">
-          Only <strong>Super Admins</strong> can add, rotate, delete platform keys or modify routing/quotas. You have
-          read access to usage and cost metrics.
+          Only <strong>Super Admins</strong> can add, rotate, delete pooled keys or alter routing mode. Admins can inspect
+          key health, run connection probes, and monitor execution receipts.
         </Banner>
       )}
 
-      {/* Platform API Keys Grid */}
-      {policy && (
-        <Card
-          title="Platform API Keys & Providers"
-          sub="Keys are AES-256-GCM encrypted at rest on the server and displayed masked only. Users automatically run on enabled models below."
-        >
-          <div className="grid grid-2" style={{ gap: 12 }}>
-            {policy.providers.map((prov) => (
-              <div
-                key={prov.id}
-                style={{
-                  padding: 14,
-                  borderRadius: 10,
-                  border: `1px solid ${prov.enabled && prov.hasKey ? "var(--teal-deep)" : "var(--line)"}`,
-                  background: "var(--surface)",
-                }}
+      {/* Master Routing & Auto-Failover Mode */}
+      <Card
+        title="Unified LLM Gateway & Auto Routing"
+        sub="Control how free-tier & pooled keys execute across all features. Healthy keys are steered at 85% RPM/RPD before 429s hit."
+        actions={
+          <div className="row" style={{ gap: 6 }}>
+            <Badge tone={healthyCount > 0 ? "ok" : "bad"}>{healthyCount} Healthy</Badge>
+            {cooldownCount > 0 && <Badge tone="warn">{cooldownCount} Cooldown</Badge>}
+            {invalidCount > 0 && <Badge tone="bad">{invalidCount} Invalid</Badge>}
+            <button type="button" className="btn btn-sm" onClick={() => void loadData()} disabled={busy !== null}>
+              <RefreshCw size={12} />
+              Refresh
+            </button>
+          </div>
+        }
+      >
+        <div className="grid grid-2" style={{ gap: 12, marginBottom: 14 }}>
+          <button
+            type="button"
+            disabled={!isSuper || busy !== null}
+            onClick={() => setMasterModeDraft("auto")}
+            style={{
+              textAlign: "left",
+              padding: 14,
+              borderRadius: 10,
+              border: `1.5px solid ${masterModeDraft === "auto" ? "var(--teal-deep, #0f766e)" : "var(--line)"}`,
+              background: masterModeDraft === "auto" ? "var(--accent-soft, rgba(15,118,110,0.08))" : "var(--surface)",
+              cursor: isSuper ? "pointer" : "default",
+            }}
+          >
+            <div className="row" style={{ gap: 8, marginBottom: 4 }}>
+              <Zap size={15} style={{ color: "var(--teal-deep)" }} />
+              <span className="strong">AUTO (Smart Multi-Key Failover)</span>
+              {masterModeDraft === "auto" && <Badge tone="ok">Selected</Badge>}
+            </div>
+            <div className="tiny muted">
+              Automatically scores all healthy keys by seat capability, routing strategy, headroom (&lt;85% RPM/RPD), and fails over silently on errors.
+            </div>
+          </button>
+
+          <button
+            type="button"
+            disabled={!isSuper || busy !== null}
+            onClick={() => setMasterModeDraft("manual")}
+            style={{
+              textAlign: "left",
+              padding: 14,
+              borderRadius: 10,
+              border: `1.5px solid ${masterModeDraft === "manual" ? "var(--teal-deep, #0f766e)" : "var(--line)"}`,
+              background: masterModeDraft === "manual" ? "var(--accent-soft, rgba(15,118,110,0.08))" : "var(--surface)",
+              cursor: isSuper ? "pointer" : "default",
+            }}
+          >
+            <div className="row" style={{ gap: 8, marginBottom: 4 }}>
+              <Sliders size={15} />
+              <span className="strong">Manual Fallback Order</span>
+              {masterModeDraft === "manual" && <Badge tone="info">Selected</Badge>}
+            </div>
+            <div className="tiny muted">
+              Strictly walks configured keys and fallback sequence in explicit priority order while still honoring cooldowns.
+            </div>
+          </button>
+        </div>
+
+        <div className="row" style={{ gap: 12, flexWrap: "wrap", alignItems: "flex-end" }}>
+          <div style={{ flex: "1 1 280px" }}>
+            <Field
+              label="Routing Strategy"
+              hint={STRATEGY_DESCRIPTIONS[strategyDraft].desc}
+            >
+              <select
+                value={strategyDraft}
+                disabled={!isSuper || busy !== null}
+                onChange={(e) => setStrategyDraft(e.target.value as RoutingStrategy)}
               >
-                <div className="row" style={{ justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
-                  <div>
-                    <div className="row" style={{ gap: 6, alignItems: "center" }}>
-                      <span className="strong">{prov.label}</span>
-                      {prov.hasKey ? (
-                        <Badge tone="ok">{prov.maskedKey}</Badge>
-                      ) : (
-                        <Badge>No key</Badge>
-                      )}
-                      {prov.enabled && <Badge tone="info">Enabled</Badge>}
-                    </div>
-                    <div className="tiny muted" style={{ marginTop: 4 }}>
-                      {prov.models.filter((m) => m.enabled).length} of {prov.models.length} models enabled
-                      {prov.lastTestedAt && (
-                        <> · Last test {prov.lastTestOk ? "passed" : "failed"}</>
-                      )}
-                    </div>
-                    {prov.lastTestError && (
-                      <div className="tiny" style={{ color: "var(--bad)", marginTop: 2 }}>
-                        {prov.lastTestError}
-                      </div>
-                    )}
-                  </div>
+                {(Object.keys(STRATEGY_DESCRIPTIONS) as RoutingStrategy[]).map((s) => (
+                  <option key={s} value={s}>
+                    {STRATEGY_DESCRIPTIONS[s].label}
+                  </option>
+                ))}
+              </select>
+            </Field>
+          </div>
 
-                  {isSuper && (
-                    <label className="row tiny" style={{ gap: 5, cursor: "pointer" }}>
-                      <input
-                        type="checkbox"
-                        checked={prov.enabled}
-                        disabled={!prov.hasKey || busy !== null}
-                        onChange={(e) =>
-                          void mutateProvider(
-                            `${e.target.checked ? "Enable" : "Disable"} ${prov.label}`,
-                            { action: "toggle_provider", provider: prov.id, enabled: e.target.checked },
-                            `toggle_${prov.id}`,
-                          )
-                        }
-                      />
-                      Active
-                    </label>
-                  )}
-                </div>
+          {isSuper && (
+            <button
+              type="button"
+              className="btn btn-primary"
+              disabled={busy !== null}
+              onClick={() =>
+                void mutateGateway(
+                  "Save gateway routing settings",
+                  {
+                    action: "update_settings",
+                    masterMode: masterModeDraft,
+                    strategy: strategyDraft,
+                  },
+                  "save_settings",
+                )
+              }
+            >
+              {busy === "save_settings" ? <Loader2 size={14} className="spin" /> : <Save size={14} />}
+              Save Gateway Settings
+            </button>
+          )}
+        </div>
+      </Card>
 
-                {isSuper && (
-                  <div className="row" style={{ gap: 6, flexWrap: "wrap", marginTop: 12 }}>
-                    <button
-                      type="button"
-                      className="btn btn-sm"
-                      onClick={() => {
-                        setKeyModalProvider(prov);
-                        setNewKeyInput("");
-                        setNewBaseUrl(prov.baseUrl || "");
-                      }}
-                    >
-                      <KeyRound size={12} />
-                      {prov.hasKey ? "Rotate key" : "Add key"}
-                    </button>
-
-                    <button
-                      type="button"
-                      className="btn btn-sm"
-                      disabled={!prov.hasKey || busy !== null}
-                      onClick={() =>
-                        void mutateProvider(
-                          `Test ${prov.label} connection`,
-                          { action: "test_connection", provider: prov.id },
-                          `test_${prov.id}`,
-                        )
-                      }
-                    >
-                      {busy === `test_${prov.id}` ? (
-                        <Loader2 size={12} className="spin" />
-                      ) : (
-                        <TestTube2 size={12} />
-                      )}
-                      Test connection
-                    </button>
-
-                    <button
-                      type="button"
-                      className="btn btn-sm btn-ghost"
-                      onClick={() => {
-                        setModelsModalProvider(prov);
-                        setEditedModels(prov.models.map((m) => ({ ...m })));
-                      }}
-                    >
-                      <Sliders size={12} />
-                      Models
-                    </button>
-
-                    {prov.hasKey && !prov.maskedKey.startsWith("env-") && (
-                      <button
-                        type="button"
-                        className="btn btn-sm btn-ghost"
-                        style={{ color: "var(--bad)" }}
-                        onClick={async () => {
-                          const ok = await confirmDialog({
-                            title: `Delete platform ${prov.label} key?`,
-                            message: "Users relying on this shared provider will be routed to fallbacks.",
-                            confirmLabel: "Delete key",
-                            tone: "bad",
-                          });
-                          if (ok) {
-                            await mutateProvider(
-                              `Delete ${prov.label} key`,
-                              { action: "delete_key", provider: prov.id },
-                              `del_${prov.id}`,
-                            );
-                          }
-                        }}
-                      >
-                        <Trash2 size={12} />
-                      </button>
-                    )}
-                  </div>
-                )}
-              </div>
+      {/* Quick-Add Free-Tier & Custom Provider Buttons */}
+      {isSuper && (
+        <Card
+          title="Quick-Add Free-Tier or Custom Key"
+          sub="Add multiple keys per provider (or mix Google AI Studio, NVIDIA NIM, Z.ai, Cloudflare, OpenRouter :free, Groq, Cerebras) to multiply free-tier capacity."
+          actions={
+            <button
+              type="button"
+              className="btn btn-primary btn-sm"
+              onClick={() => openAddModalForProvider("google")}
+            >
+              <Plus size={13} />
+              Add API Key
+            </button>
+          }
+        >
+          <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
+            {catalog.map((meta) => (
+              <button
+                key={meta.id}
+                type="button"
+                className="btn btn-sm"
+                onClick={() => openAddModalForProvider(meta.id)}
+              >
+                <Plus size={12} />
+                {meta.label}
+              </button>
             ))}
           </div>
         </Card>
       )}
 
-      {/* Feature Default Models & Quotas */}
-      {policy && quotasDraft && defaultsDraft && (
-        <div className="grid grid-2" style={{ gap: 16 }}>
-          <Card
-            title="Default Model Per Feature"
-            sub="Used automatically when a user runs on platform shared keys"
-          >
-            <div className="stack" style={{ gap: 10 }}>
-              {(Object.keys(AI_FEATURE_LABELS) as AiFeatureKey[]).map((feat) => {
-                const cur = defaultsDraft[feat];
-                const curKey = `${cur.provider}::${cur.model}`;
-                return (
-                  <Field key={feat} label={AI_FEATURE_LABELS[feat]}>
-                    <select
-                      className="input"
-                      disabled={!isSuper}
-                      value={curKey}
-                      onChange={(e) => {
-                        const [provider, model] = e.target.value.split("::") as [AiProviderId, string];
-                        setDefaultsDraft((prev) =>
-                          prev ? { ...prev, [feat]: { provider, model } } : prev,
-                        );
-                      }}
-                    >
-                      {!allEnabledModels.some((m) => `${m.provider}::${m.model}` === curKey) && (
-                        <option value={curKey}>{cur.provider} — {cur.model} (Current)</option>
-                      )}
-                      {allEnabledModels.map((m) => (
-                        <option key={`${m.provider}::${m.model}`} value={`${m.provider}::${m.model}`}>
-                          {m.label} — {m.displayName}
-                        </option>
-                      ))}
-                    </select>
-                  </Field>
-                );
-              })}
-
-              {isSuper && (
-                <button
-                  type="button"
-                  className="btn btn-primary btn-sm"
-                  disabled={busy !== null}
-                  onClick={() =>
-                    void mutateProvider(
-                      "Save feature defaults & quotas",
-                      {
-                        action: "update_routing",
-                        featureDefaults: defaultsDraft,
-                        quotas: quotasDraft,
-                      },
-                      "save_routing",
-                    )
-                  }
-                >
-                  <Save size={13} /> Save feature routing
-                </button>
-              )}
-            </div>
-          </Card>
-
-          <Card
-            title="Quotas, Rate Limits & Spend Cap"
-            sub="Applies to platform shared-key usage only; BYOK personal keys are never capped"
-          >
-            <div className="stack" style={{ gap: 10 }}>
-              <div className="grid grid-2" style={{ gap: 10 }}>
-                <Field label="Daily requests / user">
-                  <input
-                    className="input"
-                    type="number"
-                    disabled={!isSuper}
-                    value={quotasDraft.dailyRequestsPerUser}
-                    onChange={(e) =>
-                      setQuotasDraft({ ...quotasDraft, dailyRequestsPerUser: Number(e.target.value) || 100 })
-                    }
-                  />
-                </Field>
-                <Field label="Monthly requests / user">
-                  <input
-                    className="input"
-                    type="number"
-                    disabled={!isSuper}
-                    value={quotasDraft.monthlyRequestsPerUser}
-                    onChange={(e) =>
-                      setQuotasDraft({ ...quotasDraft, monthlyRequestsPerUser: Number(e.target.value) || 1500 })
-                    }
-                  />
-                </Field>
-                <Field label="Rate limit (req / min)">
-                  <input
-                    className="input"
-                    type="number"
-                    disabled={!isSuper}
-                    value={quotasDraft.rateLimitPerMinute}
-                    onChange={(e) =>
-                      setQuotasDraft({ ...quotasDraft, rateLimitPerMinute: Number(e.target.value) || 25 })
-                    }
-                  />
-                </Field>
-                <Field label="Monthly Spend Cap ($ USD)">
-                  <input
-                    className="input"
-                    type="number"
-                    disabled={!isSuper}
-                    value={quotasDraft.monthlySpendCapUsd}
-                    onChange={(e) =>
-                      setQuotasDraft({ ...quotasDraft, monthlySpendCapUsd: Number(e.target.value) || 250 })
-                    }
-                  />
-                </Field>
-              </div>
-              <Field label={`Spend alert threshold (${quotasDraft.alertThresholdPct}%)`}>
-                <input
-                  type="range"
-                  min={50}
-                  max={100}
-                  disabled={!isSuper}
-                  value={quotasDraft.alertThresholdPct}
-                  onChange={(e) =>
-                    setQuotasDraft({ ...quotasDraft, alertThresholdPct: Number(e.target.value) })
-                  }
-                />
-              </Field>
-
-              {isSuper && (
-                <button
-                  type="button"
-                  className="btn btn-primary btn-sm"
-                  disabled={busy !== null}
-                  onClick={() =>
-                    void mutateProvider(
-                      "Save platform quotas & spend cap",
-                      {
-                        action: "update_routing",
-                        featureDefaults: defaultsDraft,
-                        quotas: quotasDraft,
-                      },
-                      "save_quotas",
-                    )
-                  }
-                >
-                  <Save size={13} /> Save limits &amp; spend cap
-                </button>
-              )}
-            </div>
-          </Card>
-        </div>
-      )}
-
-      {/* Usage & Cost Breakdown */}
-      {breakdown && (
-        <div className="grid grid-2" style={{ gap: 16 }}>
-          <Card title="Usage & Cost by Provider & Feature" sub="Last 30 days">
-            {Object.keys(breakdown.byProvider).length === 0 ? (
-              <Empty title="No AI usage logged yet" />
-            ) : (
-              <div className="table-wrap">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Provider / Feature</th>
-                      <th className="num">Requests</th>
-                      <th className="num">Tokens</th>
-                      <th className="num">Est. Cost</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {Object.entries(breakdown.byProvider).map(([p, s]) => (
-                      <tr key={p}>
-                        <td className="strong">{p}</td>
-                        <td className="num">{s.requests}</td>
-                        <td className="num">{s.tokens.toLocaleString()}</td>
-                        <td className="num">${s.costUsd.toFixed(4)}</td>
-                      </tr>
-                    ))}
-                    {Object.entries(breakdown.byFeature).map(([f, s]) => (
-                      <tr key={f}>
-                        <td className="tiny muted">Feature: {f.replace(/_/g, " ")}</td>
-                        <td className="num tiny">{s.requests}</td>
-                        <td className="num tiny">{s.tokens.toLocaleString()}</td>
-                        <td className="num tiny">${s.costUsd.toFixed(4)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </Card>
-
-          <Card title="Top Platform-Key Consumers" sub="Users consuming shared platform quota">
-            {breakdown.byUser.length === 0 ? (
-              <Empty title="No platform usage recorded yet" />
-            ) : (
-              <div className="table-wrap">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>User</th>
-                      <th className="num">Platform Requests</th>
-                      <th className="num">Est. Cost</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {breakdown.byUser.slice(0, 10).map((u) => (
-                      <tr key={u.ownerId}>
-                        <td className="tiny strong">{u.email}</td>
-                        <td className="num">{u.requests}</td>
-                        <td className="num">${u.costUsd.toFixed(4)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </Card>
-        </div>
-      )}
-
-      {/* Add / Rotate Key Modal */}
-      <Modal
-        open={Boolean(keyModalProvider)}
-        onClose={() => setKeyModalProvider(null)}
-        title={keyModalProvider ? `${keyModalProvider.hasKey ? "Rotate" : "Add"} ${keyModalProvider.label} Platform Key` : ""}
+      {/* Pooled Keys List */}
+      <Card
+        title="Pooled API Keys"
+        sub="Keys are encrypted at rest with AES-256-GCM. Cooldown state persists across serverless cold starts."
       >
-        {keyModalProvider && (
-          <div className="stack" style={{ gap: 12 }}>
-            <Banner tone="info">
-              This key is immediately AES-256-GCM encrypted on the server and will never be viewable again (shown only
-              as masked hint).
-            </Banner>
-            <Field label="New API Key">
+        {keys.length === 0 ? (
+          <Empty title="No pooled keys configured yet">
+            <p className="tiny muted">Add at least one provider key above so the unified gateway can serve users automatically.</p>
+          </Empty>
+        ) : (
+          <div className="stack" style={{ gap: 10 }}>
+            {keys.map((k) => {
+              const meta = getProviderMeta(k.provider);
+              const cooldownLeft = k.healthStatus === "cooldown" ? formatCooldownRemaining(k.cooldownUntil) : null;
+              const rpmPct = Math.min(100, Math.round(((k.rpmUsed ?? 0) / Math.max(1, k.rpmLimit)) * 100));
+              const rpdPct = Math.min(100, Math.round(((k.rpdUsed ?? 0) / Math.max(1, k.rpdLimit)) * 100));
+              const enabledModels = k.models.filter((m) => m.enabled).length;
+
+              return (
+                <div
+                  key={k.id}
+                  style={{
+                    padding: 14,
+                    borderRadius: 10,
+                    border: `1px solid ${
+                      !k.enabled
+                        ? "var(--line)"
+                        : k.healthStatus === "invalid"
+                          ? "var(--bad)"
+                          : k.healthStatus === "cooldown"
+                            ? "var(--warn)"
+                            : "var(--teal-deep)"
+                    }`,
+                    background: "var(--surface)",
+                  }}
+                >
+                  <div className="row" style={{ justifyContent: "space-between", alignItems: "flex-start", gap: 10, flexWrap: "wrap" }}>
+                    <div style={{ minWidth: 240, flex: 1 }}>
+                      <div className="row" style={{ gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+                        <span className="strong">{k.label || meta.label}</span>
+                        <Badge>{meta.label}</Badge>
+                        <Badge>{k.maskedKey}</Badge>
+                        {k.healthStatus === "healthy" ? (
+                          <Badge tone="ok">Healthy</Badge>
+                        ) : k.healthStatus === "cooldown" ? (
+                          <Badge tone="warn">Cooldown{cooldownLeft ? ` (${cooldownLeft})` : ""}</Badge>
+                        ) : (
+                          <Badge tone="bad">Invalid Key</Badge>
+                        )}
+                        {!k.enabled && <Badge>Paused</Badge>}
+                      </div>
+
+                      <div className="tiny muted" style={{ marginTop: 4 }}>
+                        {enabledModels} / {k.models.length} models enabled
+                        {k.baseUrl ? ` · ${k.baseUrl}` : ""}
+                        {k.lastCheckedAt ? ` · Checked ${formatTime(k.lastCheckedAt)}` : ""}
+                      </div>
+
+                      {k.lastError && (
+                        <div className="tiny" style={{ color: "var(--bad)", marginTop: 4 }}>
+                          Last error: {k.lastError}
+                        </div>
+                      )}
+
+                      {/* Live RPM / RPD Headroom Bars */}
+                      <div className="grid grid-2" style={{ gap: 10, marginTop: 8, maxWidth: 460 }}>
+                        <div>
+                          <div className="row tiny muted" style={{ justifyContent: "space-between" }}>
+                            <span>RPM Window</span>
+                            <span>{k.rpmUsed ?? 0} / {k.rpmLimit} ({rpmPct}%)</span>
+                          </div>
+                          <div style={{ height: 5, borderRadius: 4, background: "var(--line)", overflow: "hidden", marginTop: 3 }}>
+                            <div
+                              style={{
+                                height: "100%",
+                                width: `${rpmPct}%`,
+                                background: rpmPct >= 85 ? "var(--warn)" : "var(--teal-deep, #0f766e)",
+                              }}
+                            />
+                          </div>
+                        </div>
+                        <div>
+                          <div className="row tiny muted" style={{ justifyContent: "space-between" }}>
+                            <span>RPD Window</span>
+                            <span>{k.rpdUsed ?? 0} / {k.rpdLimit} ({rpdPct}%)</span>
+                          </div>
+                          <div style={{ height: 5, borderRadius: 4, background: "var(--line)", overflow: "hidden", marginTop: 3 }}>
+                            <div
+                              style={{
+                                height: "100%",
+                                width: `${rpdPct}%`,
+                                background: rpdPct >= 85 ? "var(--warn)" : "var(--teal-deep, #0f766e)",
+                              }}
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="row" style={{ gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+                      {isSuper && (
+                        <label className="row tiny" style={{ gap: 5, cursor: "pointer", marginRight: 4 }}>
+                          <input
+                            type="checkbox"
+                            checked={k.enabled}
+                            disabled={busy !== null}
+                            onChange={(e) =>
+                              void mutateGateway(
+                                `${e.target.checked ? "Enable" : "Pause"} ${k.label}`,
+                                { action: "toggle_key", keyId: k.id, enabled: e.target.checked },
+                                `toggle_${k.id}`,
+                              )
+                            }
+                          />
+                          Enabled
+                        </label>
+                      )}
+
+                      <button
+                        type="button"
+                        className="btn btn-sm"
+                        disabled={busy !== null}
+                        onClick={() =>
+                          void mutateGateway(
+                            `Test ${k.label}`,
+                            { action: "test_key", keyId: k.id },
+                            `test_${k.id}`,
+                          )
+                        }
+                      >
+                        {busy === `test_${k.id}` ? <Loader2 size={12} className="spin" /> : <TestTube2 size={12} />}
+                        Test Key
+                      </button>
+
+                      <button
+                        type="button"
+                        className="btn btn-sm"
+                        disabled={busy !== null}
+                        onClick={() =>
+                          void mutateGateway(
+                            `Fetch live models for ${k.label}`,
+                            { action: "fetch_models", keyId: k.id },
+                            `fetch_${k.id}`,
+                          )
+                        }
+                      >
+                        {busy === `fetch_${k.id}` ? <Loader2 size={12} className="spin" /> : <Cpu size={12} />}
+                        Fetch Models
+                      </button>
+
+                      {isSuper && (
+                        <>
+                          <button
+                            type="button"
+                            className="btn btn-sm"
+                            disabled={busy !== null}
+                            onClick={() => openEditModal(k)}
+                          >
+                            <Sliders size={12} />
+                            Models &amp; Limits
+                          </button>
+
+                          {k.healthStatus !== "healthy" && (
+                            <button
+                              type="button"
+                              className="btn btn-sm"
+                              disabled={busy !== null}
+                              onClick={() =>
+                                void mutateGateway(
+                                  `Clear cooldown for ${k.label}`,
+                                  { action: "clear_cooldown", keyId: k.id },
+                                  `clear_${k.id}`,
+                                )
+                              }
+                            >
+                              <RotateCcw size={12} />
+                              Reset Cooldown
+                            </button>
+                          )}
+
+                          <button
+                            type="button"
+                            className="btn btn-sm btn-ghost"
+                            disabled={busy !== null}
+                            onClick={async () => {
+                              const ok = await confirmDialog({
+                                title: `Remove ${k.label}?`,
+                                message: "This pooled key will be permanently removed from the gateway.",
+                                confirmLabel: "Delete key",
+                                tone: "bad",
+                              });
+                              if (ok) {
+                                void mutateGateway(
+                                  `Delete ${k.label}`,
+                                  { action: "delete_key", keyId: k.id },
+                                  `delete_${k.id}`,
+                                );
+                              }
+                            }}
+                          >
+                            <Trash2 size={12} />
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </Card>
+
+      {/* Live Execution Receipts Log */}
+      <Card
+        title="Live AI Execution Receipts"
+        sub="Every server-side LLM request logs requested mode, actual provider & model served, fallback hops, and latency."
+        actions={
+          <span className="tiny muted row" style={{ gap: 5 }}>
+            <Activity size={13} />
+            Latest {executionLogs.length} calls
+          </span>
+        }
+      >
+        {executionLogs.length === 0 ? (
+          <Empty title="No execution receipts recorded yet">
+            <p className="tiny muted">Run any AI action or test probe to see live execution proof here.</p>
+          </Empty>
+        ) : (
+          <div style={{ overflowX: "auto" }}>
+            <table className="table" style={{ width: "100%", fontSize: 12.5 }}>
+              <thead>
+                <tr>
+                  <th>Time</th>
+                  <th>Seat</th>
+                  <th>Feature</th>
+                  <th>Mode</th>
+                  <th>Actual Provider &amp; Model</th>
+                  <th>Hops</th>
+                  <th>Latency</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {executionLogs.map((log) => (
+                  <tr key={log.id}>
+                    <td className="tiny muted">{formatTime(log.createdAt)}</td>
+                    <td>
+                      <Badge>{log.taskType}</Badge>
+                    </td>
+                    <td>{log.feature}</td>
+                    <td className="tiny">{log.requestedMode}</td>
+                    <td>
+                      <span className="strong">{log.actualProvider || "—"}</span>{" "}
+                      <span className="tiny muted">{log.actualModel || ""}</span>
+                      {log.grounded && (
+                        <>
+                          {" "}
+                          <Badge tone="info">Grounded</Badge>
+                        </>
+                      )}
+                    </td>
+                    <td>{log.fallbackHops}</td>
+                    <td>{log.latencyMs}ms</td>
+                    <td>
+                      <Badge tone={log.status === "success" ? "ok" : "bad"}>{log.status}</Badge>
+                      {log.errorSummary && (
+                        <div className="tiny muted" style={{ maxWidth: 260, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }} title={log.errorSummary}>
+                          {log.errorSummary}
+                        </div>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Card>
+
+      {/* Add Key Modal */}
+      <Modal
+        open={addModalOpen}
+        onClose={() => setAddModalOpen(false)}
+        title={`Add Pooled Key · ${selectedProviderMeta.label}`}
+        large
+      >
+        <form className="stack" style={{ gap: 12 }} onSubmit={(e) => void handleAddKeySubmit(e)}>
+          <div className="grid grid-2" style={{ gap: 10 }}>
+            <Field label="Provider">
+              <select
+                value={newProvider}
+                onChange={(e) => {
+                  const pid = e.target.value as GatewayProviderId;
+                  const meta = getProviderMeta(pid);
+                  setNewProvider(pid);
+                  setNewBaseUrl(meta.baseUrl || "");
+                  setNewRpmLimit(meta.defaultRpmLimit);
+                  setNewRpdLimit(meta.defaultRpdLimit);
+                  setNewFreeOnly(meta.freeTierDefault);
+                  setFetchedAddModels(meta.defaultModels);
+                  setAddProbeNote(null);
+                }}
+              >
+                {catalog.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.label}
+                  </option>
+                ))}
+              </select>
+            </Field>
+
+            <Field label="Key Label (optional)" hint="e.g. Google Key #2 or NVIDIA NIM Free">
               <input
-                className="input"
-                type="password"
-                autoComplete="off"
-                value={newKeyInput}
-                onChange={(e) => setNewKeyInput(e.target.value)}
-                placeholder="Paste provider API key…"
+                type="text"
+                value={newLabel}
+                onChange={(e) => setNewLabel(e.target.value)}
+                placeholder={`${selectedProviderMeta.label} Pool Key`}
               />
             </Field>
-            {keyModalProvider.id === "custom" && (
-              <Field label="Base URL">
+          </div>
+
+          <Field
+            label="API Key"
+            hint={`Encrypted with AES-256-GCM before storage. Get a key at ${selectedProviderMeta.docsLabel}.`}
+          >
+            <input
+              type="password"
+              required
+              autoComplete="off"
+              value={newApiKey}
+              onChange={(e) => setNewApiKey(e.target.value)}
+              placeholder="Paste API key..."
+            />
+          </Field>
+
+          {selectedProviderMeta.requiresAccountId && (
+            <Field label="Cloudflare Account ID" hint="Required for Workers AI (/accounts/<id>/ai/v1).">
+              <input
+                type="text"
+                required
+                value={newAccountId}
+                onChange={(e) => setNewAccountId(e.target.value)}
+                placeholder="32-character Cloudflare Account ID"
+              />
+            </Field>
+          )}
+
+          {(selectedProviderMeta.requiresBaseUrl || newProvider === "zai" || newProvider === "custom") && (
+            <Field label="API Base URL" hint="Public https:// endpoint URL.">
+              <input
+                type="url"
+                required={Boolean(selectedProviderMeta.requiresBaseUrl)}
+                value={newBaseUrl}
+                onChange={(e) => setNewBaseUrl(e.target.value)}
+                placeholder="https://api.example.com/v1"
+              />
+            </Field>
+          )}
+
+          <div className="grid grid-2" style={{ gap: 10 }}>
+            <Field label="RPM Limit (Requests / Min)" hint="Router steers away proactively at 85%.">
+              <input
+                type="number"
+                min={1}
+                max={10000}
+                value={newRpmLimit}
+                onChange={(e) => setNewRpmLimit(Number(e.target.value) || 15)}
+              />
+            </Field>
+            <Field label="RPD Limit (Requests / Day)">
+              <input
+                type="number"
+                min={1}
+                max={1000000}
+                value={newRpdLimit}
+                onChange={(e) => setNewRpdLimit(Number(e.target.value) || 1500)}
+              />
+            </Field>
+          </div>
+
+          {newProvider === "openrouter" && (
+            <label className="row tiny" style={{ gap: 8, cursor: "pointer" }}>
+              <input
+                type="checkbox"
+                checked={newFreeOnly}
+                onChange={(e) => setNewFreeOnly(e.target.checked)}
+              />
+              <span>Free-tier models only (`:free` suffix)</span>
+            </label>
+          )}
+
+          {addProbeNote && (
+            <Banner tone="ok">
+              <span className="row" style={{ gap: 6 }}>
+                <CheckCircle2 size={14} /> {addProbeNote}
+              </span>
+            </Banner>
+          )}
+
+          <div className="tiny muted">
+            Models to attach: <strong>{fetchedAddModels.length}</strong> ({fetchedAddModels.slice(0, 4).map((m) => m.id).join(", ")}
+            {fetchedAddModels.length > 4 ? ` +${fetchedAddModels.length - 4} more` : ""})
+          </div>
+
+          <div className="row" style={{ gap: 8, justifyContent: "space-between", flexWrap: "wrap", marginTop: 4 }}>
+            <div className="row" style={{ gap: 8 }}>
+              <button
+                type="button"
+                className="btn btn-sm"
+                disabled={!newApiKey.trim() || busy !== null}
+                onClick={() => void handleTestNewKey()}
+              >
+                {busy === "add_test" ? <Loader2 size={12} className="spin" /> : <TestTube2 size={12} />}
+                Test Key
+              </button>
+              <button
+                type="button"
+                className="btn btn-sm"
+                disabled={!newApiKey.trim() || busy !== null}
+                onClick={() => void handleFetchNewModels()}
+              >
+                {busy === "add_fetch" ? <Loader2 size={12} className="spin" /> : <Cpu size={12} />}
+                Fetch Models
+              </button>
+            </div>
+
+            <div className="row" style={{ gap: 8 }}>
+              <button type="button" className="btn btn-sm" onClick={() => setAddModalOpen(false)}>
+                Cancel
+              </button>
+              <button type="submit" className="btn btn-primary btn-sm" disabled={!newApiKey.trim() || busy !== null}>
+                {busy === "add_key" ? <Loader2 size={12} className="spin" /> : <KeyRound size={12} />}
+                Save Key to Pool
+              </button>
+            </div>
+          </div>
+        </form>
+      </Modal>
+
+      {/* Edit Key Models & Limits Modal */}
+      <Modal
+        open={Boolean(editingKey)}
+        onClose={() => setEditingKey(null)}
+        title={`Configure Key · ${editingKey?.label ?? ""}`}
+        large
+      >
+        {editingKey && (
+          <div className="stack" style={{ gap: 12 }}>
+            <div className="grid grid-2" style={{ gap: 10 }}>
+              <Field label="Label">
                 <input
-                  className="input"
-                  value={newBaseUrl}
-                  onChange={(e) => setNewBaseUrl(e.target.value)}
-                  placeholder="https://api.example.com/v1"
+                  type="text"
+                  value={editLabel}
+                  onChange={(e) => setEditLabel(e.target.value)}
                 />
               </Field>
-            )}
+              <div className="grid grid-2" style={{ gap: 8 }}>
+                <Field label="RPM Limit">
+                  <input
+                    type="number"
+                    min={1}
+                    max={10000}
+                    value={editRpmLimit}
+                    onChange={(e) => setEditRpmLimit(Number(e.target.value) || 15)}
+                  />
+                </Field>
+                <Field label="RPD Limit">
+                  <input
+                    type="number"
+                    min={1}
+                    max={1000000}
+                    value={editRpdLimit}
+                    onChange={(e) => setEditRpdLimit(Number(e.target.value) || 1500)}
+                  />
+                </Field>
+              </div>
+            </div>
+
+            <div>
+              <div className="strong tiny" style={{ marginBottom: 6 }}>
+                Enabled Models &amp; Task Seats ({editModels.filter((m) => m.enabled).length} / {editModels.length} active)
+              </div>
+              <div style={{ maxHeight: 320, overflowY: "auto", border: "1px solid var(--line)", borderRadius: 8, padding: 8 }} className="stack">
+                {editModels.map((m) => (
+                  <div
+                    key={m.id}
+                    className="row"
+                    style={{
+                      justifyContent: "space-between",
+                      padding: "6px 8px",
+                      borderRadius: 6,
+                      borderBottom: "1px solid var(--line)",
+                      gap: 8,
+                    }}
+                  >
+                    <label className="row" style={{ gap: 8, cursor: "pointer", flex: 1 }}>
+                      <input
+                        type="checkbox"
+                        checked={m.enabled}
+                        onChange={(e) =>
+                          setEditModels((prev) =>
+                            prev.map((item) => (item.id === m.id ? { ...item, enabled: e.target.checked } : item)),
+                          )
+                        }
+                      />
+                      <div>
+                        <div className="strong tiny">{m.displayName || m.id}</div>
+                        <div className="tiny muted">{m.id}</div>
+                      </div>
+                    </label>
+
+                    <div className="row" style={{ gap: 6 }}>
+                      {SEATS.map((seat) => {
+                        const active = m.seats.includes(seat);
+                        return (
+                          <button
+                            key={seat}
+                            type="button"
+                            className="btn btn-sm"
+                            style={{
+                              padding: "2px 8px",
+                              fontSize: 11,
+                              opacity: active ? 1 : 0.45,
+                              borderColor: active ? "var(--teal-deep)" : undefined,
+                            }}
+                            onClick={() => toggleEditModelSeat(m.id, seat)}
+                          >
+                            {seat}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
             <div className="row" style={{ justifyContent: "flex-end", gap: 8 }}>
-              <button type="button" className="btn btn-ghost" onClick={() => setKeyModalProvider(null)}>
+              <button type="button" className="btn btn-sm" onClick={() => setEditingKey(null)}>
                 Cancel
               </button>
               <button
                 type="button"
-                className="btn btn-primary"
-                disabled={!newKeyInput.trim() || busy !== null}
+                className="btn btn-primary btn-sm"
+                disabled={busy !== null}
                 onClick={async () => {
-                  const ok = await mutateProvider(
-                    `Save ${keyModalProvider.label} key`,
+                  const ok = await mutateGateway(
+                    `Update ${editingKey.label}`,
                     {
-                      action: "upsert_key",
-                      provider: keyModalProvider.id,
-                      apiKey: newKeyInput.trim(),
-                      baseUrl: newBaseUrl.trim() || undefined,
+                      action: "update_key",
+                      keyId: editingKey.id,
+                      label: editLabel.trim(),
+                      rpmLimit: editRpmLimit,
+                      rpdLimit: editRpdLimit,
+                      models: editModels,
                     },
-                    "save_modal_key",
+                    `save_${editingKey.id}`,
                   );
-                  if (ok) {
-                    setNewKeyInput("");
-                    setKeyModalProvider(null);
-                  }
+                  if (ok) setEditingKey(null);
                 }}
               >
-                <CheckCircle2 size={13} /> Encrypt &amp; Save Key
+                {busy === `save_${editingKey.id}` ? <Loader2 size={12} className="spin" /> : <Save size={12} />}
+                Save Key Settings
               </button>
-            </div>
-          </div>
-        )}
-      </Modal>
-
-      {/* Enable/Disable & Rename Models Modal */}
-      <Modal
-        open={Boolean(modelsModalProvider)}
-        onClose={() => setModelsModalProvider(null)}
-        title={modelsModalProvider ? `${modelsModalProvider.label} Enabled Models` : ""}
-        large
-      >
-        {modelsModalProvider && (
-          <div className="stack" style={{ gap: 12 }}>
-            <p className="tiny muted" style={{ margin: 0 }}>
-              Toggle which models are available to users on platform keys and customize friendly display names. Click{" "}
-              <strong>Test connection</strong> to discover live models from this provider first if needed.
-            </p>
-            <div className="stack" style={{ gap: 8, maxHeight: "48vh", overflowY: "auto" }}>
-              {editedModels.map((mod, idx) => (
-                <div
-                  key={mod.id}
-                  className="row"
-                  style={{
-                    gap: 10,
-                    padding: 8,
-                    borderRadius: 8,
-                    border: "1px solid var(--line)",
-                    alignItems: "center",
-                    flexWrap: "wrap",
-                  }}
-                >
-                  <label className="row tiny" style={{ gap: 6, minWidth: 190 }}>
-                    <input
-                      type="checkbox"
-                      checked={mod.enabled}
-                      onChange={(e) =>
-                        setEditedModels((prev) =>
-                          prev.map((m, i) => (i === idx ? { ...m, enabled: e.target.checked } : m)),
-                        )
-                      }
-                    />
-                    <span className="strong" style={{ fontFamily: "var(--mono)", fontSize: 11.5 }}>
-                      <Cpu size={11} style={{ verticalAlign: "middle", marginRight: 4 }} />
-                      {mod.id}
-                    </span>
-                  </label>
-                  <input
-                    className="input"
-                    style={{ flex: 1, minWidth: 160 }}
-                    value={mod.displayName}
-                    onChange={(e) =>
-                      setEditedModels((prev) =>
-                        prev.map((m, i) => (i === idx ? { ...m, displayName: e.target.value } : m)),
-                      )
-                    }
-                    placeholder="Friendly display name"
-                  />
-                </div>
-              ))}
-            </div>
-            <div className="row" style={{ justifyContent: "space-between", gap: 8 }}>
-              <button
-                type="button"
-                className="btn btn-sm"
-                onClick={() =>
-                  setEditedModels((prev) => prev.map((m) => ({ ...m, enabled: true })))
-                }
-              >
-                <RotateCcw size={12} /> Enable all
-              </button>
-              <div className="row" style={{ gap: 8 }}>
-                <button type="button" className="btn btn-ghost" onClick={() => setModelsModalProvider(null)}>
-                  Cancel
-                </button>
-                <button
-                  type="button"
-                  className="btn btn-primary"
-                  onClick={async () => {
-                    const ok = await mutateProvider(
-                      `Update ${modelsModalProvider.label} models`,
-                      { action: "update_models", provider: modelsModalProvider.id, models: editedModels },
-                      "save_models",
-                    );
-                    if (ok) setModelsModalProvider(null);
-                  }}
-                >
-                  Save model list
-                </button>
-              </div>
             </div>
           </div>
         )}

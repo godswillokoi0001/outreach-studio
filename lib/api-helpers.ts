@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { AuthError } from "./server-auth";
 import { GeminiApiError, parseGeminiError } from "./gemini-utils";
 import { AiProviderError } from "./ai/types";
+import { LLMGatewayError } from "./llm/gateway";
 
 /**
  * The session travels in `Authorization` (Supabase access token); the Google
@@ -19,6 +20,17 @@ export function extractWorkspaceToken(req: NextRequest): string {
 }
 
 export function handleApiError(err: unknown): NextResponse {
+  if (err instanceof LLMGatewayError) {
+    return NextResponse.json(
+      {
+        error: err.message,
+        code: err.code,
+        ...(err.receipt ? { receipt: err.receipt } : {}),
+        ...(err.canFallbackToSystemAuto ? { canFallbackToSystemAuto: true } : {}),
+      },
+      { status: err.status },
+    );
+  }
   if (err instanceof AuthError) {
     const extra = err as AuthError & {
       code?: string;
