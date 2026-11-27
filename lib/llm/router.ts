@@ -1,12 +1,13 @@
 import type { GatewayProviderError } from "./providers";
 import { persistAdminKeyHealth } from "./store";
-import type {
-  AdminAiKeyRecord,
-  AdminAiSettings,
-  GatewayModelConfig,
-  KeyHealthStatus,
-  RoutingStrategy,
-  TaskSeat,
+import {
+  isSlowMegaModel,
+  type AdminAiKeyRecord,
+  type AdminAiSettings,
+  type GatewayModelConfig,
+  type KeyHealthStatus,
+  type RoutingStrategy,
+  type TaskSeat,
 } from "./types";
 
 const ESCALATION_LADDER_MS = [
@@ -24,6 +25,22 @@ const rpdCounters = new Map<string, { day: string; count: number }>();
 
 // Per-(keyId:modelId) transient cooldowns + key-wide status synced from/to DB
 const keyModelCooldowns = new Map<string, { untilMs: number; step: number; reason: string }>();
+// Track Google keys whose free-tier rejected native googleSearch grounding
+const googleGroundingBlockedKeys = new Map<string, number>();
+
+export function markGoogleGroundingBlocked(keyId: string, ttlMs = 60 * 60_000): void {
+  googleGroundingBlockedKeys.set(keyId, Date.now() + ttlMs);
+}
+
+export function isGoogleGroundingBlocked(keyId: string): boolean {
+  const exp = googleGroundingBlockedKeys.get(keyId);
+  if (!exp) return false;
+  if (Date.now() > exp) {
+    googleGroundingBlockedKeys.delete(keyId);
+    return false;
+  }
+  return true;
+}
 
 function currentUtcDay(): string {
   return new Date().toISOString().slice(0, 10);
@@ -86,6 +103,7 @@ export function clearRouterStateForTests(): void {
   rpmEvents.clear();
   rpdCounters.clear();
   keyModelCooldowns.clear();
+  googleGroundingBlockedKeys.clear();
 }
 
 export function isCandidateCoolingDown(key: AdminAiKeyRecord, modelId: string, now = Date.now()): boolean {
@@ -221,8 +239,10 @@ export function isChatCapableModelId(modelId: string): boolean {
  */
 const TOOL_UNSAFE_PROVIDERS = new Set(["cloudflare"]);
 
-const FAST_PROVIDERS = new Set(["groq", "cerebras", "cloudflare", "google"]);
+const FAST_PROVIDERS = new Set(["groq", "cerebras", "cloudflare", "google", "zai"]);
 const SMART_PROVIDERS = new Set(["google", "nvidia", "anthropic", "openai", "openrouter", "zai"]);
+const FAST_RESPONSIVE_MODEL_RE =
+  /(flash\b|llama-3\.3-70b|llama-3\.1-8b|llama3\.1-8b|gpt-4o|claude-haiku|claude-sonnet|glm-4(?:\.5)?-flash|deepseek-chat|deepseek-v3|qwen-?2\.5-72b)/i;
 
 export function rankPoolCandidates(input: {
   keys: AdminAiKeyRecord[];
@@ -250,32 +270,40 @@ export function rankPoolCandidates(input: {
       if (isCandidateCoolingDown(key, model.id, now)) continue;
 
       let score = 0;
+      const slowMega = isSlowMegaModel(model.id);
 
       // 1. Headroom steering: healthy headroom strictly outranks keys >= 85% cap
       score += headroom.lowHeadroom ? -200 : 120 - Math.round(headroom.utilization * 40);
 
-      // 2. Native Google Search grounding priority when requested
+      // 2. Penalize slow mega/preview models (400B-550B+) so interactive tasks never stall in queues
+      if (slowMega) {
+        score -= input.taskType === "smart" ? 95 : 220;
+      } else if (FAST_RESPONSIVE_MODEL_RE.test(model.id)) {
+        score += input.taskType === "fast" ? 55 : 35;
+      }
+
+      // 3. Native Google Search grounding priority only when key has not rejected free-tier grounding
       if (input.requiresGrounding) {
-        if (key.provider === "google" && model.capabilities.grounding) {
+        if (key.provider === "google" && model.capabilities.grounding && !isGoogleGroundingBlocked(key.id)) {
           score += 500;
         }
       }
 
-      // 3. Task-seat alignment (smart / balanced / fast)
+      // 4. Task-seat alignment (smart / balanced / fast)
       if (model.seats.includes(input.taskType)) {
         score += 90;
         if (model.seats[0] === input.taskType) score += 25;
       }
 
-      // 4. Strategy weights
+      // 5. Strategy weights
       const strat: RoutingStrategy = input.settings.strategy;
       if (strat === "smartest") {
         if (model.seats.includes("smart")) score += 60;
-        if (model.capabilities.reasoning) score += 25;
+        if (model.capabilities.reasoning && !slowMega) score += 25;
         if (SMART_PROVIDERS.has(key.provider)) score += 15;
       } else if (strat === "fastest") {
         if (model.seats.includes("fast")) score += 60;
-        if (FAST_PROVIDERS.has(key.provider)) score += 35;
+        if (FAST_PROVIDERS.has(key.provider)) score += 45;
       } else if (strat === "reliable") {
         score += Math.max(0, 60 - key.cooldownStep * 25);
         if (!model.capabilities.reasoning) score += 10; // non-thinking models have lower empty-stream rate
@@ -283,6 +311,7 @@ export function rankPoolCandidates(input: {
         // balanced
         score += Math.max(0, 35 - key.cooldownStep * 15);
         if (model.seats.includes(input.taskType)) score += 20;
+        if (FAST_PROVIDERS.has(key.provider)) score += 20;
       }
 
       // 5. Explicit Admin fallbackChain boost when defined

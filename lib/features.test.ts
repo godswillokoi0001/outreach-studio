@@ -42,6 +42,14 @@ import {
   resetGatewayCachesForTests,
   seedGatewayCachesForTests,
 } from "./llm/store";
+import {
+  clearDiscoveryCacheForTests,
+  discoverProspectsServer,
+} from "./intelligence";
+import {
+  parseDuckDuckGoHtml,
+  WebSearchService,
+} from "./search/webSearch";
 import type { AdminAiKeyRecord, AdminAiSettings, UserAiKeyRecord } from "./llm/types";
 import { DEFAULT_ONBOARDING_ANSWERS } from "./onboarding";
 import { requireAdmin } from "./platform/admin-auth";
@@ -1473,6 +1481,363 @@ test("ENCRYPTION_KEY is required in production and gateway key ciphertext never 
     else prevEnv.NODE_ENV = prevNodeEnv;
     if (prevEnc === undefined) delete prevEnv.ENCRYPTION_KEY;
     else prevEnv.ENCRYPTION_KEY = prevEnc;
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Phase 4: Free Web Search Discovery + Slow Mega-Model Timeout Failover Tests
+// ---------------------------------------------------------------------------
+
+test("Non-Google discovery works end-to-end with WebSearchService + live site inspector + Groq LLM", async () => {
+  const prevFetch = globalThis.fetch;
+  let groqCalled = false;
+
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = typeof input === "string" ? input : input.toString();
+
+    if (url.includes("api.tavily.com/search")) {
+      return new Response(
+        JSON.stringify({
+          results: [
+            {
+              title: "Austin Family Dental",
+              url: "https://austindental.example.com",
+              content: "Family dentistry in Austin TX",
+            },
+            {
+              title: "SmileTown Dentistry",
+              url: "https://smiletown.example.com",
+              content: "Cosmetic dental clinic Austin TX",
+            },
+          ],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }
+
+    if (url.includes("austindental.example.com")) {
+      return new Response(
+        `<html><head><title>Austin Family Dental</title></head><body><h1>Austin Family Dental</h1><a href="mailto:hello@austindental.example.com">Email us</a><a href="tel:+15125550101">Call</a><p>Serving North Austin patients since 2018.</p></body></html>`,
+        { status: 200, headers: { "Content-Type": "text/html" } },
+      );
+    }
+
+    if (url.includes("smiletown.example.com")) {
+      return new Response(
+        `<html><head><title>SmileTown Dentistry</title><meta name="viewport" content="width=device-width, initial-scale=1"></head><body><h1>SmileTown</h1><p>Book a call today.</p></body></html>`,
+        { status: 200, headers: { "Content-Type": "text/html" } },
+      );
+    }
+
+    if (url.includes("api.groq.com")) {
+      groqCalled = true;
+      return new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  candidates: [
+                    {
+                      business: "Austin Family Dental",
+                      website: "https://austindental.example.com",
+                      location: "Austin, TX",
+                      industry: "Dentistry",
+                      why: "Missing mobile viewport meta tag on live site",
+                      source_url: "https://austindental.example.com",
+                      contact: {
+                        decision_maker: "",
+                        role: "",
+                        email: "hello@austindental.example.com",
+                        phone: "+15125550101",
+                        whatsapp: "",
+                        address: "Austin, TX",
+                        socials: [],
+                        sources: [{ field: "email", url: "https://austindental.example.com", confidence: "high", verification_status: "Verified" }],
+                      },
+                      issues: [{ area: "Mobile UX", problem: "Missing viewport tag", evidence: "Not found in homepage HTML", severity: "medium" }],
+                      how_we_help: [],
+                      qualification_review: { verdict: "qualified", criteria: [], weaknesses_and_risks: [], missing_information: [] },
+                    },
+                    {
+                      business: "SmileTown Dentistry",
+                      website: "https://smiletown.example.com",
+                      location: "Austin, TX",
+                      industry: "Dentistry",
+                      why: "Active cosmetic dental clinic in Austin",
+                      source_url: "https://smiletown.example.com",
+                      contact: {
+                        decision_maker: "",
+                        role: "",
+                        email: "invented@hallucinated-email.org",
+                        phone: "",
+                        whatsapp: "",
+                        address: "Austin, TX",
+                        socials: [],
+                        sources: [],
+                      },
+                      issues: [],
+                      how_we_help: [],
+                      qualification_review: { verdict: "uncertain", criteria: [], weaknesses_and_risks: [], missing_information: ["No email found"] },
+                    },
+                  ],
+                  notes: "Verified via Tavily + live site inspection",
+                }),
+              },
+            },
+          ],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }
+
+    return new Response("Not found", { status: 404 });
+  }) as typeof fetch;
+
+  try {
+    resetGatewayCachesForTests();
+    clearRouterStateForTests();
+    clearDiscoveryCacheForTests();
+
+    const now = new Date().toISOString();
+    seedGatewayCachesForTests({
+      adminSettings: makeSampleAdminSettings({ masterMode: "auto", strategy: "balanced" }),
+      // Google is disabled; only Groq is active
+      adminKeys: [
+        makeSampleAdminKey("adm_google_off", "google", "AIzaDisabledKey", { enabled: false }),
+        makeSampleAdminKey("adm_groq_on", "groq", "gsk_GroqDiscoveryKey", {
+          models: [
+            {
+              id: "llama-3.3-70b-versatile",
+              displayName: "Llama 3.3 70B Versatile",
+              enabled: true,
+              seats: ["balanced", "smart", "fast"],
+              capabilities: { json: true, tools: true, vision: false, reasoning: false },
+            },
+          ],
+        }),
+      ],
+      searchKeys: [
+        {
+          id: "srch_tavily_test",
+          provider: "tavily",
+          label: "Tavily Test",
+          apiKey: "tvly-test-123456",
+          maskedKey: "tvly••••3456",
+          enabled: true,
+          healthStatus: "healthy",
+          createdAt: now,
+          updatedAt: now,
+        },
+      ],
+      userSettings: {
+        "u-disc": {
+          ownerId: "u-disc",
+          mode: "system_auto",
+          fallbackToSystemAuto: false,
+          updatedAt: now,
+        },
+      },
+      userKeys: { "u-disc": [] },
+    });
+
+    const result = await discoverProspectsServer({
+      ownerId: "u-disc",
+      industry: "dental clinics",
+      location: "Austin, TX",
+      count: 5,
+      focus: "",
+    });
+
+    assert.equal(groqCalled, true);
+    assert.equal(result.candidates.length, 2);
+    assert.equal(result.candidates[0].business, "Austin Family Dental");
+    assert.equal(result.candidates[0].contact.email, "hello@austindental.example.com");
+    // Anti-hallucination guard strips LLM-guessed email absent from search & site inspection
+    assert.equal(result.candidates[1].contact.email, "");
+    assert.equal(result.groundingUrls[0].uri, "https://austindental.example.com");
+  } finally {
+    globalThis.fetch = prevFetch;
+    resetGatewayCachesForTests();
+    clearRouterStateForTests();
+    clearDiscoveryCacheForTests();
+  }
+});
+
+test("Keyless DuckDuckGo + OSM Overpass fallback works with zero search API keys", async () => {
+  const prevFetch = globalThis.fetch;
+  const prevTavily = process.env.TAVILY_API_KEY;
+  const prevBrave = process.env.BRAVE_SEARCH_API_KEY;
+  const prevSerper = process.env.SERPER_API_KEY;
+  delete process.env.TAVILY_API_KEY;
+  delete process.env.BRAVE_SEARCH_API_KEY;
+  delete process.env.SERPER_API_KEY;
+
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = typeof input === "string" ? input : input.toString();
+
+    if (url.includes("html.duckduckgo.com")) {
+      const ddgHtml = `
+        <div class="result">
+          <a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Faustinsmiles.example.com">Austin Smiles Clinic</a>
+          <a class="result__snippet">Trusted family dentist in downtown Austin.</a>
+        </div>`;
+      return new Response(ddgHtml, { status: 200, headers: { "Content-Type": "text/html" } });
+    }
+
+    if (url.includes("nominatim.openstreetmap.org")) {
+      return new Response(
+        JSON.stringify([{ boundingbox: ["30.20", "30.35", "-97.80", "-97.65"] }]),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }
+
+    if (url.includes("overpass-api.de")) {
+      return new Response(
+        JSON.stringify({
+          elements: [
+            {
+              id: 101,
+              type: "node",
+              tags: {
+                name: "Barton Creek Dental",
+                amenity: "dentist",
+                website: "https://bartoncreekdental.example.com",
+                phone: "+1-512-555-0199",
+              },
+            },
+          ],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }
+
+    return new Response("", { status: 404 });
+  }) as typeof fetch;
+
+  try {
+    resetGatewayCachesForTests();
+    seedGatewayCachesForTests({ searchKeys: [] });
+
+    const parsedDdg = parseDuckDuckGoHtml(
+      `<a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fa.example.com">Site A</a>`,
+    );
+    assert.equal(parsedDdg[0].url, "https://a.example.com");
+
+    const res = await WebSearchService.search("dental clinics in Austin TX", { maxResults: 6 });
+    assert.ok(res.providersSucceeded.includes("duckduckgo"));
+    assert.ok(res.providersSucceeded.includes("osm"));
+    assert.ok(res.results.some((r) => r.url === "https://austinsmiles.example.com"));
+    assert.ok(res.results.some((r) => r.businessName === "Barton Creek Dental"));
+  } finally {
+    globalThis.fetch = prevFetch;
+    if (prevTavily !== undefined) process.env.TAVILY_API_KEY = prevTavily;
+    if (prevBrave !== undefined) process.env.BRAVE_SEARCH_API_KEY = prevBrave;
+    if (prevSerper !== undefined) process.env.SERPER_API_KEY = prevSerper;
+    resetGatewayCachesForTests();
+  }
+});
+
+test("Router deprioritizes slow 500B+ preview models and Gateway fails over cleanly on timeout abort", async () => {
+  clearRouterStateForTests();
+  const slowOrKey = makeSampleAdminKey("adm_slow_or", "openrouter", "sk-or-SlowQueue123", {
+    models: [
+      {
+        id: "nvidia/nemotron-3-ultra-550b-a55b:free",
+        displayName: "Nemotron Ultra 550B (:free)",
+        enabled: true,
+        seats: ["smart", "balanced"],
+        capabilities: { json: true, tools: true, vision: false, reasoning: true },
+      },
+      {
+        id: "baidu/ernie-5.5-flash-preview:free",
+        displayName: "ERNIE 5.5 Preview (:free)",
+        enabled: true,
+        seats: ["smart"],
+        capabilities: { json: true, tools: true, vision: false, reasoning: true },
+      },
+    ],
+  });
+  const fastGroqKey = makeSampleAdminKey("adm_fast_groq", "groq", "gsk_FastResponsive123", {
+    models: [
+      {
+        id: "llama-3.3-70b-versatile",
+        displayName: "Llama 3.3 70B Versatile",
+        enabled: true,
+        seats: ["balanced", "fast", "smart"],
+        capabilities: { json: true, tools: true, vision: false, reasoning: false },
+      },
+    ],
+  });
+
+  const rankedBalanced = rankPoolCandidates({
+    keys: [slowOrKey, fastGroqKey],
+    settings: makeSampleAdminSettings({ masterMode: "auto", strategy: "balanced" }),
+    taskType: "balanced",
+  });
+  assert.equal(rankedBalanced[0].key.id, fastGroqKey.id);
+
+  // Now simulate primary candidate throwing AbortError timeout -> Gateway benches it & fails over to Key 2 cleanly
+  const prevFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = typeof input === "string" ? input : input.toString();
+    if (url.includes("openrouter.ai")) {
+      const abortErr = new Error("The operation was aborted");
+      abortErr.name = "AbortError";
+      throw abortErr;
+    }
+    return new Response(
+      JSON.stringify({ choices: [{ message: { content: "Fast backup answered cleanly" } }] }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    );
+  }) as typeof fetch;
+
+  try {
+    resetGatewayCachesForTests();
+    seedGatewayCachesForTests({
+      adminSettings: makeSampleAdminSettings({
+        masterMode: "auto",
+        strategy: "smartest",
+        fallbackChain: [{ provider: "openrouter", model: "nvidia/nemotron-3-ultra-550b-a55b:free" }],
+      }),
+      adminKeys: [
+        makeSampleAdminKey("adm_or_first", "openrouter", "sk-or-SlowPrimary", {
+          models: [
+            {
+              id: "meta-llama/llama-3.3-70b-instruct:free",
+              displayName: "Llama 3.3 70B (:free)",
+              enabled: true,
+              seats: ["smart", "balanced"],
+              capabilities: { json: true, tools: true, vision: false, reasoning: false },
+            },
+          ],
+        }),
+        fastGroqKey,
+      ],
+      userSettings: {
+        "u-timeout": {
+          ownerId: "u-timeout",
+          mode: "system_auto",
+          fallbackToSystemAuto: false,
+          updatedAt: new Date().toISOString(),
+        },
+      },
+      userKeys: { "u-timeout": [] },
+    });
+
+    // Put OpenRouter explicitly ahead via fallbackChain boost OR smart bias so it tries & times out, then fails over
+    const res = await LLMGateway.complete({
+      ownerId: "u-timeout",
+      taskType: "balanced",
+      feature: "research",
+      messages: [{ role: "user", content: "Ping" }],
+    });
+    assert.equal(res.text, "Fast backup answered cleanly");
+    assert.equal(res.receipt.actualProvider, "groq");
+  } finally {
+    globalThis.fetch = prevFetch;
+    resetGatewayCachesForTests();
+    clearRouterStateForTests();
   }
 });
 

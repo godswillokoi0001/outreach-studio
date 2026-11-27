@@ -474,10 +474,13 @@ export async function executeAgentTool(
             const created = await createLead(uid, {
               business: c.business,
               website: c.website || undefined,
+              email: c.contact?.email || undefined,
+              contact_name: c.contact?.decision_maker || undefined,
+              role: c.contact?.role || undefined,
               location: c.location || location || undefined,
               industry: c.industry || industry,
               notes: [c.why, c.source_url ? `Source: ${c.source_url}` : ""].filter(Boolean).join("\n"),
-              source: "gemini_discovery",
+              source: "web_discovery",
               campaignId,
             });
             if (created.duplicate) {

@@ -2,14 +2,15 @@ import type { FunctionDeclaration, Schema } from "@google/genai";
 import type { AgentContent, AgentFunctionCall } from "../agent-meta";
 import {
   getProviderMeta,
+  isSlowMegaModel,
   normalizeGatewayProviderId,
   type GatewayModelConfig,
   type GatewayProviderId,
   type TaskSeat,
 } from "./types";
 
-const DEFAULT_ATTEMPT_TIMEOUT_MS = 14_000;
-const GROUNDED_ATTEMPT_TIMEOUT_MS = 24_000;
+const DEFAULT_ATTEMPT_TIMEOUT_MS = 10_000;
+const GROUNDED_ATTEMPT_TIMEOUT_MS = 12_000;
 
 export class GatewayProviderError extends Error {
   status: number;
@@ -872,6 +873,7 @@ export async function dispatchProviderCall(input: AdapterCallInput): Promise<Ada
 // ---------------------------------------------------------------------------
 
 function inferSeatsFromModelId(id: string): TaskSeat[] {
+  if (isSlowMegaModel(id)) return ["smart"];
   const lower = id.toLowerCase();
   if (/8b|7b|3b|mini|nano|instant|flash-lite|4-flash/.test(lower)) return ["fast", "balanced"];
   if (/r1|pro|70b|72b|120b|405b|opus|sonnet|v3|reasoner|glm4\.7|glm-4\.7/.test(lower)) {

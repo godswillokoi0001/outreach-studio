@@ -2,15 +2,19 @@ import { decryptSecret, encryptSecret, maskSecret } from "../key-vault";
 import { supabaseServer } from "../supabase-server";
 import {
   getProviderMeta,
+  getSearchProviderMeta,
+  isSearchProviderId,
   normalizeGatewayProviderId,
   type AdminAiKeyPublic,
   type AdminAiKeyRecord,
   type AdminAiSettings,
+  type AdminSearchKeyPublic,
   type AiExecutionLogRecord,
   type GatewayModelConfig,
   type GatewayProviderId,
   type KeyHealthStatus,
   type RoutingStrategy,
+  type SearchProviderId,
   type UserAiKeyPublic,
   type UserAiKeyRecord,
   type UserAiSettings,
@@ -28,8 +32,13 @@ const deletedAdminKeyIdsMemory = new Set<string>();
 
 const CACHE_TTL_MS = 15_000;
 
+export interface DecryptedAdminSearchKey extends AdminSearchKeyPublic {
+  apiKey: string;
+}
+
 let adminSettingsCache: { value: AdminAiSettings; exp: number } | null = null;
 let adminKeysCache: { value: AdminAiKeyRecord[]; exp: number } | null = null;
+let adminSearchKeysCache: { value: DecryptedAdminSearchKey[]; exp: number } | null = null;
 const userSettingsCache = new Map<string, { value: UserAiSettings; exp: number }>();
 const userKeysCache = new Map<string, { value: UserAiKeyRecord[]; exp: number }>();
 
@@ -59,6 +68,7 @@ function describeUnknownError(err: unknown): string {
 export function invalidateAdminAiCaches(): void {
   adminSettingsCache = null;
   adminKeysCache = null;
+  adminSearchKeysCache = null;
 }
 
 export function invalidateUserAiCaches(ownerId: string): void {
@@ -70,12 +80,14 @@ export function invalidateUserAiCaches(ownerId: string): void {
 export function seedGatewayCachesForTests(input: {
   adminSettings?: AdminAiSettings;
   adminKeys?: AdminAiKeyRecord[];
+  searchKeys?: DecryptedAdminSearchKey[];
   userSettings?: Record<string, UserAiSettings>;
   userKeys?: Record<string, UserAiKeyRecord[]>;
 }): void {
   const exp = Date.now() + 60_000;
   if (input.adminSettings) adminSettingsCache = { value: input.adminSettings, exp };
   if (input.adminKeys) adminKeysCache = { value: input.adminKeys, exp };
+  if (input.searchKeys) adminSearchKeysCache = { value: input.searchKeys, exp };
   if (input.userSettings) {
     for (const [ownerId, val] of Object.entries(input.userSettings)) {
       userSettingsCache.set(ownerId, { value: val, exp });
@@ -91,6 +103,7 @@ export function seedGatewayCachesForTests(input: {
 export function resetGatewayCachesForTests(): void {
   adminSettingsCache = null;
   adminKeysCache = null;
+  adminSearchKeysCache = null;
   userSettingsCache.clear();
   userKeysCache.clear();
 }
@@ -419,9 +432,12 @@ export async function listAdminAiKeys(): Promise<AdminAiKeyRecord[]> {
 
   let list: AdminAiKeyRecord[] = [];
   if (!error && Array.isArray(data)) {
-    list = data.map((row) => mapSqlAdminKeyRow(row as Record<string, unknown>));
+    list = data
+      .filter((row) => !isSearchProviderId((row as Record<string, unknown>).provider))
+      .map((row) => mapSqlAdminKeyRow(row as Record<string, unknown>));
   } else {
-    list = (await readKnowledgeDoc<AdminAiKeyRecord[]>(PLATFORM_LLM_OWNER, DOC_ADMIN_KEYS)) ?? [];
+    const rawDoc = (await readKnowledgeDoc<AdminAiKeyRecord[]>(PLATFORM_LLM_OWNER, DOC_ADMIN_KEYS)) ?? [];
+    list = rawDoc.filter((row) => !isSearchProviderId((row as unknown as { provider?: string }).provider));
   }
 
   // Deleting an auto-generated key must stick even if an older deployment or a
@@ -612,6 +628,203 @@ export async function persistAdminKeyHealth(
 export function toAdminAiKeyPublic(rec: AdminAiKeyRecord): AdminAiKeyPublic {
   const { encryptedKey, ...rest } = rec;
   return { ...rest, hasKey: Boolean(encryptedKey) };
+}
+
+// ---------------------------------------------------------------------------
+// Admin Web Search Provider Keys (Tavily / Brave / Serper)
+// ---------------------------------------------------------------------------
+
+function readEnvSearchKeys(): DecryptedAdminSearchKey[] {
+  const now = new Date().toISOString();
+  const defs: { provider: SearchProviderId; envVar: string }[] = [
+    { provider: "tavily", envVar: "TAVILY_API_KEY" },
+    { provider: "brave", envVar: "BRAVE_SEARCH_API_KEY" },
+    { provider: "serper", envVar: "SERPER_API_KEY" },
+  ];
+  const out: DecryptedAdminSearchKey[] = [];
+  for (const d of defs) {
+    const val = process.env[d.envVar]?.trim();
+    if (!val) continue;
+    const meta = getSearchProviderMeta(d.provider);
+    out.push({
+      id: `srch_env_${d.provider}`,
+      provider: d.provider,
+      label: `${meta.label} (Host Env)`,
+      apiKey: val,
+      maskedKey: maskSecret(val),
+      enabled: true,
+      healthStatus: "healthy",
+      lastError: null,
+      lastCheckedAt: null,
+      createdAt: now,
+      updatedAt: now,
+    });
+  }
+  return out;
+}
+
+export async function listAdminSearchKeys(): Promise<DecryptedAdminSearchKey[]> {
+  if (adminSearchKeysCache && Date.now() < adminSearchKeysCache.exp) {
+    return adminSearchKeysCache.value;
+  }
+
+  const out: DecryptedAdminSearchKey[] = [];
+  if (supabaseServer) {
+    const { data, error } = await supabaseServer
+      .from("admin_ai_keys")
+      .select("*")
+      .in("provider", ["tavily", "brave", "serper"])
+      .order("created_at", { ascending: true });
+
+    const rows =
+      !error && Array.isArray(data)
+        ? (data as Record<string, unknown>[])
+        : (
+            (await readKnowledgeDoc<Record<string, unknown>[]>(PLATFORM_LLM_OWNER, DOC_ADMIN_KEYS)) ?? []
+          ).filter((r) => isSearchProviderId(r.provider));
+
+    for (const r of rows) {
+      if (!isSearchProviderId(r.provider)) continue;
+      if (r.enabled === false) continue;
+      const enc = String(r.encrypted_key ?? r.encryptedKey ?? "");
+      if (!enc) continue;
+      try {
+        const apiKey = decryptSecret(enc);
+        if (!apiKey) continue;
+        const meta = getSearchProviderMeta(r.provider);
+        out.push({
+          id: String(r.id ?? ""),
+          provider: r.provider,
+          label: String(r.label ?? meta.label),
+          apiKey,
+          maskedKey: String(r.masked_key ?? r.maskedKey ?? maskSecret(apiKey)),
+          enabled: r.enabled !== false,
+          healthStatus: (String(r.health_status ?? "healthy") as KeyHealthStatus),
+          lastError: r.last_error ? String(r.last_error) : null,
+          lastCheckedAt: r.last_checked_at ? String(r.last_checked_at) : null,
+          createdAt: String(r.created_at ?? new Date().toISOString()),
+          updatedAt: String(r.updated_at ?? new Date().toISOString()),
+        });
+      } catch {
+        /* skip unreadable secret */
+      }
+    }
+  }
+
+  const seenProviders = new Set(out.map((k) => k.provider));
+  for (const envKey of readEnvSearchKeys()) {
+    if (!seenProviders.has(envKey.provider)) {
+      out.push(envKey);
+    }
+  }
+
+  adminSearchKeysCache = { value: out, exp: Date.now() + CACHE_TTL_MS };
+  return out;
+}
+
+export async function listAdminSearchKeysPublic(): Promise<AdminSearchKeyPublic[]> {
+  const list: AdminSearchKeyPublic[] = [];
+  if (supabaseServer) {
+    const { data, error } = await supabaseServer
+      .from("admin_ai_keys")
+      .select("*")
+      .in("provider", ["tavily", "brave", "serper"])
+      .order("created_at", { ascending: true });
+
+    const rows =
+      !error && Array.isArray(data)
+        ? (data as Record<string, unknown>[])
+        : (
+            (await readKnowledgeDoc<Record<string, unknown>[]>(PLATFORM_LLM_OWNER, DOC_ADMIN_KEYS)) ?? []
+          ).filter((r) => isSearchProviderId(r.provider));
+
+    for (const r of rows) {
+      if (!isSearchProviderId(r.provider)) continue;
+      const meta = getSearchProviderMeta(r.provider);
+      list.push({
+        id: String(r.id ?? ""),
+        provider: r.provider,
+        label: String(r.label ?? meta.label),
+        maskedKey: String(r.masked_key ?? r.maskedKey ?? "••••"),
+        enabled: r.enabled !== false,
+        healthStatus: (String(r.health_status ?? "healthy") as KeyHealthStatus),
+        lastError: r.last_error ? String(r.last_error) : null,
+        lastCheckedAt: r.last_checked_at ? String(r.last_checked_at) : null,
+        createdAt: String(r.created_at ?? new Date().toISOString()),
+        updatedAt: String(r.updated_at ?? new Date().toISOString()),
+      });
+    }
+  }
+  for (const envKey of readEnvSearchKeys()) {
+    if (!list.some((k) => k.provider === envKey.provider)) {
+      const { apiKey, ...pub } = envKey;
+      void apiKey;
+      list.push(pub);
+    }
+  }
+  return list;
+}
+
+export async function saveAdminSearchKey(input: {
+  id: string;
+  provider: SearchProviderId;
+  label: string;
+  encryptedKey: string;
+  maskedKey: string;
+  enabled?: boolean;
+}): Promise<void> {
+  if (!supabaseServer) return;
+  const now = new Date().toISOString();
+  const { error } = await supabaseServer.from("admin_ai_keys").upsert(
+    {
+      id: input.id,
+      provider: input.provider,
+      label: input.label,
+      encrypted_key: input.encryptedKey,
+      masked_key: input.maskedKey,
+      enabled: input.enabled ?? true,
+      models_json: [],
+      rpm_limit: 30,
+      rpd_limit: 1000,
+      health_status: "healthy",
+      cooldown_until: null,
+      cooldown_step: 0,
+      last_error: null,
+      last_checked_at: now,
+      created_at: now,
+      updated_at: now,
+    } as never,
+    { onConflict: "id" },
+  );
+  if (error) {
+    const existing = (await readKnowledgeDoc<Record<string, unknown>[]>(PLATFORM_LLM_OWNER, DOC_ADMIN_KEYS)) ?? [];
+    const next = [
+      ...existing.filter((x) => x.id !== input.id),
+      {
+        id: input.id,
+        provider: input.provider,
+        label: input.label,
+        encrypted_key: input.encryptedKey,
+        masked_key: input.maskedKey,
+        enabled: input.enabled ?? true,
+        health_status: "healthy",
+        created_at: now,
+        updated_at: now,
+      },
+    ];
+    await writeKnowledgeDoc(PLATFORM_LLM_OWNER, DOC_ADMIN_KEYS, "system_llm_gateway", "Admin AI Gateway Pooled Keys", next);
+  }
+  invalidateAdminAiCaches();
+}
+
+export async function toggleAdminSearchKey(id: string, enabled: boolean): Promise<void> {
+  if (!supabaseServer) return;
+  const now = new Date().toISOString();
+  await supabaseServer
+    .from("admin_ai_keys")
+    .update({ enabled, updated_at: now } as never)
+    .eq("id", id);
+  invalidateAdminAiCaches();
 }
 
 // ---------------------------------------------------------------------------

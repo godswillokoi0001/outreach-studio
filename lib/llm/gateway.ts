@@ -9,11 +9,14 @@ import {
   type AdapterMessage,
 } from "./providers";
 import {
+  isGoogleGroundingBlocked,
+  markGoogleGroundingBlocked,
   rankPoolCandidates,
   recordCandidateFailure,
   recordCandidateSuccess,
   recordKeyUsageHit,
 } from "./router";
+import { WebSearchService } from "../search/webSearch";
 import {
   appendAiExecutionLog,
   decryptStoredGatewayKey,
@@ -32,7 +35,7 @@ import {
 } from "./types";
 
 const MAX_AUTO_ATTEMPTS = 8;
-const AUTO_WALL_BUDGET_MS = 40_000;
+const AUTO_WALL_BUDGET_MS = 45_000;
 
 export class LLMGatewayError extends Error {
   status: number;
@@ -71,6 +74,7 @@ export interface GatewayRequest {
   tools?: FunctionDeclaration[];
   agentContents?: AgentContent[];
   useGrounding?: boolean;
+  searchQuery?: string;
   requiresVision?: boolean;
 }
 
@@ -164,7 +168,8 @@ async function runPooledAutoFailover<T>(input: {
 
   for (let i = 0; i < ranked.length && attempts < MAX_AUTO_ATTEMPTS; i++) {
     const elapsed = Date.now() - input.startedAt;
-    if (attempts >= 2 && elapsed >= AUTO_WALL_BUDGET_MS) {
+    const budgetLeft = AUTO_WALL_BUDGET_MS - elapsed;
+    if (attempts >= 1 && budgetLeft < 4_000) {
       break;
     }
 
@@ -188,18 +193,21 @@ async function runPooledAutoFailover<T>(input: {
 
     recordKeyUsageHit(candidate.key.id);
 
-    const remainingMs = Math.max(8_000, AUTO_WALL_BUDGET_MS - elapsed);
-    const attemptTimeout = Math.min(remainingMs, input.req.useGrounding && candidate.key.provider === "google" ? 20_000 : 12_000);
+    const remainingMs = Math.max(4_000, AUTO_WALL_BUDGET_MS - (Date.now() - input.startedAt));
+    const targetAttemptTimeout =
+      input.req.responseFormat === "json" && input.req.taskType === "smart" ? 12_000 : 10_000;
+    const attemptTimeout = Math.min(remainingMs, targetAttemptTimeout);
 
-    // Non-Google providers cannot run Google Search grounding natively; degrade safely
+    // Non-Google providers cannot run Google Search grounding natively; also skip keys where free-tier rejected grounding
     const isGoogleGrounding =
       Boolean(input.req.useGrounding) &&
       candidate.key.provider === "google" &&
-      Boolean(candidate.model.capabilities.grounding);
+      Boolean(candidate.model.capabilities.grounding) &&
+      !isGoogleGroundingBlocked(candidate.key.id);
 
     const degradedSystemPrompt =
       input.req.useGrounding && !isGoogleGrounding
-        ? `${input.req.systemPrompt ?? ""}\n\nNote: Live web search grounding is unavailable on this model. Rely strictly on verified user/context facts supplied below and mark lower confidence where real-time search was unavailable. Never fabricate URLs.`
+        ? `${input.req.systemPrompt ?? ""}\n\nNote: Live web search grounding is unavailable on this model. Rely strictly on verified user/context facts supplied below and never fabricate URLs.`
         : input.req.systemPrompt;
 
     try {
@@ -238,6 +246,7 @@ async function runPooledAutoFailover<T>(input: {
         fallbackHops: input.initialHops + i,
         fallbackUsed: input.fallbackUsedFromByok || i > 0,
         grounded: raw.grounded,
+        groundingSource: raw.grounded ? "google_search" : null,
         latencyMs: Date.now() - input.startedAt,
         status: "success",
       };
@@ -252,6 +261,9 @@ async function runPooledAutoFailover<T>(input: {
               status: 502,
               retryable: true,
             });
+      if (isGoogleGrounding && (gErr.status === 400 || gErr.status === 403 || /search|grounding|billing|permission/i.test(gErr.message))) {
+        markGoogleGroundingBlocked(candidate.key.id);
+      }
       recordCandidateFailure(candidate.key, candidate.model.id, gErr);
       keyFailures.set(candidate.key.id, (keyFailures.get(candidate.key.id) ?? 0) + 1);
 
@@ -474,14 +486,102 @@ export const LLMGateway = {
   },
 
   async completeGroundedJSON<T>(req: GatewayRequest): Promise<GatewayGroundedJsonResult<T>> {
+    const userSettings = await getUserAiSettings(req.ownerId);
+    let canTryNativeGoogle = false;
+
+    if (userSettings.mode === "byok") {
+      canTryNativeGoogle = userSettings.activeProvider === "google";
+    } else {
+      const adminKeys = await listAdminAiKeys();
+      canTryNativeGoogle = adminKeys.some(
+        (k) =>
+          k.enabled &&
+          k.healthStatus !== "invalid" &&
+          k.provider === "google" &&
+          !isGoogleGroundingBlocked(k.id) &&
+          k.models.some((m) => m.enabled && m.capabilities.grounding),
+      );
+    }
+
+    if (canTryNativeGoogle) {
+      try {
+        const res = await executeGatewayCore(
+          { ...req, responseFormat: "json", useGrounding: true },
+          (raw) => parseJsonWithRescue<T>(raw.text),
+        );
+        if (res.raw.groundingUrls.length > 0 || res.receipt.grounded) {
+          return {
+            data: res.parsed,
+            groundingUrls: res.raw.groundingUrls,
+            receipt: {
+              ...res.receipt,
+              grounded: true,
+              groundingSource: "google_search",
+            },
+          };
+        }
+      } catch (err) {
+        if (userSettings.mode === "byok" && !userSettings.fallbackToSystemAuto) {
+          // If BYOK Google failed strictly on unsupported grounding, fall through to WebSearchService + BYOK JSON mode
+          if (!(err instanceof LLMGatewayError && err.code === "BYOK_CALL_FAILED")) {
+            throw err;
+          }
+        }
+      }
+    }
+
+    // Provider-agnostic free WebSearchService fallback (Tavily / Brave / Serper / DuckDuckGo / OSM)
+    const derivedQuery =
+      req.searchQuery?.trim() ||
+      (() => {
+        const lastUser = [...req.messages].reverse().find((m) => m.role === "user");
+        const text = typeof lastUser?.content === "string" ? lastUser.content : "";
+        return text.replace(/\s+/g, " ").trim().slice(0, 140);
+      })();
+
+    const webSearch = derivedQuery
+      ? await WebSearchService.search(derivedQuery, { maxResults: 8 }).catch(() => null)
+      : null;
+
+    const searchResults = webSearch?.results ?? [];
+    const searchUrls = searchResults.map((r) => ({ uri: r.url, title: r.title || r.url }));
+
+    const injectedContext =
+      searchResults.length > 0
+        ? `\n\nLIVE WEB SEARCH RESULTS (verified sources — cite only URLs from this list or supplied context):\n${searchResults
+            .slice(0, 8)
+            .map((r, idx) => `[${idx + 1}] ${r.title} (${r.url})\n${r.snippet}`)
+            .join("\n\n")}`
+        : "";
+
+    const fallbackMessages =
+      injectedContext && req.messages.length > 0
+        ? req.messages.map((m, idx) =>
+            idx === req.messages.length - 1 && m.role === "user" && typeof m.content === "string"
+              ? { ...m, content: `${m.content}${injectedContext}` }
+              : m,
+          )
+        : req.messages;
+
     const res = await executeGatewayCore(
-      { ...req, responseFormat: "json", useGrounding: true },
+      {
+        ...req,
+        messages: fallbackMessages,
+        responseFormat: "json",
+        useGrounding: false,
+      },
       (raw) => parseJsonWithRescue<T>(raw.text),
     );
+
+    const isGrounded = searchUrls.length > 0;
     return {
       data: res.parsed,
-      groundingUrls: res.raw.groundingUrls,
-      receipt: res.receipt,
+      groundingUrls: searchUrls,
+      receipt: {
+        ...res.receipt,
+        grounded: isGrounded,
+        groundingSource: isGrounded ? "web_search" : null,
+      },
     };
   },
 

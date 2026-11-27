@@ -10,6 +10,63 @@ export type GatewayProviderId =
   | "openai"
   | "custom";
 
+export type SearchProviderId = "tavily" | "brave" | "serper";
+
+export interface SearchProviderMeta {
+  id: SearchProviderId;
+  label: string;
+  blurb: string;
+  docsUrl: string;
+  keyPrefixes: string[];
+  defaultRpmLimit: number;
+  defaultRpdLimit: number;
+}
+
+export const SEARCH_PROVIDER_CATALOG: SearchProviderMeta[] = [
+  {
+    id: "tavily",
+    label: "Tavily Search",
+    blurb: "AI-ready web search API (1,000 free credits/month, no credit card).",
+    docsUrl: "https://app.tavily.com/",
+    keyPrefixes: ["tvly-"],
+    defaultRpmLimit: 30,
+    defaultRpdLimit: 1000,
+  },
+  {
+    id: "brave",
+    label: "Brave Search",
+    blurb: "Independent live web index with generous free tier.",
+    docsUrl: "https://api.search.brave.com/",
+    keyPrefixes: ["BSA"],
+    defaultRpmLimit: 20,
+    defaultRpdLimit: 1000,
+  },
+  {
+    id: "serper",
+    label: "Serper (Google SERP)",
+    blurb: "Fast Google Search JSON API (2,500 free queries on signup).",
+    docsUrl: "https://serper.dev/",
+    keyPrefixes: [],
+    defaultRpmLimit: 30,
+    defaultRpdLimit: 1000,
+  },
+];
+
+export function isSearchProviderId(raw: unknown): raw is SearchProviderId {
+  const clean = typeof raw === "string" ? raw.trim().toLowerCase() : "";
+  return clean === "tavily" || clean === "brave" || clean === "serper";
+}
+
+export function getSearchProviderMeta(id: SearchProviderId): SearchProviderMeta {
+  return SEARCH_PROVIDER_CATALOG.find((p) => p.id === id) ?? SEARCH_PROVIDER_CATALOG[0];
+}
+
+export function isSlowMegaModel(modelId: string): boolean {
+  return /(?:550b|480b|405b|397b|235b|nemotron-3-ultra|ernie-5\.5|ernie-.*preview|step-3|trinity-large|deep-research|thinking-pro)/i.test(
+    modelId.trim(),
+  );
+}
+
 export type TaskSeat = "smart" | "balanced" | "fast";
 export type RoutingStrategy = "balanced" | "smartest" | "fastest" | "reliable";
 export type KeyHealthStatus = "healthy" | "cooldown" | "invalid";
@@ -528,6 +585,19 @@ export interface UserAiKeyRecord {
 
 export type UserAiKeyPublic = Omit<UserAiKeyRecord, "encryptedKey">;
 
+export interface AdminSearchKeyPublic {
+  id: string;
+  provider: SearchProviderId;
+  label: string;
+  maskedKey: string;
+  enabled: boolean;
+  healthStatus: KeyHealthStatus;
+  lastError?: string | null;
+  lastCheckedAt?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface GatewayReceipt {
   ownerId: string;
   taskType: TaskSeat;
@@ -540,6 +610,7 @@ export interface GatewayReceipt {
   fallbackHops: number;
   fallbackUsed: boolean;
   grounded: boolean;
+  groundingSource?: "google_search" | "web_search" | null;
   latencyMs: number;
   status: "success" | "failed";
   errorSummary?: string;

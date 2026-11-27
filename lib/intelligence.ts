@@ -4,6 +4,13 @@ import { getActiveOwnerAiContext } from "./ai/context";
 import { addBusinessDaysIso, mapReplyClassMeta, type ReplyClassCode, type ReplySequenceAction } from "./guardrails";
 import { LLMGateway } from "./llm/gateway";
 import { cleanEmailText } from "./outreach-utils";
+import {
+  inspectProspectWebsites,
+  isDirectoryUrl,
+  WebSearchService,
+  type InspectedWebsite,
+  type WebSearchResult,
+} from "./search/webSearch";
 import type { CampaignConfig, Lead, Message, Settings } from "./types";
 
 export interface ReplyAnalysis {
@@ -388,32 +395,78 @@ export async function discoverProspectsServer(input: {
   knowledge?: string;
   model?: string;
 }): Promise<{ candidates: DiscoveryCandidate[]; notes: string; groundingUrls: { uri: string; title: string }[] }> {
+  const cacheKey = JSON.stringify([input.ownerId ?? "anon", input.industry, input.location, input.count, input.focus]);
+  const cached = discoveryCache.get(cacheKey);
+  if (cached && Date.now() - cached.at < DISCOVERY_CACHE_MS) {
+    return cached.value;
+  }
+
   const today = new Date().toISOString().slice(0, 10);
-  const taskInstructions = `Find real businesses matching USER_OFFER, USER_ICP, and USER_EXCLUSIONS using Google Search grounding and Module 1 (Signal-Based Prospecting, Research Waterfall & Anti-Hallucination Firewall).
 
-STRICT RESEARCH & QUALIFICATION RULES:
-1. THOROUGH RESEARCH:
-   - Search for the company's official website and verified social media handles (LinkedIn, Instagram, X/Twitter, Facebook, TikTok, YouTube, and niche-specific profiles).
-   - Search for the names and job titles of real decision-makers (Owner, Founder, CEO, Managing Director, Head of Marketing, etc.) per Module 1 Decision-Maker Protocol.
-   - Search for verifiable business email addresses (prefer direct individual email over role inbox), phone numbers, and location.
-   - For every contact detail, record exact source URL and date found (${today}).
+  // Step 1: Provider-agnostic live web search + OpenStreetMap local lookup (works on ALL LLMs, $0 built-in)
+  const searchRes = await WebSearchService.searchForProspects({
+    industry: input.industry,
+    location: input.location,
+    focus: input.focus,
+    count: input.count,
+  });
 
-2. TRUTHFUL, EVIDENCE-BASED DISCOVERY:
-   - NEVER invent, guess, pad, or hallucinate any data (no fake emails, phone numbers, handles, or claims).
-   - If a detail cannot be verified in search results, leave it empty. The interface displays "Not found".
-   - Assign verification_status: "Verified" (confirmed on official website or primary profile), "Unverified" (secondary directory), or "Not found".
-   - Every issue listed in "issues" must be concrete and directly visible from search evidence.
+  if (searchRes.results.length === 0) {
+    const emptyNote =
+      searchRes.errors.length > 0
+        ? `No live web search results were returned (${searchRes.errors.slice(0, 2).join("; ")}).`
+        : "No live web search results were returned for this industry and location.";
+    return { candidates: [], notes: emptyNote, groundingUrls: [] };
+  }
 
-3. STRICT QUALIFICATION & KILL-SWITCH REVIEW:
-   - Evaluate against Module 1 pillars: Offer Fit & Scope Safety (respect USER_EXCLUSIONS), Willingness/Ability to Pay (WTP proof), Trigger Timing, Decision-Maker Access, and Activity.
-   - Each prospect must include qualification_review:
-     - verdict: "qualified" (Tier A/B >=65 with zero kill-switches), "not_qualified" (failed criteria, low WTP, or competitor/exclusion), or "uncertain" (Tier C borderline / needs review).
-     - criteria: array of { name: string, status: "met" | "not_met" | "unknown", evidence: string }.
-     - weaknesses_and_risks: list of weaknesses, red flags, or risks stated candidly.
-     - missing_information: list of unverified details or missing data.
-   - Do NOT lower standards to reach the requested count.
+  // Step 2: Parallel live HTML inspection of top non-directory candidate websites (5s cap per site)
+  const websiteCandidates = searchRes.results
+    .map((r) => r.url)
+    .filter((u) => /^https?:\/\//i.test(u) && !isDirectoryUrl(u));
 
-Output strictly valid JSON:
+  const inspectedSites = await inspectProspectWebsites(websiteCandidates, {
+    maxSites: Math.min(8, Math.max(5, input.count)),
+    timeoutMs: 5_000,
+    checkContactPage: false,
+  });
+
+  const inspectedByUrl = new Map<string, InspectedWebsite>();
+  const verifiedEmailCorpus = new Set<string>();
+  const verifiedUrlCorpus = new Set<string>();
+
+  for (const r of searchRes.results) {
+    verifiedUrlCorpus.add(r.url.toLowerCase());
+    if (r.email) verifiedEmailCorpus.add(r.email.toLowerCase());
+  }
+  for (const s of inspectedSites) {
+    inspectedByUrl.set(s.url.toLowerCase(), s);
+    inspectedByUrl.set(s.finalUrl.toLowerCase(), s);
+    verifiedUrlCorpus.add(s.url.toLowerCase());
+    verifiedUrlCorpus.add(s.finalUrl.toLowerCase());
+    for (const em of s.emails) verifiedEmailCorpus.add(em.toLowerCase());
+    for (const soc of s.socialLinks) verifiedUrlCorpus.add(soc.url.toLowerCase());
+  }
+
+  // Grounding URLs always reflect real verified URLs fetched during this search
+  const groundingUrls = searchRes.results
+    .slice(0, 12)
+    .map((r) => ({ uri: r.url, title: r.businessName || r.title || r.url }));
+
+  const taskInstructions = `Structure and qualify ONLY the verified businesses found in the LIVE SEARCH RESULTS and INSPECTED WEBSITES below using Module 1 (Signal-Based Prospecting, Research Waterfall & Anti-Hallucination Firewall).
+
+STRICT ANTI-HALLUCINATION & VERIFICATION RULES:
+1. USE ONLY SUPPLIED EVIDENCE:
+   - Build candidates ONLY from the real businesses listed in LIVE SEARCH RESULTS and INSPECTED WEBSITES below.
+   - Do NOT invent businesses, websites, emails, phone numbers, social links, decision-makers, or website bugs not explicitly present in the supplied snippets or website inspection data.
+   - If a field (email, phone, decision_maker, social) is NOT present in the supplied evidence, leave it as "" (empty string).
+   - Assign verification_status: "Verified" when observed directly on an inspected website or OSM record, "Unverified" for search snippet only, or "Not found".
+   - Set date_found to "${today}".
+2. STRICT QUALIFICATION REVIEW:
+   - Evaluate against USER_OFFER, USER_ICP, and USER_EXCLUSIONS.
+   - Each candidate MUST include qualification_review with verdict ("qualified" | "not_qualified" | "uncertain"), criteria[], weaknesses_and_risks[], and missing_information[].
+   - Concrete website issues (e.g. "Missing mobile viewport meta tag", "Not using HTTPS", "Coming soon text", low word count) are allowed ONLY when reported verbatim in INSPECTED WEBSITES.
+
+Output strictly valid JSON matching:
 {"candidates":[{"business":string,"website":string,"location":string,"industry":string,"why":string,"source_url":string,"research_notes":string,"contact":{"decision_maker":string,"role":string,"email":string,"phone":string,"whatsapp":string,"address":string,"socials":[{"platform":string,"url":string,"verification_status":"Verified"|"Unverified"|"Not found"}],"sources":[{"field":string,"url":string,"confidence":"high"|"medium"|"low","verification_status":"Verified"|"Unverified"|"Not found","date_found":string}]},"issues":[{"area":string,"problem":string,"evidence":string,"severity":"high"|"medium"|"low"}],"how_we_help":[{"issue":string,"service":string,"angle":string}],"qualification_review":{"verdict":"qualified"|"not_qualified"|"uncertain","criteria":[{"name":string,"status":"met"|"not_met"|"unknown","evidence":string}],"weaknesses_and_risks":[string],"missing_information":[string]}}],"notes":string}`;
 
   const orchestrated = await buildOrchestratedSystemPrompt({
@@ -423,33 +476,101 @@ Output strictly valid JSON:
     taskInstructions,
   });
 
-  const user = `Find ${input.count} realistic prospects.
-Industry/segment: ${input.industry || "matching the active user's ICP and offer"}
-Location: ${input.location || "target market"}
+  const searchDossier = searchRes.results
+    .slice(0, 14)
+    .map((r: WebSearchResult, idx: number) => {
+      const extras = [
+        r.businessName ? `Business: ${r.businessName}` : "",
+        r.address ? `Address: ${r.address}` : "",
+        r.phone ? `Phone: ${r.phone}` : "",
+        r.email ? `Email: ${r.email}` : "",
+      ]
+        .filter(Boolean)
+        .join(" | ");
+      return `[${idx + 1}] (${r.sourceProvider}) ${r.title}\nURL: ${r.url}${extras ? `\nDetails: ${extras}` : ""}\nSnippet: ${r.snippet}`;
+    })
+    .join("\n\n");
+
+  const inspectedDossier =
+    inspectedSites.length > 0
+      ? inspectedSites
+          .map((s, idx) => {
+            return `[Site ${idx + 1}] ${s.finalUrl} (HTTP ${s.status}, Reachable: ${s.reachable})
+Title: ${s.title || "(none)"} | H1: ${s.h1 || "(none)"}
+HTTPS: ${s.https} | Mobile Viewport: ${s.hasViewport} | Contact Form: ${s.hasContactForm} | Platform: ${s.platform || "unknown"}
+Verified Emails: ${s.emails.join(", ") || "none found"} | Phones: ${s.phones.join(", ") || "none found"}
+Socials: ${s.socialLinks.map((l) => `${l.platform}: ${l.url}`).join(", ") || "none found"}
+Detected Hints: ${s.statusHints.join("; ") || "none"}
+Visible Text: ${s.textSummary.slice(0, 900)}`;
+          })
+          .join("\n\n")
+      : "(No live HTML sites were reachable or non-directory)";
+
+  const user = `Extract and qualify up to ${input.count} real prospects from the verified evidence below.
+Target industry/segment: ${input.industry || "matching the active user's ICP and offer"}
+Target location: ${input.location || "target market"}
 Additional focus: ${input.focus || "(none)"}
 
-Return ONLY valid JSON with a "candidates" array and short "notes" about verification and gaps.`;
+=== LIVE SEARCH RESULTS (providers: ${searchRes.providersSucceeded.join(", ")}) ===
+${searchDossier}
 
-  const cacheKey = JSON.stringify([input.ownerId ?? "anon", input.industry, input.location, input.count, input.focus]);
-  const cached = discoveryCache.get(cacheKey);
-  if (cached && Date.now() - cached.at < DISCOVERY_CACHE_MS) {
-    return cached.value;
-  }
+=== LIVE INSPECTED WEBSITES ===
+${inspectedDossier}
 
-  const { data, groundingUrls } = await LLMGateway.completeGroundedJSON<{
+Return ONLY valid JSON with a "candidates" array and short "notes" summarizing sources used.`;
+
+  const { data } = await LLMGateway.completeJSON<{
     candidates: unknown[];
     notes: string;
   }>({
     ownerId: input.ownerId ?? getActiveOwnerAiContext()?.ownerId ?? "anonymous",
-    taskType: "smart",
+    taskType: "balanced",
     feature: "discover",
     systemPrompt: orchestrated.system,
     messages: [{ role: "user", content: user }],
   });
 
+  // Check email text corpus across all search snippets & inspected sites to strip any LLM-guessed emails
+  const fullEvidenceText = `${searchDossier}\n${inspectedDossier}`.toLowerCase();
+
   const seen = new Set<string>();
   const candidates = (Array.isArray(data.candidates) ? data.candidates : [])
     .map((raw) => normalizeCandidate(raw))
+    .map((candidate) => {
+      // Anti-hallucination deterministic guard on emails
+      const emailLower = candidate.contact.email.toLowerCase();
+      if (
+        emailLower &&
+        !verifiedEmailCorpus.has(emailLower) &&
+        !fullEvidenceText.includes(emailLower)
+      ) {
+        candidate.contact.email = "";
+        candidate.contact.email_status = "Not found";
+      }
+
+      // Enrich missing email/phone/address from inspected site if LLM left blank
+      const siteMatch =
+        inspectedByUrl.get(candidate.website.toLowerCase()) ??
+        inspectedByUrl.get(candidate.source_url.toLowerCase());
+      if (siteMatch) {
+        if (!candidate.contact.email && siteMatch.emails[0]) {
+          candidate.contact.email = siteMatch.emails[0];
+          candidate.contact.email_status = "Verified";
+        }
+        if (!candidate.contact.phone && siteMatch.phones[0]) {
+          candidate.contact.phone = siteMatch.phones[0];
+          candidate.contact.phone_status = "Verified";
+        }
+        if (candidate.contact.socials.length === 0 && siteMatch.socialLinks.length > 0) {
+          candidate.contact.socials = siteMatch.socialLinks.map((s) => ({
+            platform: s.platform,
+            url: s.url,
+            verification_status: "Verified",
+          }));
+        }
+      }
+      return candidate;
+    })
     .filter((candidate) => {
       const key = (candidate.website || candidate.business).toLowerCase().replace(/^https?:\/\//, "").replace(/\/+$/, "");
       if (!key || seen.has(key)) return false;
@@ -460,7 +581,10 @@ Return ONLY valid JSON with a "candidates" array and short "notes" about verific
 
   const value = {
     candidates,
-    notes: typeof data.notes === "string" ? data.notes : "",
+    notes:
+      typeof data.notes === "string" && data.notes.trim()
+        ? data.notes
+        : `Sources queried: ${searchRes.providersSucceeded.join(", ")}. Inspected ${inspectedSites.length} live site(s).`,
     groundingUrls,
   };
   discoveryCache.set(cacheKey, { at: Date.now(), value });
@@ -473,6 +597,10 @@ const discoveryCache = new Map<string, {
   value: { candidates: DiscoveryCandidate[]; notes: string; groundingUrls: { uri: string; title: string }[] };
 }>();
 const DISCOVERY_CACHE_MS = 10 * 60 * 1000;
+
+export function clearDiscoveryCacheForTests(): void {
+  discoveryCache.clear();
+}
 
 function text(value: unknown, max = 400): string {
   return typeof value === "string" ? value.trim().slice(0, max) : "";

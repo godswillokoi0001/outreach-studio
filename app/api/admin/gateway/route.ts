@@ -12,16 +12,23 @@ import {
   encryptGatewayKey,
   getAdminAiSettings,
   listAdminAiKeys,
+  listAdminSearchKeys,
+  listAdminSearchKeysPublic,
   listAiExecutionLogs,
   persistAdminKeyHealth,
   saveAdminAiKey,
   saveAdminAiSettings,
+  saveAdminSearchKey,
+  toggleAdminSearchKey,
   toAdminAiKeyPublic,
 } from "@/lib/llm/store";
 import {
   getProviderMeta,
+  getSearchProviderMeta,
+  isSearchProviderId,
   normalizeGatewayProviderId,
   PROVIDER_CATALOG,
+  SEARCH_PROVIDER_CATALOG,
   type AdminAiKeyRecord,
   type GatewayModelConfig,
   type GatewayProviderId,
@@ -29,14 +36,16 @@ import {
 } from "@/lib/llm/types";
 import { requireAdmin } from "@/lib/platform/admin-auth";
 import { appendAdminAuditLog } from "@/lib/platform/store-server";
+import { verifySearchKey } from "@/lib/search/webSearch";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
 async function buildAdminGatewayPayload() {
-  const [settings, keys, executionLogs] = await Promise.all([
+  const [settings, keys, searchKeys, executionLogs] = await Promise.all([
     getAdminAiSettings(),
     listAdminAiKeys(),
+    listAdminSearchKeysPublic(),
     listAiExecutionLogs({ limit: 35 }),
   ]);
 
@@ -54,6 +63,9 @@ async function buildAdminGatewayPayload() {
     settings,
     keys: enrichedKeys,
     catalog: PROVIDER_CATALOG,
+    searchKeys,
+    searchCatalog: SEARCH_PROVIDER_CATALOG,
+    builtInSearchStatus: "Built-in Keyless Fallback: Ready ($0 Forever · DuckDuckGo + OpenStreetMap Overpass)",
     executionLogs,
   };
 }
@@ -80,7 +92,11 @@ export async function POST(req: NextRequest) {
         | "clear_cooldown"
         | "delete_key"
         | "fetch_models"
-        | "test_key";
+        | "test_key"
+        | "add_search_key"
+        | "toggle_search_key"
+        | "test_search_key"
+        | "delete_search_key";
       masterMode?: "auto" | "manual";
       strategy?: RoutingStrategy;
       fallbackChain?: { provider: GatewayProviderId; model: string }[];
@@ -98,11 +114,96 @@ export async function POST(req: NextRequest) {
       totpCode?: string;
     };
 
-    const readOnlyAction = body.action === "fetch_models" || body.action === "test_key";
+    const readOnlyAction =
+      body.action === "fetch_models" ||
+      body.action === "test_key" ||
+      body.action === "test_search_key";
     const ctx = await requireAdmin(req, readOnlyAction ? "admin" : "super_admin", {
       requireReauth: !readOnlyAction,
       inlineTotpCode: body.totpCode,
     });
+
+    if (body.action === "test_search_key") {
+      let provider = isSearchProviderId(body.provider) ? body.provider : "tavily";
+      let apiKey = (body.apiKey ?? "").trim();
+      if (body.keyId && !apiKey) {
+        const found = (await listAdminSearchKeys()).find((k) => k.id === body.keyId);
+        if (!found) return NextResponse.json({ error: "Search key not found." }, { status: 404 });
+        provider = found.provider;
+        apiKey = found.apiKey;
+      }
+      const res = await verifySearchKey({ provider, apiKey });
+      return NextResponse.json({
+        ok: true,
+        probe: { model: `${getSearchProviderMeta(provider).label} (${res.count} results)`, ms: res.ms },
+        payload: await buildAdminGatewayPayload(),
+      });
+    }
+
+    if (body.action === "add_search_key") {
+      if (!isSearchProviderId(body.provider)) {
+        return NextResponse.json({ error: "Select Tavily, Brave, or Serper." }, { status: 400 });
+      }
+      const check = validateApiKeyInput(body.apiKey);
+      if (!check.ok) {
+        return NextResponse.json({ error: check.error }, { status: 400 });
+      }
+      const meta = getSearchProviderMeta(body.provider);
+      const { encryptedKey, maskedKey } = encryptGatewayKey(check.value);
+      const id = `srch_${Date.now().toString(36)}_${randomBytes(4).toString("hex")}`;
+      const label = (body.label ?? "").trim() || `${meta.label} (${maskedKey})`;
+      await saveAdminSearchKey({
+        id,
+        provider: body.provider,
+        label,
+        encryptedKey,
+        maskedKey,
+        enabled: true,
+      });
+      await appendAdminAuditLog({
+        actorId: ctx.admin.id,
+        actorEmail: ctx.admin.email,
+        actorRole: ctx.admin.role,
+        action: "search_key_added",
+        targetType: "admin_ai_keys",
+        targetId: id,
+        details: { provider: body.provider, maskedKey, label },
+        req,
+      });
+      return NextResponse.json(await buildAdminGatewayPayload(), { status: 201 });
+    }
+
+    if (body.action === "toggle_search_key") {
+      const keyId = String(body.keyId ?? "").trim();
+      if (!keyId) return NextResponse.json({ error: "keyId required." }, { status: 400 });
+      await toggleAdminSearchKey(keyId, Boolean(body.enabled));
+      await appendAdminAuditLog({
+        actorId: ctx.admin.id,
+        actorEmail: ctx.admin.email,
+        actorRole: ctx.admin.role,
+        action: "search_key_toggled",
+        targetType: "admin_ai_keys",
+        targetId: keyId,
+        req,
+      });
+      return NextResponse.json(await buildAdminGatewayPayload());
+    }
+
+    if (body.action === "delete_search_key") {
+      const keyId = String(body.keyId ?? "").trim();
+      if (!keyId) return NextResponse.json({ error: "keyId required." }, { status: 400 });
+      await deleteAdminAiKey(keyId);
+      await appendAdminAuditLog({
+        actorId: ctx.admin.id,
+        actorEmail: ctx.admin.email,
+        actorRole: ctx.admin.role,
+        action: "search_key_deleted",
+        targetType: "admin_ai_keys",
+        targetId: keyId,
+        req,
+      });
+      return NextResponse.json(await buildAdminGatewayPayload());
+    }
 
     if (body.action === "update_settings") {
       await saveAdminAiSettings({

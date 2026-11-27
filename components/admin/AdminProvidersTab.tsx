@@ -14,17 +14,22 @@ import {
   Sliders,
   TestTube2,
   Trash2,
+  Globe,
   Zap,
 } from "lucide-react";
 import {
   getProviderMeta,
+  getSearchProviderMeta,
   type AdminAiKeyPublic,
   type AdminAiSettings,
+  type AdminSearchKeyPublic,
   type AiExecutionLogRecord,
   type GatewayModelConfig,
   type GatewayProviderId,
   type ProviderCatalogMeta,
   type RoutingStrategy,
+  type SearchProviderId,
+  type SearchProviderMeta,
   type TaskSeat,
 } from "@/lib/llm/types";
 import type { AdminRole } from "@/lib/platform/types";
@@ -37,6 +42,9 @@ interface GatewayAdminPayload {
   settings: AdminAiSettings;
   keys: AdminAiKeyPublic[];
   catalog: ProviderCatalogMeta[];
+  searchKeys?: AdminSearchKeyPublic[];
+  searchCatalog?: SearchProviderMeta[];
+  builtInSearchStatus?: string;
   executionLogs: AiExecutionLogRecord[];
 }
 
@@ -121,6 +129,11 @@ export function AdminProvidersTab({
   const [editRpmLimit, setEditRpmLimit] = useState(15);
   const [editRpdLimit, setEditRpdLimit] = useState(1500);
   const [editModels, setEditModels] = useState<GatewayModelConfig[]>([]);
+
+  // Web Search Key quick-add state
+  const [searchProviderInput, setSearchProviderInput] = useState<SearchProviderId>("tavily");
+  const [searchApiKeyInput, setSearchApiKeyInput] = useState("");
+  const [searchLabelInput, setSearchLabelInput] = useState("");
 
   const applyPayload = useCallback((payload: GatewayAdminPayload) => {
     setData(payload);
@@ -696,6 +709,181 @@ export function AdminProvidersTab({
             })}
           </div>
         )}
+      </Card>
+
+      {/* Web Search (Discovery & Research) */}
+      <Card
+        title="Web Search (Prospect Discovery & Live Research)"
+        sub="Decoupled from paid Gemini grounding so discovery & research run across EVERY LLM provider at $0."
+        actions={
+          <Badge tone="ok">
+            {data?.builtInSearchStatus || "Built-in Keyless Fallback: Ready ($0 Forever)"}
+          </Badge>
+        }
+      >
+        <div className="stack" style={{ gap: 12 }}>
+          <Banner tone="info">
+            <div className="row" style={{ gap: 6, flexWrap: "wrap" }}>
+              <Globe size={14} />
+              <span>
+                <strong>Built-in Keyless Fallback is always active</strong> (DuckDuckGo Search + OpenStreetMap Overpass local business lookup + parallel live site inspection). Optionally add a free{" "}
+                <strong>Tavily</strong> (1,000/mo free, no card), <strong>Brave</strong>, or <strong>Serper</strong> key for faster &amp; richer SERP snippets.
+              </span>
+            </div>
+          </Banner>
+
+          {(data?.searchKeys ?? []).length > 0 && (
+            <div className="stack" style={{ gap: 8 }}>
+              {(data?.searchKeys ?? []).map((sk) => {
+                const smeta = getSearchProviderMeta(sk.provider);
+                return (
+                  <div
+                    key={sk.id}
+                    className="row"
+                    style={{
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                      padding: 10,
+                      borderRadius: 8,
+                      border: `1px solid ${sk.enabled ? "var(--teal-deep)" : "var(--line)"}`,
+                      background: "var(--surface)",
+                      gap: 8,
+                      flexWrap: "wrap",
+                    }}
+                  >
+                    <div className="row" style={{ gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+                      <span className="strong">{sk.label || smeta.label}</span>
+                      <Badge>{smeta.label}</Badge>
+                      <Badge>{sk.maskedKey}</Badge>
+                      <Badge tone={sk.enabled ? "ok" : undefined}>{sk.enabled ? "Active" : "Paused"}</Badge>
+                    </div>
+                    <div className="row" style={{ gap: 6 }}>
+                      <button
+                        type="button"
+                        className="btn btn-sm"
+                        disabled={busy !== null}
+                        onClick={() =>
+                          void mutateGateway(
+                            `Test ${smeta.label}`,
+                            { action: "test_search_key", keyId: sk.id },
+                            `test_search_${sk.id}`,
+                          )
+                        }
+                      >
+                        {busy === `test_search_${sk.id}` ? <Loader2 size={12} className="spin" /> : <TestTube2 size={12} />}
+                        Test Search
+                      </button>
+                      {isSuper && !sk.id.startsWith("srch_env_") && (
+                        <>
+                          <button
+                            type="button"
+                            className="btn btn-sm"
+                            disabled={busy !== null}
+                            onClick={() =>
+                              void mutateGateway(
+                                `${sk.enabled ? "Pause" : "Enable"} ${sk.label}`,
+                                { action: "toggle_search_key", keyId: sk.id, enabled: !sk.enabled },
+                                `toggle_search_${sk.id}`,
+                              )
+                            }
+                          >
+                            {sk.enabled ? "Pause" : "Enable"}
+                          </button>
+                          <button
+                            type="button"
+                            className="btn btn-sm btn-ghost"
+                            disabled={busy !== null}
+                            onClick={() =>
+                              void mutateGateway(
+                                `Remove ${sk.label}`,
+                                { action: "delete_search_key", keyId: sk.id },
+                                `del_search_${sk.id}`,
+                              )
+                            }
+                          >
+                            <Trash2 size={12} />
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {isSuper && (
+            <form
+              className="row"
+              style={{ gap: 8, flexWrap: "wrap", alignItems: "flex-end" }}
+              onSubmit={async (e) => {
+                e.preventDefault();
+                if (!searchApiKeyInput.trim()) return;
+                const ok = await mutateGateway(
+                  `Add ${getSearchProviderMeta(searchProviderInput).label} key`,
+                  {
+                    action: "add_search_key",
+                    provider: searchProviderInput,
+                    apiKey: searchApiKeyInput.trim(),
+                    label: searchLabelInput.trim() || undefined,
+                  },
+                  "add_search_key",
+                );
+                if (ok) {
+                  setSearchApiKeyInput("");
+                  setSearchLabelInput("");
+                }
+              }}
+            >
+              <div style={{ flex: "0 1 180px" }}>
+                <Field label="Search Provider">
+                  <select
+                    className="select"
+                    value={searchProviderInput}
+                    onChange={(e) => setSearchProviderInput(e.target.value as SearchProviderId)}
+                  >
+                    {(data?.searchCatalog ?? []).map((sc) => (
+                      <option key={sc.id} value={sc.id}>
+                        {sc.label}
+                      </option>
+                    ))}
+                  </select>
+                </Field>
+              </div>
+              <div style={{ flex: "1 1 220px" }}>
+                <Field label="Optional Label">
+                  <input
+                    className="input"
+                    type="text"
+                    value={searchLabelInput}
+                    onChange={(e) => setSearchLabelInput(e.target.value)}
+                    placeholder="e.g. Tavily Free Key"
+                  />
+                </Field>
+              </div>
+              <div style={{ flex: "1 1 240px" }}>
+                <Field label="Search API Key">
+                  <input
+                    className="input"
+                    type="password"
+                    autoComplete="off"
+                    value={searchApiKeyInput}
+                    onChange={(e) => setSearchApiKeyInput(e.target.value)}
+                    placeholder="tvly-... / BSA... / Serper key"
+                  />
+                </Field>
+              </div>
+              <button
+                type="submit"
+                className="btn btn-primary btn-sm"
+                disabled={!searchApiKeyInput.trim() || busy !== null}
+              >
+                {busy === "add_search_key" ? <Loader2 size={12} className="spin" /> : <Plus size={12} />}
+                Save Search Key
+              </button>
+            </form>
+          )}
+        </div>
       </Card>
 
       {/* Live Execution Receipts Log */}

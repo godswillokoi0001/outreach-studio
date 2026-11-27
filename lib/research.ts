@@ -4,6 +4,7 @@ import { getActiveOwnerAiContext } from "./ai/context";
 import { normalizeWebsite } from "./columns";
 import { LLMGateway } from "./llm/gateway";
 import { isFetchableUrl } from "./outreach-utils";
+import { inspectProspectWebsite, WebSearchService } from "./search/webSearch";
 import type { Lead, ResearchResult } from "./types";
 
 export interface SiteSnapshot {
@@ -281,31 +282,80 @@ export async function researchLeadServer(
   knowledge: string,
   options?: { model?: string; ownerId?: string },
 ): Promise<ResearchResult> {
-  const snapshot = await fetchSite(lead.website);
+  const cleanBiz = (lead.business ?? "").trim();
+  const webQuery =
+    cleanBiz && cleanBiz !== "(unknown)"
+      ? `"${cleanBiz}" ${lead.location ? lead.location.trim() : ""} official website`
+      : "";
+
+  const [inspected, searchRes] = await Promise.all([
+    inspectProspectWebsite(lead.website, { timeoutMs: 5_000, checkContactPage: true }),
+    webQuery
+      ? WebSearchService.search(webQuery, { maxResults: 5, locationHint: lead.location ?? undefined }).catch(
+          () => null,
+        )
+      : Promise.resolve(null),
+  ]);
+
+  const snapshot: SiteSnapshot | null = inspected
+    ? {
+        url: inspected.url,
+        reachable: inspected.reachable,
+        status: inspected.status,
+        finalUrl: inspected.finalUrl,
+        title: inspected.title,
+        description: inspected.metaDescription,
+        text: inspected.textSummary,
+        signals: {
+          https: inspected.https,
+          hasViewport: inspected.hasViewport,
+          hasContactForm: inspected.hasContactForm,
+          hasPhoneLink: inspected.phones.length > 0,
+          hasEmailLink: inspected.emails.length > 0,
+          ctaPhrases: inspected.ctaPhrases,
+          h1: inspected.h1,
+          socialLinks: inspected.socialLinks.length,
+          copyrightYear: inspected.copyrightYear,
+          platform: inspected.platform,
+          wordCount: inspected.wordCount,
+        },
+        error: inspected.error,
+      }
+    : null;
+
   const manual = (lead.manual_research ?? "").trim();
 
-  const siteBlock = snapshot
+  const siteBlock = inspected
     ? `WEBSITE CHECK (live fetch just now)
-URL: ${snapshot.url}
-Final URL: ${snapshot.finalUrl}
-Reachable: ${snapshot.reachable} (HTTP ${snapshot.status})${snapshot.error ? ` - ${snapshot.error}` : ""}
-Title: ${snapshot.title || "(none)"}
-Meta description: ${snapshot.description || "(none)"}
-H1: ${snapshot.signals.h1 || "(none)"}
-HTTPS: ${snapshot.signals.https}
-Mobile viewport meta tag: ${snapshot.signals.hasViewport}
-Contact form present: ${snapshot.signals.hasContactForm}
-Telephone link: ${snapshot.signals.hasPhoneLink}
-Email link: ${snapshot.signals.hasEmailLink}
-Call-to-action phrases found: ${snapshot.signals.ctaPhrases.join(", ") || "(none)"}
-Social links found: ${snapshot.signals.socialLinks}
-Footer copyright year: ${snapshot.signals.copyrightYear ?? "(not found)"}
-Detected platform: ${snapshot.signals.platform ?? "(unknown)"}
-Approximate word count on homepage: ${snapshot.signals.wordCount}
+URL: ${inspected.url}
+Final URL: ${inspected.finalUrl}
+Reachable: ${inspected.reachable} (HTTP ${inspected.status})${inspected.error ? ` - ${inspected.error}` : ""}
+Title: ${inspected.title || "(none)"}
+Meta description: ${inspected.metaDescription || "(none)"}
+H1: ${inspected.h1 || "(none)"}
+HTTPS: ${inspected.https}
+Mobile viewport meta tag: ${inspected.hasViewport}
+Contact form present: ${inspected.hasContactForm}
+Verified emails on page: ${inspected.emails.join(", ") || "(none)"}
+Telephone links: ${inspected.phones.join(", ") || "(none)"}
+Call-to-action phrases found: ${inspected.ctaPhrases.join(", ") || "(none)"}
+Social links found: ${inspected.socialLinks.map((s) => `${s.platform}: ${s.url}`).join(" | ") || "(none)"}
+Footer copyright year: ${inspected.copyrightYear ?? "(not found)"}
+Detected platform: ${inspected.platform ?? "(unknown)"}
+Visible hints: ${inspected.statusHints.join("; ") || "(none)"}
+Approximate word count on homepage: ${inspected.wordCount}
 
-PAGE TEXT (truncated to 8000 characters):
-${snapshot.text.slice(0, 8000)}`
+PAGE TEXT (truncated):
+${inspected.textSummary}`
     : `WEBSITE CHECK: none available. ${lead.website ? "The stored URL could not be fetched." : "No website URL is stored for this prospect."}`;
+
+  const searchBlock =
+    searchRes && searchRes.results.length > 0
+      ? `\nLIVE WEB SEARCH CONTEXT:\n${searchRes.results
+          .slice(0, 5)
+          .map((r, idx) => `[${idx + 1}] ${r.title} (${r.url}) — ${r.snippet}`)
+          .join("\n")}`
+      : "";
 
   const orchestrated = await buildOrchestratedSystemPrompt({
     workflow: "research_and_qualify",
@@ -323,7 +373,7 @@ Industry (from source): ${lead.industry ?? "(unknown)"}
 Source notes: ${lead.notes ?? "(none)"}
 ${lead.extra ? `Extra spreadsheet data: ${lead.extra}` : ""}
 
-${siteBlock}
+${siteBlock}${searchBlock}
 
 ${manual ? `OWNER-SUPPLIED RESEARCH (treat as reliable observations from the business owner):\n${manual}` : ""}
 
@@ -332,7 +382,7 @@ Run Workflow A (research_and_qualify) and return the complete structured JSON.`;
   const ownerId = options?.ownerId ?? lead.ownerId ?? getActiveOwnerAiContext()?.ownerId ?? "anonymous";
   const { data: result } = await LLMGateway.completeJSON<ResearchResult>({
     ownerId,
-    taskType: "smart",
+    taskType: "balanced",
     feature: "research",
     systemPrompt: orchestrated.system,
     messages: [{ role: "user", content: user }],
