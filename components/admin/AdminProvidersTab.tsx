@@ -161,6 +161,7 @@ export function AdminProvidersTab({
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [activeCategory, setActiveCategory] = useState<CategoryTab>("all");
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   const [drawer, setDrawer] = useState<DrawerTarget | null>(null);
 
   // Settings draft
@@ -308,6 +309,15 @@ export function AdminProvidersTab({
     window.addEventListener("admin:add-search-key", onAdd);
     return () => window.removeEventListener("admin:add-search-key", onAdd);
   }, [openSearchModal]);
+
+  useEffect(() => {
+    const onAddLlm = (event: Event) => {
+      const provider = (event as CustomEvent<{ provider?: GatewayProviderId }>).detail?.provider;
+      openAddModalForProvider(provider ?? "google");
+    };
+    window.addEventListener("admin:add-llm-key", onAddLlm);
+    return () => window.removeEventListener("admin:add-llm-key", onAddLlm);
+  });
 
   const handleTestNewKey = async () => {
     if (!newApiKey.trim()) return;
@@ -661,22 +671,37 @@ export function AdminProvidersTab({
             title={PROVIDER_CATEGORY_LABELS[category]}
             sub={`${counts.active} active · ${counts.paused} paused · ${counts.notConfigured} not configured`}
             actions={
-              isSuper ? (
-                <button
-                  type="button"
-                  className="btn btn-primary btn-sm"
-                  onClick={() => {
-                    if (isLlm) openAddModalForProvider("google");
-                    else openSearchModal(category as Exclude<ProviderCategory, "ai_llm">);
-                  }}
-                >
-                  <Plus size={12} />
-                  Add Key to {isLlm ? "AI / LLM" : PROVIDER_CATEGORY_LABELS[category].split(" ")[0]}
-                </button>
-              ) : undefined
+              <div className="row" style={{ gap: 6 }}>
+                {activeCategory === "all" && (
+                  <button
+                    type="button"
+                    className="btn btn-sm"
+                    aria-expanded={!collapsed[category]}
+                    onClick={() => setCollapsed((prev) => ({ ...prev, [category]: !prev[category] }))}
+                  >
+                    {collapsed[category] ? "Expand" : "Collapse"}
+                  </button>
+                )}
+                {isSuper && (
+                  <button
+                    type="button"
+                    className="btn btn-primary btn-sm"
+                    onClick={() => {
+                      if (isLlm) openAddModalForProvider("google");
+                      else openSearchModal(category as Exclude<ProviderCategory, "ai_llm">);
+                    }}
+                  >
+                    <Plus size={12} />
+                    Add Key to {PROVIDER_CATEGORY_LABELS[category]}
+                  </button>
+                )}
+              </div>
             }
           >
-            <div className="stack" style={{ gap: 10 }}>
+            <div
+              className="stack"
+              style={{ gap: 10, display: activeCategory === "all" && collapsed[category] ? "none" : undefined }}
+            >
               {isLlm &&
                 keys.map((k) => {
                   const meta = getProviderMeta(k.provider);
@@ -686,7 +711,13 @@ export function AdminProvidersTab({
                     <ProviderCard
                       key={k.id}
                       title={k.label || meta.label}
-                      badges={[meta.label, k.maskedKey]}
+                      badges={[
+                        meta.label,
+                        k.maskedKey,
+                        /insufficient balance|no resource package|resource package/i.test(k.lastError ?? "")
+                          ? "No Balance — Pause Recommended"
+                          : "",
+                      ]}
                       status={status}
                       sub={`${k.models.filter((m) => m.enabled).length} / ${k.models.length} models · RPM ${k.rpmUsed ?? 0}/${k.rpmLimit} · RPD ${k.rpdUsed ?? 0}/${k.rpdLimit}${
                         cooldownLeft ? ` · ${cooldownLeft}` : ""
@@ -1260,12 +1291,18 @@ function ReceiptsTable({
   onOpenKey: (log: AiExecutionLogRecord) => void;
 }) {
   const [filter, setFilter] = useState<"all" | "success" | "failed">("all");
+  const [providerFilter, setProviderFilter] = useState<string>("all");
   const [expanded, setExpanded] = useState<string | null>(null);
-  const rows = logs.filter((l) => filter === "all" || l.status === filter);
+  const providers = [...new Set(logs.map((l) => l.actualProvider).filter(Boolean))] as string[];
+  const rows = logs.filter(
+    (l) =>
+      (filter === "all" || l.status === filter) &&
+      (providerFilter === "all" || l.actualProvider === providerFilter),
+  );
 
   return (
     <div className="stack" style={{ gap: 10 }}>
-      <div className="row" style={{ gap: 6 }}>
+      <div className="row" style={{ gap: 6, flexWrap: "wrap", alignItems: "center" }}>
         {(["all", "success", "failed"] as const).map((f) => (
           <button
             key={f}
@@ -1276,6 +1313,20 @@ function ReceiptsTable({
             {f === "all" ? "All" : f === "success" ? "Success" : "Failed"}
           </button>
         ))}
+        <select
+          className="select"
+          style={{ width: "auto", padding: "4px 8px", fontSize: 12 }}
+          aria-label="Filter receipts by provider"
+          value={providerFilter}
+          onChange={(e) => setProviderFilter(e.target.value)}
+        >
+          <option value="all">All providers</option>
+          {providers.map((provider) => (
+            <option key={provider} value={provider}>
+              {provider}
+            </option>
+          ))}
+        </select>
       </div>
       <div style={{ overflowX: "auto" }}>
         <table className="table" style={{ width: "100%", fontSize: 12.5 }}>

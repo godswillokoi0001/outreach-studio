@@ -677,12 +677,32 @@ function readEnvSearchKeys(): DecryptedAdminSearchKey[] {
   return out;
 }
 
+/**
+ * Combines DB-backed and host-env search keys. A DB row always owns its
+ * provider — including a paused (`enabled: false`) row — so an env var can
+ * never resurrect a key the founder deliberately paused.
+ */
+export function mergeSearchKeySources(
+  dbKeys: DecryptedAdminSearchKey[],
+  envKeys: DecryptedAdminSearchKey[],
+  knownProviders?: Iterable<string>,
+): DecryptedAdminSearchKey[] {
+  const configuredProviders = new Set(knownProviders ?? dbKeys.map((k) => k.provider));
+  const out = dbKeys.filter((k) => k.enabled);
+  for (const envKey of envKeys) {
+    if (!configuredProviders.has(envKey.provider) && envKey.enabled) out.push(envKey);
+  }
+  return out;
+}
+
 export async function listAdminSearchKeys(): Promise<DecryptedAdminSearchKey[]> {
   if (adminSearchKeysCache && Date.now() < adminSearchKeysCache.exp) {
-    return adminSearchKeysCache.value;
+    return adminSearchKeysCache.value.filter((k) => k.enabled);
   }
 
   const out: DecryptedAdminSearchKey[] = [];
+  // Every provider that owns a DB row (paused or active) blocks env fallback.
+  const configuredProviders = new Set<string>();
   if (supabaseServer) {
     const { data, error } = await supabaseServer
       .from("admin_ai_keys")
@@ -699,6 +719,7 @@ export async function listAdminSearchKeys(): Promise<DecryptedAdminSearchKey[]> 
 
     for (const r of rows) {
       if (!isSearchProviderId(r.provider)) continue;
+      configuredProviders.add(r.provider);
       if (r.enabled === false) continue;
       const enc = String(r.encrypted_key ?? r.encryptedKey ?? "");
       if (!enc) continue;
@@ -725,15 +746,10 @@ export async function listAdminSearchKeys(): Promise<DecryptedAdminSearchKey[]> 
     }
   }
 
-  const seenProviders = new Set(out.map((k) => k.provider));
-  for (const envKey of readEnvSearchKeys()) {
-    if (!seenProviders.has(envKey.provider)) {
-      out.push(envKey);
-    }
-  }
+  const merged = mergeSearchKeySources(out, readEnvSearchKeys(), configuredProviders);
 
-  adminSearchKeysCache = { value: out, exp: Date.now() + CACHE_TTL_MS };
-  return out;
+  adminSearchKeysCache = { value: merged, exp: Date.now() + CACHE_TTL_MS };
+  return merged.filter((k) => k.enabled);
 }
 
 export async function listAdminSearchKeysPublic(): Promise<AdminSearchKeyPublic[]> {

@@ -15,12 +15,13 @@ import {
   Trash2,
   TriangleAlert,
 } from "lucide-react";
-import type {
-  AdminAiKeyPublic,
-  AiExecutionLogRecord,
-  KeyAnalyticsSnapshot,
-  SearchKeyAnalyticsSnapshot,
-  SearchProviderState,
+import {
+  getProviderMeta,
+  type AdminAiKeyPublic,
+  type AiExecutionLogRecord,
+  type KeyAnalyticsSnapshot,
+  type SearchKeyAnalyticsSnapshot,
+  type SearchProviderState,
 } from "@/lib/llm/types";
 import { Badge, Banner, Empty, Field, Modal } from "../ui";
 import { useConfirm } from "../Feedback";
@@ -108,6 +109,8 @@ export function ApiKeyAnalyticsDrawer({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [expandedLog, setExpandedLog] = useState<string | null>(null);
+  const [probe, setProbe] = useState<{ ok: boolean; text: string } | null>(null);
+  const [probing, setProbing] = useState(false);
   const confirmDialog = useConfirm();
 
   const [rotateOpen, setRotateOpen] = useState(false);
@@ -192,9 +195,39 @@ export function ApiKeyAnalyticsDrawer({
   const tip = healthTip(target, lastError);
 
   const title = isLlm ? key?.label || `${target.providerLabel} (no key saved)` : state?.label ?? "Provider";
-  const docsUrl = isLlm ? null : state?.docsUrl ?? null;
+  const providerMeta = target.kind === "llm" ? getProviderMeta(target.providerLabel) : null;
+  const docsUrl = isLlm ? providerMeta?.docsUrl ?? null : state?.docsUrl ?? null;
+  const balanceStuck = /insufficient balance|no resource package|resource package|insufficient_quota/i.test(
+    lastError ?? "",
+  );
 
   const logs: AiExecutionLogRecord[] = isLlm ? llmStats?.recentLogs ?? [] : [];
+
+  const runProbe = async () => {
+    const probeKeyId = isLlm ? key?.id : state?.keyId;
+    if (!probeKeyId) return;
+    setProbing(true);
+    setProbe(null);
+    try {
+      const res = await adminFetch<{ ok?: boolean; probe?: { model: string; ms: number }; error?: string }>(
+        "/api/admin/gateway",
+        {
+          method: "POST",
+          sessionToken,
+          body: { action: isLlm ? "test_key" : "test_search_key", keyId: probeKeyId },
+        },
+      );
+      setProbe({
+        ok: true,
+        text: `HTTP 200 · ${res.probe?.ms ?? "—"}ms · ${res.probe?.model ?? "probe passed"}`,
+      });
+      void reload();
+    } catch (err) {
+      setProbe({ ok: false, text: err instanceof Error ? err.message : "Probe failed." });
+    } finally {
+      setProbing(false);
+    }
+  };
 
   return (
     <Modal open={open} onClose={onClose} title={`Provider & Key Details · ${title}`} large>
@@ -208,19 +241,21 @@ export function ApiKeyAnalyticsDrawer({
               state?.maskedKey && <Badge>{state.maskedKey}</Badge>
             )}
             <Badge tone={statusTone(status)}>{STATUS_LABEL[status] ?? status}</Badge>
+            {isLlm && balanceStuck && <Badge tone="bad">No Balance — Pause Recommended</Badge>}
             {isLlm && key && (
               <Badge>{key.models.filter((m) => m.enabled).length} / {key.models.length} models</Badge>
             )}
           </div>
           {docsUrl && (
             <a className="btn btn-sm" href={docsUrl} target="_blank" rel="noreferrer noopener">
-              Open Provider Dashboard
+              {isLlm && !key ? "Get API Key" : "Open Provider Dashboard"}
               <ExternalLink size={12} />
             </a>
           )}
         </div>
 
         {error && <Banner tone="bad">{error}</Banner>}
+        {probe && <Banner tone={probe.ok ? "ok" : "bad"}>{probe.text}</Banner>}
 
         {/* Instant action bar */}
         <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
@@ -244,16 +279,10 @@ export function ApiKeyAnalyticsDrawer({
               <button
                 type="button"
                 className="btn btn-sm"
-                disabled={busy !== null}
-                onClick={() =>
-                  void onMutate(
-                    `Test ${key.label}`,
-                    { action: "test_key", keyId: key.id },
-                    `drawer_test_${key.id}`,
-                  ).then(reload)
-                }
+                disabled={busy !== null || probing}
+                onClick={() => void runProbe()}
               >
-                {busy === `drawer_test_${key.id}` ? <Loader2 size={12} className="spin" /> : <TestTube2 size={12} />}
+                {probing ? <Loader2 size={12} className="spin" /> : <TestTube2 size={12} />}
                 Test Connection
               </button>
               <button
@@ -325,17 +354,26 @@ export function ApiKeyAnalyticsDrawer({
               <button
                 type="button"
                 className="btn btn-sm"
+                disabled={busy !== null || probing}
+                onClick={() => void runProbe()}
+              >
+                {probing ? <Loader2 size={12} className="spin" /> : <TestTube2 size={12} />}
+                Test Connection
+              </button>
+              <button
+                type="button"
+                className="btn btn-sm"
                 disabled={busy !== null}
                 onClick={() =>
                   void onMutate(
-                    `Test ${state.label}`,
-                    { action: "test_search_key", keyId: state.keyId },
-                    `drawer_stest_${state.keyId}`,
+                    `Reset ${state.label} usage counter`,
+                    { action: "reset_search_quota", provider: state.provider },
+                    `drawer_sreset_${state.keyId}`,
                   ).then(reload)
                 }
               >
-                {busy === `drawer_stest_${state.keyId}` ? <Loader2 size={12} className="spin" /> : <TestTube2 size={12} />}
-                Test Connection
+                <RotateCcw size={12} />
+                Reset Counter
               </button>
               <button type="button" className="btn btn-sm" onClick={() => setRotateOpen((v) => !v)}>
                 <KeyRound size={12} />
@@ -460,6 +498,35 @@ export function ApiKeyAnalyticsDrawer({
               Save Label &amp; Limit
             </button>
           </div>
+        )}
+
+        {isLlm && !key && (
+          <Banner tone="info">
+            <div className="stack" style={{ gap: 6 }}>
+              <span>
+                <strong>{providerMeta?.label}</strong> has no saved key.{" "}
+                {providerMeta?.freeTierDefault
+                  ? "Free tier is available and needs no card for its free models."
+                  : "This provider needs a paid or BYOK key."}
+              </span>
+              <span className="tiny muted">{providerMeta?.blurb}</span>
+              {isSuper && (
+                <button
+                  type="button"
+                  className="btn btn-sm"
+                  onClick={() => {
+                    const provider = target.kind === "llm" ? target.providerLabel : null;
+                    onClose();
+                    window.dispatchEvent(
+                      new CustomEvent("admin:add-llm-key", { detail: { provider } }),
+                    );
+                  }}
+                >
+                  Add Key Now
+                </button>
+              )}
+            </div>
+          </Banner>
         )}
 
         {/* Usage analytics */}
@@ -669,12 +736,33 @@ export function ApiKeyAnalyticsDrawer({
 
         {isLlm && key && key.models.length > 0 && (
           <div>
-            <div className="strong tiny" style={{ marginBottom: 6 }}>Model health</div>
+            <div className="strong tiny" style={{ marginBottom: 6 }}>
+              Model health · click a model to enable or disable it for every seat
+            </div>
             <div className="row" style={{ gap: 6, flexWrap: "wrap" }}>
               {key.models.map((m) => (
-                <Badge key={m.id} tone={m.enabled ? "ok" : undefined}>
+                <button
+                  key={m.id}
+                  type="button"
+                  className={`btn btn-sm${m.enabled ? " btn-primary" : ""}`}
+                  disabled={busy !== null || !isSuper}
+                  title={m.enabled ? "Disable this model" : "Enable this model"}
+                  onClick={() =>
+                    void onMutate(
+                      `${m.enabled ? "Disable" : "Enable"} ${m.displayName || m.id}`,
+                      {
+                        action: "update_key",
+                        keyId: key.id,
+                        models: key.models.map((item) =>
+                          item.id === m.id ? { ...item, enabled: !item.enabled } : item,
+                        ),
+                      },
+                      `drawer_model_${m.id}`,
+                    ).then(reload)
+                  }
+                >
                   {m.displayName || m.id}
-                </Badge>
+                </button>
               ))}
             </div>
           </div>

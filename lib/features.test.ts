@@ -34,26 +34,29 @@ import {
   clearAllInMemoryModelCooldowns,
   clearRouterStateForTests,
   evaluateKeyHeadroom,
-  MAX_AUTO_ATTEMPTS,
   isCandidateCoolingDown,
   isChatCapableModelId,
+  MAX_AUTO_ATTEMPTS,
   rankPoolCandidates,
   recordCandidateFailure,
   recordKeyUsageHit,
 } from "./llm/router";
-import { GatewayProviderError } from "./llm/providers";
 import { summarizeKeyAnalytics } from "./llm/analytics";
 import {
   buildSearchProviderStates,
   computeSearchProviderStatus,
   isSearchProviderSelectable,
 } from "./search/providerStatus";
-import type { SearchQuotaRecord } from "./search/quotaAndCache";
+import { SEARCH_PROVIDER_CATALOG, type AiExecutionLogRecord } from "./llm/types";
+import { GatewayProviderError } from "./llm/providers";
 import {
   encryptGatewayKey,
   getUserAiSettings,
+  listAdminSearchKeys,
+  mergeSearchKeySources,
   resetGatewayCachesForTests,
   seedGatewayCachesForTests,
+  type DecryptedAdminSearchKey,
 } from "./llm/store";
 import {
   clearDiscoveryCacheForTests,
@@ -72,6 +75,7 @@ import {
   clearSearchCacheAndQuotasForTests,
   getSearchQuotaMonitorSnapshot,
   resetSearchProviderQuota,
+  type SearchQuotaRecord,
 } from "./search/quotaAndCache";
 import { inspectProspectWebsite } from "./search/siteInspector";
 import {
@@ -79,14 +83,7 @@ import {
   WebSearchService,
 } from "./search/webSearch";
 import { DEFAULT_SETTINGS } from "./types";
-import { SEARCH_PROVIDER_CATALOG } from "./llm/types";
-import type {
-  AdminAiKeyRecord,
-  AdminAiSettings,
-  AdminSearchKeyPublic,
-  AiExecutionLogRecord,
-  UserAiKeyRecord,
-} from "./llm/types";
+import type { AdminAiKeyRecord, AdminAiSettings, AdminSearchKeyPublic, UserAiKeyRecord } from "./llm/types";
 import { DEFAULT_ONBOARDING_ANSWERS } from "./onboarding";
 import { requireAdmin } from "./platform/admin-auth";
 import { hashAdminPassword, verifyAdminPassword } from "./platform/admin-credentials";
@@ -4566,6 +4563,7 @@ test("Admin AI Assistant secret/PII redaction and tool permission separation", a
 });
 
 
+
 // ---------------------------------------------------------------------------
 // Admin API Command Center: provider status, routing hygiene, key analytics
 // ---------------------------------------------------------------------------
@@ -4662,6 +4660,50 @@ test("unconfigured providers report not_configured (never healthy/exhausted) and
     computeSearchProviderStatus({ hasKey: true, enabled: true, healthStatus: "invalid" }),
     "invalid",
   );
+});
+
+test("paused search/contact/audit keys are strictly skipped by the runtime key loader (env vars cannot resurrect them)", async () => {
+  const key = (over: Partial<DecryptedAdminSearchKey>): DecryptedAdminSearchKey => ({
+    id: "srch_x",
+    provider: "tavily",
+    label: "Key",
+    apiKey: "tvly-secret",
+    maskedKey: "tvly-...cret",
+    enabled: true,
+    healthStatus: "healthy",
+    lastError: null,
+    lastCheckedAt: null,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    ...over,
+  });
+
+  // A DB row owns its provider: an env key must never take over a paused row.
+  const merged = mergeSearchKeySources(
+    [key({ id: "db_tavily", provider: "tavily", enabled: false })],
+    [key({ id: "env_tavily", provider: "tavily", apiKey: "env-secret" })],
+    ["tavily"],
+  );
+  assert.deepEqual(merged, []);
+
+  // An env key still fills a provider that has no DB row at all.
+  const envOnly = mergeSearchKeySources([], [key({ id: "env_exa", provider: "exa" })]);
+  assert.deepEqual(envOnly.map((k) => k.provider), ["exa"]);
+
+  // The loader itself never returns a paused key, even from a seeded cache.
+  resetGatewayCachesForTests();
+  seedGatewayCachesForTests({
+    searchKeys: [
+      key({ id: "db_paused", provider: "exa", enabled: false }),
+      key({ id: "db_live", provider: "hunter", enabled: true }),
+    ],
+  });
+  try {
+    const runtimeKeys = await listAdminSearchKeys();
+    assert.deepEqual(runtimeKeys.map((k) => k.provider), ["hunter"]);
+  } finally {
+    resetGatewayCachesForTests();
+  }
 });
 
 test("router excludes allam/audio/safety models, skips paused keys, and caps failover hops at 6", async () => {
