@@ -1367,6 +1367,62 @@ function LeadDetail({
                 <p className="tiny" style={{ marginTop: 6 }}>
                   <strong>Angle:</strong> {research.recommended_angle}
                 </p>
+                {(research.audit_evidence?.length || research.mobile_screenshot_url || research.verified_site_issues?.length) && (
+                  <div
+                    style={{
+                      marginTop: 10,
+                      padding: "10px 12px",
+                      borderRadius: 8,
+                      border: "1px solid var(--line)",
+                      background: "var(--surface-2)",
+                    }}
+                  >
+                    <div className="label" style={{ marginBottom: 6 }}>
+                      Verified Audit Proof
+                    </div>
+                    <div className="row" style={{ gap: 10, alignItems: "flex-start", flexWrap: "wrap" }}>
+                      {research.mobile_screenshot_url && (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img
+                          src={research.mobile_screenshot_url}
+                          alt={`Mobile view of ${lead.business || "website"}`}
+                          style={{
+                            width: 104,
+                            height: "auto",
+                            maxHeight: 190,
+                            objectFit: "cover",
+                            borderRadius: 6,
+                            border: "1px solid var(--line-soft)",
+                            flexShrink: 0,
+                          }}
+                        />
+                      )}
+                      <div style={{ flex: 1, minWidth: 180 }}>
+                        {research.audit_evidence && research.audit_evidence.length > 0 ? (
+                          <ul style={{ fontSize: 12.2, paddingLeft: 16, margin: 0 }}>
+                            {research.audit_evidence.map((ev, idx) => (
+                              <li key={idx} style={{ marginBottom: 5 }}>
+                                <Badge tone="info">{ev.evidence_type}</Badge>{" "}
+                                <span className="strong">{ev.issue}</span>
+                                <div className="tiny muted">Proof: {ev.proof}</div>
+                              </li>
+                            ))}
+                          </ul>
+                        ) : (research.verified_site_issues?.length ?? 0) > 0 ? (
+                          <ul style={{ fontSize: 12.2, paddingLeft: 16, margin: 0 }}>
+                            {research.verified_site_issues!.slice(0, 3).map((issue, idx) => (
+                              <li key={idx}>{issue}</li>
+                            ))}
+                          </ul>
+                        ) : (
+                          <p className="tiny muted" style={{ margin: 0 }}>
+                            Site looks solid / low friction — no urgent mobile issues found.
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                )}
               </>
             ) : (
               <p className="tiny">No research yet. Run research from the Prospect research page.</p>

@@ -3,9 +3,11 @@ import { listAdminSearchKeys } from "@/lib/llm/store";
 import { isFetchableUrl } from "@/lib/outreach-utils";
 import { verifyEmailDeliverability, type EmailInboxType } from "./emailVerify";
 import {
+  getCachedSearchEnrichment,
   isSearchProviderAvailable,
   markSearchProviderExhausted,
   recordSearchProviderUsage,
+  setCachedSearchEnrichment,
 } from "./quotaAndCache";
 import {
   decodeHtmlEntities,
@@ -546,8 +548,200 @@ export async function discoverSitemapLinks(
   return Array.from(candidates).slice(0, 2);
 }
 
+interface EnrichmentLookupResult {
+  emails: string[];
+  decisionMakers: DecisionMakerLead[];
+  socials: SocialProfileLink[];
+  sourceUrl: string;
+}
+
+async function lookupExaPeopleAndLinkedIn(input: {
+  business: string;
+  domain: string;
+  location: string;
+}): Promise<EnrichmentLookupResult> {
+  const empty: EnrichmentLookupResult = { emails: [], decisionMakers: [], socials: [], sourceUrl: "" };
+  if (!input.business.trim()) return empty;
+
+  const keys = await listAdminSearchKeys();
+  const exaKey = keys.find((k) => k.provider === "exa")?.apiKey;
+  if (!exaKey) return empty;
+  if (!(await isSearchProviderAvailable("exa"))) return empty;
+
+  const cacheKey = `contact:exa_people:${(input.domain || input.business).toLowerCase()}`;
+  const cached = await getCachedSearchEnrichment<EnrichmentLookupResult>(cacheKey);
+  if (cached) return cached;
+
+  const city = input.location.split(",")[0]?.trim() || "";
+  const query = `${input.business.trim()} ${input.domain ? input.domain : ""} ${city} founder owner director manager`.trim();
+
+  try {
+    const { res, text } = await fetchWithTimeout(
+      "https://api.exa.ai/search",
+      {
+        method: "POST",
+        headers: {
+          "x-api-key": exaKey,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          query,
+          category: "people",
+          numResults: 4,
+          contents: { text: { maxCharacters: 600 } },
+        }),
+      },
+      5_000,
+      80_000,
+    );
+    if (res.status === 402 || res.status === 429) {
+      await markSearchProviderExhausted("exa");
+      return empty;
+    }
+    if (!res.ok) return empty;
+    await recordSearchProviderUsage("exa", 1);
+
+    const parsed = JSON.parse(text) as {
+      results?: { url?: string; title?: string; text?: string }[];
+    };
+    const emails = new Set<string>();
+    const dms: DecisionMakerLead[] = [];
+    const socials: SocialProfileLink[] = [];
+    let firstSource = "";
+
+    for (const r of parsed.results ?? []) {
+      const rUrl = (r.url ?? "").trim();
+      const title = (r.title ?? "").trim();
+      const body = (r.text ?? "").trim();
+      if (!firstSource && rUrl) firstSource = rUrl;
+
+      if (/linkedin\.com\/in\//i.test(rUrl)) {
+        socials.push({ platform: "LinkedIn", url: rUrl });
+        const cleanTitle = title.replace(/\s*\|\s*LinkedIn.*$/i, "").trim();
+        const parts = cleanTitle.split(/\s+[-–—]\s+/);
+        if (parts[0] && /^[A-Z][a-z]+(?:\s+[A-Z][a-z'.-]+){1,3}$/.test(parts[0].trim())) {
+          dms.push({
+            name: parts[0].trim(),
+            role: parts[1]?.trim().slice(0, 60) || "Decision Maker",
+          });
+        }
+      }
+      for (const em of extractEmailsDeep("", `${title} ${body}`)) {
+        emails.add(em);
+      }
+    }
+
+    const result: EnrichmentLookupResult = {
+      emails: Array.from(emails),
+      decisionMakers: dms.slice(0, 3),
+      socials: socials.slice(0, 3),
+      sourceUrl: firstSource || `https://exa.ai/search?q=${encodeURIComponent(query)}`,
+    };
+    await setCachedSearchEnrichment(cacheKey, "contact", result);
+    return result;
+  } catch {
+    return empty;
+  }
+}
+
+async function lookupBytemineContacts(domain: string): Promise<EnrichmentLookupResult> {
+  const empty: EnrichmentLookupResult = { emails: [], decisionMakers: [], socials: [], sourceUrl: "" };
+  const keys = await listAdminSearchKeys();
+  const apiKey = keys.find((k) => k.provider === "bytemine")?.apiKey;
+  if (!apiKey || !(await isSearchProviderAvailable("bytemine"))) return empty;
+
+  const cacheKey = `contact:bytemine:${domain}`;
+  const cached = await getCachedSearchEnrichment<EnrichmentLookupResult>(cacheKey);
+  if (cached) return cached;
+
+  try {
+    const { res, text } = await fetchWithTimeout(
+      "https://api.bytemine.ai/v1/people/search",
+      {
+        method: "POST",
+        headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ company_domain: domain, limit: 3 }),
+      },
+      5_000,
+      60_000,
+    );
+    if (res.status === 402 || res.status === 429) {
+      await markSearchProviderExhausted("bytemine");
+      return empty;
+    }
+    if (!res.ok) return empty;
+    await recordSearchProviderUsage("bytemine", 1);
+
+    const parsed = JSON.parse(text) as { data?: { email?: string; name?: string; title?: string; linkedin_url?: string }[] };
+    const emails: string[] = [];
+    const decisionMakers: DecisionMakerLead[] = [];
+    const socials: SocialProfileLink[] = [];
+    for (const p of parsed.data ?? []) {
+      if (p.email) emails.push(p.email.trim().toLowerCase());
+      if (p.name) decisionMakers.push({ name: p.name.trim(), role: p.title?.trim() || "Decision Maker" });
+      if (p.linkedin_url) socials.push({ platform: "LinkedIn", url: p.linkedin_url.trim() });
+    }
+    const result = { emails, decisionMakers, socials, sourceUrl: `https://bytemine.ai/${domain}` };
+    await setCachedSearchEnrichment(cacheKey, "contact", result);
+    return result;
+  } catch {
+    return empty;
+  }
+}
+
+async function lookupApolloContacts(domain: string): Promise<EnrichmentLookupResult> {
+  const empty: EnrichmentLookupResult = { emails: [], decisionMakers: [], socials: [], sourceUrl: "" };
+  const keys = await listAdminSearchKeys();
+  const apiKey = keys.find((k) => k.provider === "apollo")?.apiKey;
+  if (!apiKey || !(await isSearchProviderAvailable("apollo"))) return empty;
+
+  const cacheKey = `contact:apollo:${domain}`;
+  const cached = await getCachedSearchEnrichment<EnrichmentLookupResult>(cacheKey);
+  if (cached) return cached;
+
+  try {
+    const { res, text } = await fetchWithTimeout(
+      "https://api.apollo.io/api/v1/mixed_people/search",
+      {
+        method: "POST",
+        headers: { "X-Api-Key": apiKey, "Content-Type": "application/json" },
+        body: JSON.stringify({ q_organization_domains: domain, per_page: 3 }),
+      },
+      5_000,
+      80_000,
+    );
+    if (res.status === 402 || res.status === 429) {
+      await markSearchProviderExhausted("apollo");
+      return empty;
+    }
+    if (!res.ok) return empty;
+    await recordSearchProviderUsage("apollo", 1);
+
+    const parsed = JSON.parse(text) as {
+      people?: { email?: string; name?: string; title?: string; linkedin_url?: string }[];
+    };
+    const emails: string[] = [];
+    const decisionMakers: DecisionMakerLead[] = [];
+    const socials: SocialProfileLink[] = [];
+    for (const p of parsed.people ?? []) {
+      if (p.email && !/email_not_unlocked/i.test(p.email)) emails.push(p.email.trim().toLowerCase());
+      if (p.name) decisionMakers.push({ name: p.name.trim(), role: p.title?.trim() || "Decision Maker" });
+      if (p.linkedin_url) socials.push({ platform: "LinkedIn", url: p.linkedin_url.trim() });
+    }
+    const result = { emails, decisionMakers, socials, sourceUrl: `https://app.apollo.io/#/companies/${domain}` };
+    await setCachedSearchEnrichment(cacheKey, "contact", result);
+    return result;
+  } catch {
+    return empty;
+  }
+}
+
 async function lookupHunterDomainEmails(domain: string): Promise<string[]> {
   if (!domain) return [];
+  const cacheKey = `contact:hunter:${domain}`;
+  const cached = await getCachedSearchEnrichment<string[]>(cacheKey);
+  if (cached) return cached;
+
   const keys = await listAdminSearchKeys();
   const hunterKey = keys.find((k) => k.provider === "hunter")?.apiKey;
   if (!hunterKey) return [];
@@ -568,9 +762,11 @@ async function lookupHunterDomainEmails(domain: string): Promise<string[]> {
     await recordSearchProviderUsage("hunter", 1);
 
     const parsed = JSON.parse(text) as { data?: { emails?: { value?: string }[] } };
-    return (parsed.data?.emails ?? [])
+    const found = (parsed.data?.emails ?? [])
       .map((e) => (e.value ?? "").trim().toLowerCase())
       .filter(Boolean);
+    await setCachedSearchEnrichment(cacheKey, "contact", found);
+    return found;
   } catch {
     return [];
   }
@@ -578,6 +774,10 @@ async function lookupHunterDomainEmails(domain: string): Promise<string[]> {
 
 async function lookupCufinderDomainEmails(domain: string): Promise<string[]> {
   if (!domain) return [];
+  const cacheKey = `contact:cufinder:${domain}`;
+  const cached = await getCachedSearchEnrichment<string[]>(cacheKey);
+  if (cached) return cached;
+
   const keys = await listAdminSearchKeys();
   const cuKey = keys.find((k) => k.provider === "cufinder")?.apiKey;
   if (!cuKey) return [];
@@ -612,7 +812,135 @@ async function lookupCufinderDomainEmails(domain: string): Promise<string[]> {
         if (typeof em === "string") found.push(em.trim().toLowerCase());
       }
     }
-    return found.filter(Boolean);
+    const cleaned = found.filter(Boolean);
+    await setCachedSearchEnrichment(cacheKey, "contact", cleaned);
+    return cleaned;
+  } catch {
+    return [];
+  }
+}
+
+async function lookupSnovDomainEmails(domain: string): Promise<string[]> {
+  if (!domain) return [];
+  const cacheKey = `contact:snov:${domain}`;
+  const cached = await getCachedSearchEnrichment<string[]>(cacheKey);
+  if (cached) return cached;
+
+  const keys = await listAdminSearchKeys();
+  const creds = keys.find((k) => k.provider === "snov")?.apiKey;
+  if (!creds || !(await isSearchProviderAvailable("snov"))) return [];
+  const [clientId, clientSecret] = creds.split(":").map((s) => s.trim());
+  if (!clientId || !clientSecret) return [];
+
+  try {
+    const tokRes = await fetchWithTimeout(
+      "https://api.snov.io/v1/oauth/access_token",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          grant_type: "client_credentials",
+          client_id: clientId,
+          client_secret: clientSecret,
+        }).toString(),
+      },
+      4_500,
+      20_000,
+    );
+    if (!tokRes.res.ok) return [];
+    const token = (JSON.parse(tokRes.text) as { access_token?: string }).access_token;
+    if (!token) return [];
+
+    const { res, text } = await fetchWithTimeout(
+      `https://api.snov.io/v2/domain-emails-with-info?domain=${encodeURIComponent(domain)}&type=all&limit=5&access_token=${encodeURIComponent(token)}`,
+      { method: "GET" },
+      5_000,
+      60_000,
+    );
+    if (res.status === 402 || res.status === 429) {
+      await markSearchProviderExhausted("snov");
+      return [];
+    }
+    if (!res.ok) return [];
+    await recordSearchProviderUsage("snov", 1);
+
+    const parsed = JSON.parse(text) as { emails?: { email?: string }[] };
+    const found = (parsed.emails ?? []).map((e) => (e.email ?? "").trim().toLowerCase()).filter(Boolean);
+    await setCachedSearchEnrichment(cacheKey, "contact", found);
+    return found;
+  } catch {
+    return [];
+  }
+}
+
+async function lookupTombaDomainEmails(domain: string): Promise<string[]> {
+  if (!domain) return [];
+  const cacheKey = `contact:tomba:${domain}`;
+  const cached = await getCachedSearchEnrichment<string[]>(cacheKey);
+  if (cached) return cached;
+
+  const keys = await listAdminSearchKeys();
+  const creds = keys.find((k) => k.provider === "tomba")?.apiKey;
+  if (!creds || !(await isSearchProviderAvailable("tomba"))) return [];
+  const [apiKey, secretKey] = creds.split(":").map((s) => s.trim());
+  if (!apiKey || !secretKey) return [];
+
+  try {
+    const { res, text } = await fetchWithTimeout(
+      `https://api.tomba.io/v1/domain-search?domain=${encodeURIComponent(domain)}`,
+      { method: "GET", headers: { "X-Tomba-Key": apiKey, "X-Tomba-Secret": secretKey } },
+      5_000,
+      60_000,
+    );
+    if (res.status === 402 || res.status === 429) {
+      await markSearchProviderExhausted("tomba");
+      return [];
+    }
+    if (!res.ok) return [];
+    await recordSearchProviderUsage("tomba", 1);
+
+    const parsed = JSON.parse(text) as { data?: { emails?: { email?: string }[] } };
+    const found = (parsed.data?.emails ?? []).map((e) => (e.email ?? "").trim().toLowerCase()).filter(Boolean);
+    await setCachedSearchEnrichment(cacheKey, "contact", found);
+    return found;
+  } catch {
+    return [];
+  }
+}
+
+async function lookupGetProspectContacts(domain: string): Promise<string[]> {
+  if (!domain) return [];
+  const cacheKey = `contact:getprospect:${domain}`;
+  const cached = await getCachedSearchEnrichment<string[]>(cacheKey);
+  if (cached) return cached;
+
+  const keys = await listAdminSearchKeys();
+  const apiKey = keys.find((k) => k.provider === "getprospect")?.apiKey;
+  if (!apiKey || !(await isSearchProviderAvailable("getprospect"))) return [];
+
+  try {
+    const { res, text } = await fetchWithTimeout(
+      `https://api.getprospect.com/public/v1/insights/company?domain=${encodeURIComponent(domain)}`,
+      { method: "GET", headers: { apiKey } },
+      5_000,
+      60_000,
+    );
+    if (res.status === 402 || res.status === 429) {
+      await markSearchProviderExhausted("getprospect");
+      return [];
+    }
+    if (!res.ok) return [];
+    await recordSearchProviderUsage("getprospect", 1);
+
+    const parsed = JSON.parse(text) as { emails?: string[]; data?: { email?: string }[] };
+    const found = [
+      ...(parsed.emails ?? []),
+      ...((parsed.data ?? []).map((d) => d.email ?? "")),
+    ]
+      .map((s) => s.trim().toLowerCase())
+      .filter(Boolean);
+    await setCachedSearchEnrichment(cacheKey, "contact", found);
+    return found;
   } catch {
     return [];
   }
@@ -772,7 +1100,27 @@ export async function findDeepContactsForProspect(input: {
     }
   }
 
-  // Step C: One targeted WebSearch enrichment query ONLY if live website had zero emails OR zero owners
+  // Step C: Layer 1 Exa People Search (for decision makers + LinkedIn) + targeted WebSearch fallback
+  if (input.business.trim() && (emailSet.size === 0 || dmMap.size === 0 || !Array.from(socialMap.values()).some((s) => s.platform === "LinkedIn"))) {
+    const exaPeople = await lookupExaPeopleAndLinkedIn({
+      business: input.business.trim(),
+      domain,
+      location: resolvedLocation,
+    });
+    for (const em of exaPeople.emails) {
+      emailSet.add(em);
+      recordSource("email", em, exaPeople.sourceUrl);
+    }
+    for (const dm of exaPeople.decisionMakers) {
+      dmMap.set(dm.name.toLowerCase(), dm);
+      recordSource("decision_maker", `${dm.name} (${dm.role})`, exaPeople.sourceUrl);
+    }
+    for (const soc of exaPeople.socials) {
+      socialMap.set(soc.url.toLowerCase(), soc);
+      recordSource("social", soc.url, soc.url);
+    }
+  }
+
   if (input.allowTargetedSearch !== false && (emailSet.size === 0 || dmMap.size === 0) && input.business.trim()) {
     const city = resolvedLocation.split(",")[0]?.trim() || "";
     const query = `"${input.business.trim()}"${city ? ` "${city}"` : ""} ("@" OR email OR LinkedIn OR founder OR owner OR director)`;
@@ -794,17 +1142,45 @@ export async function findDeepContactsForProspect(input: {
     }
   }
 
-  // Step D: Optional Hunter.io & CUFinder enrichment hooks if admin configured keys & still no email
+  // Step D: Layer 2 sequential free-monthly-credit waterfall (30d cached, stops immediately once email resolved)
   if (emailSet.size === 0 && domain) {
-    for (const em of await lookupHunterDomainEmails(domain)) {
-      emailSet.add(em);
-      recordSource("email", em, `https://hunter.io/search/${domain}`);
+    const structuredProviders: {
+      name: string;
+      fn: () => Promise<EnrichmentLookupResult>;
+    }[] = [
+      { name: "bytemine", fn: () => lookupBytemineContacts(domain) },
+      { name: "apollo", fn: () => lookupApolloContacts(domain) },
+    ];
+    for (const step of structuredProviders) {
+      if (emailSet.size > 0) break;
+      const res = await step.fn();
+      for (const em of res.emails) {
+        emailSet.add(em);
+        recordSource("email", em, res.sourceUrl);
+      }
+      for (const dm of res.decisionMakers) {
+        dmMap.set(dm.name.toLowerCase(), dm);
+        recordSource("decision_maker", `${dm.name} (${dm.role})`, res.sourceUrl);
+      }
+      for (const soc of res.socials) {
+        socialMap.set(soc.url.toLowerCase(), soc);
+        recordSource("social", soc.url, soc.url);
+      }
     }
-  }
-  if (emailSet.size === 0 && domain) {
-    for (const em of await lookupCufinderDomainEmails(domain)) {
-      emailSet.add(em);
-      recordSource("email", em, `https://dashboard.cufinder.io/company/${domain}`);
+
+    const emailProviders: { sourceUrl: string; fn: () => Promise<string[]> }[] = [
+      { sourceUrl: `https://hunter.io/search/${domain}`, fn: () => lookupHunterDomainEmails(domain) },
+      { sourceUrl: `https://dashboard.cufinder.io/company/${domain}`, fn: () => lookupCufinderDomainEmails(domain) },
+      { sourceUrl: `https://snov.io/domain-search/${domain}`, fn: () => lookupSnovDomainEmails(domain) },
+      { sourceUrl: `https://tomba.io/search/${domain}`, fn: () => lookupTombaDomainEmails(domain) },
+      { sourceUrl: `https://getprospect.com/${domain}`, fn: () => lookupGetProspectContacts(domain) },
+    ];
+    for (const step of emailProviders) {
+      if (emailSet.size > 0) break;
+      for (const em of await step.fn()) {
+        emailSet.add(em);
+        recordSource("email", em, step.sourceUrl);
+      }
     }
   }
 

@@ -80,6 +80,10 @@ function parseBody(raw: unknown): Partial<Settings> {
     }
   }
 
+  if (typeof body.include_opt_out_footer === "boolean") {
+    out.include_opt_out_footer = body.include_opt_out_footer;
+  }
+
   return out as Partial<Settings>;
 }
 

@@ -51,6 +51,10 @@ const NUMBER_FIELDS = [
   "min_score",
 ] as const satisfies readonly (keyof Settings)[];
 
+const BOOLEAN_FIELDS = [
+  "include_opt_out_footer",
+] as const satisfies readonly (keyof Settings)[];
+
 function deterministicSettingsUuid(ownerId: string): string {
   if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(ownerId)) {
     return ownerId.toLowerCase();
@@ -169,6 +173,11 @@ export async function saveSupabaseSettingsServer(
   for (const key of NUMBER_FIELDS) {
     const value = partial[key];
     if (typeof value === "number" && Number.isFinite(value)) fields[key] = Math.round(value);
+  }
+
+  for (const key of BOOLEAN_FIELDS) {
+    const value = partial[key];
+    if (typeof value === "boolean") fields[key] = value;
   }
 
   if (Object.keys(fields).length <= 2) return true;

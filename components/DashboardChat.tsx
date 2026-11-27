@@ -999,13 +999,13 @@ export function DashboardChat({
             { retryTransient: true },
           ),
         {
-          attempts: 8,
-          baseDelayMs: 5_000,
-          maxDelayMs: 60_000,
+          attempts: 2,
+          baseDelayMs: 2_000,
+          maxDelayMs: 4_000,
           onRetry: ({ attempt, attempts, delayMs }) => {
-            const seconds = Math.round(delayMs / 1000);
-            setStatusLabel(`Service busy — retrying in ${seconds}s (attempt ${attempt}/${attempts})`);
-            narrate(`Service busy. Retrying in ${seconds}s…`);
+            const seconds = Math.max(1, Math.round(delayMs / 1000));
+            setStatusLabel(`Switching key — retrying in ${seconds}s (${attempt}/${attempts})`);
+            narrate(`Retrying with next healthy model in ${seconds}s…`);
           },
         },
       );

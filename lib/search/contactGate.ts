@@ -23,6 +23,8 @@ export interface ContactableCandidateInput {
   socials?: { platform?: string; url?: string }[];
   decisionMaker?: string;
   mxVerified?: boolean;
+  /** Default true: cold outreach requires a deliverable non-placeholder email unless user explicitly asks for phone/social-only. */
+  requireEmail?: boolean;
 }
 
 export interface ContactabilityVerdict {
@@ -34,7 +36,7 @@ export interface ContactabilityVerdict {
 /**
  * Hard "No Verified Contact = Do Not Save" firewall.
  * Rejects any discovered prospect missing verified business + website/location OR lacking
- * at least one real contact channel (verified email, phone, or social URL).
+ * a verified deliverable email (by default) or verified phone/social when requireEmail=false.
  */
 export function validateContactableLead(input: ContactableCandidateInput): ContactabilityVerdict {
   const business = (input.business ?? "").trim();
@@ -43,6 +45,7 @@ export function validateContactableLead(input: ContactableCandidateInput): Conta
   const email = (input.email ?? "").trim().toLowerCase();
   const phone = (input.phone ?? "").trim();
   const socials = Array.isArray(input.socials) ? input.socials.filter((s) => Boolean(s?.url?.trim())) : [];
+  const requireEmail = input.requireEmail ?? true;
 
   if (!business) {
     return { contactable: false, reason: "Missing verified business name.", completenessRank: 0 };
@@ -58,6 +61,14 @@ export function validateContactableLead(input: ContactableCandidateInput): Conta
   const hasEmail = Boolean(email && email.includes("@") && /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email));
   const hasPhone = phone.replace(/\D/g, "").length >= 7;
   const hasSocial = socials.length > 0;
+
+  if (requireEmail && !hasEmail) {
+    return {
+      contactable: false,
+      reason: "Skipped: no verified non-placeholder email address found.",
+      completenessRank: 0,
+    };
+  }
 
   if (!hasEmail && !hasPhone && !hasSocial) {
     return {

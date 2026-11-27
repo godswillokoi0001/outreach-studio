@@ -46,7 +46,7 @@ export const PRECEDENCE_HEADER = `INSTRUCTION PRECEDENCE (STRICT):
 2. Active User's Business Profile, Offer, Exclusions, Tone & Custom Knowledge Base (overrides global defaults for brand/scope choices).
 3. Global Sales, Copywriting, Routing & Reply Frameworks (Modules 1-4 above).`;
 
-const MAX_STATIC_PREFIX_CHARS = 14_000;
+const MAX_STATIC_PREFIX_CHARS = 9_000;
 
 function compactModuleContent(content: string, maxChars: number): string {
   const clean = content.trim();
@@ -129,7 +129,9 @@ export async function buildOrchestratedSystemPrompt(input: {
       knowledgeDigest: input.knowledgeDigest,
     });
 
-  const digest = (input.knowledgeDigest?.trim() || loaded?.knowledgeDigest || "").slice(0, 3_500);
+  // Prioritize Master Knowledge & voice/sample/avoid rules within an extended 7,500-char
+  // lossless window so user writing rules are NEVER silently truncated before reaching the model.
+  const digest = (input.knowledgeDigest?.trim() || loaded?.knowledgeDigest || "").slice(0, 7_500);
   const userKbBlock = digest
     ? `USER BUSINESS KNOWLEDGE BASE (Master Knowledge, Sources & Additional Notes):\n${digest}`
     : "USER BUSINESS KNOWLEDGE BASE:\nNot provided — do not fabricate missing company offers, prices, or case studies.";

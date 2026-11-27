@@ -125,6 +125,35 @@ export interface PostAnalysisInsights {
   nextMoves: string[];
 }
 
+export interface GrowthMarketTrend {
+  trend: string;
+  whyNow: string;
+  sourceUrl: string;
+  sourceTitle: string;
+}
+
+export interface GrowthPipelineDiagnosis {
+  summary: string;
+  strengths: string[];
+  bottlenecks: string[];
+  untouchedLeadsCount: number;
+  quickWinAction: string;
+}
+
+export interface GrowthPlayCard {
+  rank: number;
+  title: string;
+  microNiche: string;
+  geoFocus: string;
+  whyNow: string;
+  wedgeOffer: string;
+  openingHook: string;
+  channelSequence: string;
+  referralLoop: string;
+  realisticWeeklyTarget: string;
+  linkedRecommendationId?: string;
+}
+
 export interface GrowthAdvisorReport {
   overallStrategy: string;
   profileFingerprint: string;
@@ -133,6 +162,9 @@ export interface GrowthAdvisorReport {
   sources: { uri: string; title: string }[];
   recommendations: GrowthRecommendation[];
   postAnalysisInsights?: PostAnalysisInsights;
+  marketPulse?: GrowthMarketTrend[];
+  pipelineDiagnosis?: GrowthPipelineDiagnosis;
+  topPlays?: GrowthPlayCard[];
 }
 
 export interface IntentSignal {

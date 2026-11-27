@@ -281,7 +281,11 @@ async function runPooledAutoFailover<T>(input: {
         markGoogleGroundingBlocked(candidate.key.id);
       }
       recordCandidateFailure(candidate.key, candidate.model.id, gErr);
-      keyFailures.set(candidate.key.id, (keyFailures.get(candidate.key.id) ?? 0) + 1);
+      // On upstream timeout (504), immediately skip remaining models on this stalled provider key in this request
+      keyFailures.set(
+        candidate.key.id,
+        gErr.status === 504 && hasMultipleKeys ? MAX_FAILURES_PER_KEY : (keyFailures.get(candidate.key.id) ?? 0) + 1,
+      );
 
       // A model that refuses this request shape (tools, multi-turn, vision) is a
       // per-model limitation: bench it and let the next healthy key answer.

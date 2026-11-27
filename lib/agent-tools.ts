@@ -222,7 +222,7 @@ export const AGENT_TOOLS: FunctionDeclaration[] = [
   {
     name: "discover_prospects",
     description:
-      "Use Gemini with Google Search grounding to find real businesses matching an industry/location/focus, and optionally save them straight into Leads.",
+      "Search the live web & Google Maps/OSM for real businesses matching an industry/location/focus, run the multi-provider contact waterfall, enforce verified email + contactability before saving, and optionally save directly into Leads. Include 'phone/social-only' in focus only if non-email leads are explicitly requested.",
     parameters: {
       type: Type.OBJECT,
       properties: {

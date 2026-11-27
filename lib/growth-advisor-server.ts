@@ -9,6 +9,9 @@ import {
   type GrowthAdvisorReport,
   type GrowthExecuteRunState,
   type GrowthExecuteStage,
+  type GrowthMarketTrend,
+  type GrowthPipelineDiagnosis,
+  type GrowthPlayCard,
   type GrowthProfile,
   type GrowthRecommendation,
   type GrowthRunCandidate,
@@ -20,6 +23,7 @@ import {
 import type { PerformanceInsight } from "./intelligence";
 import { checkMobilePageSpeed } from "./search/pagespeed";
 import { findDeepContactsForProspect } from "./search/contactFinder";
+import { runForensicWebsiteAudit } from "./search/forensicAudit";
 import { validateContactableLead } from "./search/contactGate";
 import { isDirectoryUrl } from "./search/siteInspector";
 import { WebSearchService } from "./search/webSearch";
@@ -147,6 +151,57 @@ export function clearGrowthRunStoreForTests(): void {
 // Growth Advisor Report Generator (Pre-fetched $0 Search + Balanced Seat)
 // ---------------------------------------------------------------------------
 
+async function loadLiveAccountMetrics(
+  ownerId: string | undefined,
+  fallbackSummary: Record<string, unknown>,
+): Promise<{
+  summary: Record<string, unknown>;
+  untouchedNewLeads: number;
+  totalLeads: number;
+}> {
+  if (!ownerId || ownerId === "anonymous" || !supabaseServer) {
+    const untouched = Number(fallbackSummary.untouchedNewLeads ?? fallbackSummary.newLeads ?? 0) || 0;
+    const total = Number(fallbackSummary.totalLeads ?? 0) || 0;
+    return { summary: fallbackSummary, untouchedNewLeads: untouched, totalLeads: total };
+  }
+  try {
+    const [leadsRes, campsRes, msgsRes, repliesRes] = await Promise.all([
+      supabaseServer.from("leads").select("status,score").eq("owner_id", ownerId).limit(500),
+      supabaseServer.from("campaigns").select("status").eq("owner_id", ownerId).limit(100),
+      supabaseServer.from("messages").select("status,kind").eq("owner_id", ownerId).limit(500),
+      supabaseServer.from("replies").select("classification").eq("owner_id", ownerId).limit(200),
+    ]);
+    const leads = (leadsRes.data ?? []) as { status?: string; score?: number | null }[];
+    const camps = (campsRes.data ?? []) as { status?: string }[];
+    const msgs = (msgsRes.data ?? []) as { status?: string }[];
+    const replies = (repliesRes.data ?? []) as { classification?: string }[];
+
+    const untouchedNewLeads = leads.filter((l) => l.status === "new" || l.status === "queued_research").length;
+    const qualifiedLeads = leads.filter((l) => l.status === "qualified").length;
+    const sentMessages = msgs.filter((m) => m.status === "sent").length;
+    const replyRatePct = sentMessages > 0 ? Math.round((replies.length / sentMessages) * 1000) / 10 : 0;
+
+    return {
+      summary: {
+        ...fallbackSummary,
+        liveWorkspaceMetrics: {
+          totalLeads: leads.length,
+          untouchedNewLeads,
+          qualifiedAwaitingDraft: qualifiedLeads,
+          campaignsTotal: camps.length,
+          sentMessages,
+          repliesCount: replies.length,
+          replyRatePct,
+        },
+      },
+      untouchedNewLeads,
+      totalLeads: leads.length,
+    };
+  } catch {
+    return { summary: fallbackSummary, untouchedNewLeads: 0, totalLeads: 0 };
+  }
+}
+
 export async function generateGrowthAdvisorReportServer(input: {
   ownerId?: string;
   profile: GrowthProfile;
@@ -164,17 +219,21 @@ export async function generateGrowthAdvisorReportServer(input: {
   const primaryIndustry =
     input.profile.industry || input.profile.targetIndustries?.[0] || "B2B services";
   const primaryLocation = input.profile.location || input.settings.physical_address || "";
-  const queryA = `${primaryIndustry} trends buyer pain points ${year}`;
+  const offerFocus = (input.profile.offer || input.profile.whatYouSell || primaryIndustry).slice(0, 80);
+  const queryA = `${primaryIndustry} market trends buyer pain points ${year}`;
   const queryB = primaryLocation
-    ? `${primaryIndustry} companies in ${primaryLocation}`
-    : `${input.profile.idealCustomer || primaryIndustry} cold outreach benchmarks ${year}`;
+    ? `${primaryIndustry} businesses in ${primaryLocation}`
+    : `${input.profile.idealCustomer || primaryIndustry} buying trends ${year}`;
+  const queryC = `${offerFocus} client acquisition objections ${year}`;
 
-  const [webA, webB] = await Promise.all([
-    WebSearchService.search(queryA, { maxResults: 5 }).catch(() => null),
-    WebSearchService.search(queryB, { maxResults: 5, locationHint: primaryLocation }).catch(() => null),
+  const [webA, webB, webC, accountSnapshot] = await Promise.all([
+    WebSearchService.search(queryA, { maxResults: 4 }).catch(() => null),
+    WebSearchService.search(queryB, { maxResults: 4, locationHint: primaryLocation }).catch(() => null),
+    WebSearchService.search(queryC, { maxResults: 3 }).catch(() => null),
+    loadLiveAccountMetrics(input.ownerId, input.metricsSummary),
   ]);
 
-  const combinedSources = [...(webA?.results ?? []), ...(webB?.results ?? [])].slice(0, 10);
+  const combinedSources = [...(webA?.results ?? []), ...(webB?.results ?? []), ...(webC?.results ?? [])].slice(0, 12);
   const groundingUrls = combinedSources.map((s) => ({ uri: s.url, title: s.title || s.url }));
   const compliance = getRegionalComplianceGuidance({
     targetLocation: primaryLocation,
@@ -207,6 +266,31 @@ MANDATORY RULES:
 Return ONLY valid JSON:
 {
   "overallStrategy": "string",
+  "marketPulse": [
+    { "trend": "Concrete 2026 shift in buyer behavior or demand", "whyNow": "Why this creates immediate urgency for the user's offer", "sourceUrl": "https://...", "sourceTitle": "Source title" }
+  ],
+  "pipelineDiagnosis": {
+    "summary": "Candid 2-sentence diagnosis of pipeline health & positioning from real numbers",
+    "strengths": ["What currently stands out in offer/positioning"],
+    "bottlenecks": ["Honest bottleneck or positioning gap"],
+    "untouchedLeadsCount": ${accountSnapshot.untouchedNewLeads},
+    "quickWinAction": "Immediate action on existing untouched/qualified leads or narrowest segment"
+  },
+  "topPlays": [
+    {
+      "rank": 1,
+      "title": "Play #1 headline",
+      "microNiche": "Specific sub-niche",
+      "geoFocus": "Specific city/region",
+      "whyNow": "Timely buyer trigger or market proof",
+      "wedgeOffer": "Low-friction entry wedge matching Knowledge Base",
+      "openingHook": "Concrete personalized first-line angle",
+      "channelSequence": "Email -> LinkedIn -> Warm Loom/Phone cadence",
+      "referralLoop": "Post-delivery referral ask",
+      "realisticWeeklyTarget": "e.g. 25 prospects -> 4-6 replies -> 1-2 discovery calls",
+      "linkedRecommendationId": "rec_1"
+    }
+  ],
   "recommendations": [
     {
       "id": "rec_1",
@@ -266,8 +350,8 @@ Return ONLY valid JSON:
 - Proof assets & exclusions: ${input.profile.proofAssets?.join(", ") || "Standard"} · Exclusions (DO NOT target): ${input.profile.exclusions || "None"} · Voice: ${input.profile.tonePreference?.join(", ") || "Consultative"}
 - Active Regional Compliance (${compliance.frameworkName}): ${compliance.requirements.join(" | ")}
 
-PAST CAMPAIGN & ANALYTICS METRICS:
-${JSON.stringify(input.metricsSummary, null, 2).slice(0, 3500)}
+PAST CAMPAIGN & LIVE WORKSPACE PIPELINE METRICS:
+${JSON.stringify(accountSnapshot.summary, null, 2).slice(0, 3500)}
 
 ${
   input.analyticsInsight
@@ -276,11 +360,14 @@ ${
 }
 ${liveSearchContext}
 
-Generate 6 to 8 high-precision, diverse recommendations covering location, niche, messaging, channels_timing, and offer_strategy.`;
+Generate marketPulse (3 trends with verified sources), candid pipelineDiagnosis (flagging ${accountSnapshot.untouchedNewLeads} untouched leads if > 0), topPlays (Top 3 Ranked Growth Plays linked to rec_1..rec_3), and 6 recommendations covering location, niche, messaging, channels_timing, and offer_strategy.`;
 
   void input.model;
   const { data } = await LLMGateway.completeJSON<{
     overallStrategy?: string;
+    marketPulse?: Record<string, unknown>[];
+    pipelineDiagnosis?: Record<string, unknown>;
+    topPlays?: Record<string, unknown>[];
     recommendations?: Record<string, unknown>[];
     postAnalysisInsights?: {
       whatWorked?: unknown[];
@@ -293,7 +380,7 @@ Generate 6 to 8 high-precision, diverse recommendations covering location, niche
     feature: "growth_advisor",
     systemPrompt: orchestrated.system,
     messages: [{ role: "user", content: user }],
-    maxTokens: 2000,
+    maxTokens: 2800,
   });
 
   const allowedSourceUrls = new Set(groundingUrls.map((g) => g.uri.toLowerCase()));
@@ -357,6 +444,51 @@ Generate 6 to 8 high-precision, diverse recommendations covering location, niche
         }
       : undefined;
 
+  const marketPulse: GrowthMarketTrend[] = (Array.isArray(data.marketPulse) ? data.marketPulse : [])
+    .slice(0, 4)
+    .map((m, idx) => {
+      const rawUrl = cleanStr(m.sourceUrl, 400);
+      const safeUrl =
+        rawUrl && allowedSourceUrls.has(rawUrl.toLowerCase())
+          ? rawUrl
+          : groundingUrls[idx % Math.max(1, groundingUrls.length)]?.uri ?? "";
+      return {
+        trend: cleanStr(m.trend, 220),
+        whyNow: cleanStr(m.whyNow, 300),
+        sourceUrl: safeUrl,
+        sourceTitle: cleanStr(m.sourceTitle, 140) || groundingUrls[idx]?.title || "Market signal",
+      };
+    })
+    .filter((m) => Boolean(m.trend));
+
+  const diagRaw = data.pipelineDiagnosis && typeof data.pipelineDiagnosis === "object" ? data.pipelineDiagnosis : null;
+  const pipelineDiagnosis: GrowthPipelineDiagnosis | undefined = diagRaw
+    ? {
+        summary: cleanStr(diagRaw.summary, 420),
+        strengths: Array.isArray(diagRaw.strengths) ? diagRaw.strengths.map((x) => cleanStr(x, 200)).filter(Boolean) : [],
+        bottlenecks: Array.isArray(diagRaw.bottlenecks) ? diagRaw.bottlenecks.map((x) => cleanStr(x, 200)).filter(Boolean) : [],
+        untouchedLeadsCount: accountSnapshot.untouchedNewLeads,
+        quickWinAction: cleanStr(diagRaw.quickWinAction, 260),
+      }
+    : undefined;
+
+  const topPlays: GrowthPlayCard[] = (Array.isArray(data.topPlays) ? data.topPlays : [])
+    .slice(0, 3)
+    .map((p, idx) => ({
+      rank: clampNum(p.rank, 1, 3, idx + 1),
+      title: cleanStr(p.title, 160),
+      microNiche: cleanStr(p.microNiche, 120),
+      geoFocus: cleanStr(p.geoFocus, 120) || primaryLocation || "Target region",
+      whyNow: cleanStr(p.whyNow, 260),
+      wedgeOffer: cleanStr(p.wedgeOffer, 220) || input.profile.offer,
+      openingHook: cleanStr(p.openingHook, 220),
+      channelSequence: cleanStr(p.channelSequence, 180) || "Cold Email + LinkedIn",
+      referralLoop: cleanStr(p.referralLoop, 200),
+      realisticWeeklyTarget: cleanStr(p.realisticWeeklyTarget, 140),
+      linkedRecommendationId: cleanStr(p.linkedRecommendationId, 60) || recs[idx]?.id,
+    }))
+    .filter((p) => Boolean(p.title));
+
   return {
     overallStrategy:
       cleanStr(data.overallStrategy, 900) ||
@@ -367,6 +499,9 @@ Generate 6 to 8 high-precision, diverse recommendations covering location, niche
     sources: groundingUrls.slice(0, 12),
     recommendations: recs,
     postAnalysisInsights: postInsights,
+    ...(marketPulse.length ? { marketPulse } : {}),
+    ...(pipelineDiagnosis?.summary ? { pipelineDiagnosis } : {}),
+    ...(topPlays.length ? { topPlays } : {}),
   };
 }
 
@@ -396,6 +531,11 @@ export async function executeGrowthStageStrategy(input: {
     physicalAddress: input.settings.physical_address,
   });
 
+  const optOutDirective =
+    input.settings.include_opt_out_footer === true
+      ? "include a brief plain opt-out line at the bottom"
+      : "do NOT add a generic unsubscribe or 'rather not hear' footer unless required by campaign rules";
+
   const taskInstructions = `Execute Growth Advisor STAGE 1 (Offer Fit, Compliance & Campaign Search Strategy).
 Design the campaign plan AND produce 3 to 4 crisp public web search queries that locate real operating businesses/organizations needing the user's offer.
 
@@ -409,7 +549,7 @@ Return ONLY valid JSON:
   "messagingAngle": "core outreach angle",
   "hook": "1-sentence observation pattern to check on live prospect websites",
   "subjectLine": "2-5 word lowercase email subject line",
-  "sampleEmailBody": "short 55-85 word Module 2 plain-text template example with opt-out line",
+  "sampleEmailBody": "short 50-100 word plain-text sample in the user's exact Knowledge-Brain voice (${optOutDirective})",
   "channel": "Cold Email",
   "schedule": { "sendDays": "mon,tue,wed,thu,fri", "windowStart": 9, "windowEnd": 17, "followupDays": [3, 7], "dailyLimit": 25 },
   "goal": "measurable outcome",
@@ -634,23 +774,40 @@ export async function executeGrowthStageInspect(input: {
   const targetLocation = existingState.strategy?.targetLocation || "";
 
   const inspectOne = async (c: GrowthRunCandidate, idx: number): Promise<GrowthRunInspectedSite> => {
-    const deep = await findDeepContactsForProspect({
-      business: c.business,
-      website: c.website || undefined,
-      location: c.address || targetLocation,
-      osmPhone: c.phone,
-      osmEmail: c.email,
-      osmAddress: c.address,
-      snippet: c.snippet,
-      timeoutMs: 5_000,
-      allowTargetedSearch: true,
-    });
+    const [deep, forensic] = await Promise.all([
+      findDeepContactsForProspect({
+        business: c.business,
+        website: c.website || undefined,
+        location: c.address || targetLocation,
+        osmPhone: c.phone,
+        osmEmail: c.email,
+        osmAddress: c.address,
+        snippet: c.snippet,
+        timeoutMs: 5_000,
+        allowTargetedSearch: true,
+      }),
+      c.website && idx < 4
+        ? runForensicWebsiteAudit(c.website, {
+            ownerId: input.ownerId,
+            runVision: Boolean(input.checkPageSpeed && idx < 2),
+            checkLinks: true,
+            timeoutMs: 6_000,
+          }).catch(() => null)
+        : Promise.resolve(null),
+    ]);
     const site = deep.inspectedSite;
-    let mobileScore: number | null = null;
-    if (input.checkPageSpeed && site?.reachable && idx < 3) {
+    let mobileScore: number | null = forensic?.lighthouse?.mobileScore ?? null;
+    if (mobileScore === null && input.checkPageSpeed && site?.reachable && idx < 3) {
       const ps = await checkMobilePageSpeed(site.finalUrl, { timeoutMs: 5_000 }).catch(() => null);
       mobileScore = ps?.mobileScore ?? null;
     }
+
+    const combinedIssues = Array.from(
+      new Set([
+        ...(forensic?.auditEvidence.map((e) => `${e.issue} (${e.proof})`) ?? []),
+        ...deep.verifiedSiteIssues,
+      ]),
+    ).slice(0, 4);
 
     return {
       business: c.business,
@@ -673,7 +830,7 @@ export async function executeGrowthStageInspect(input: {
       decisionMakers: deep.decisionMakers,
       location: deep.location || c.address || targetLocation,
       contactSourceUrls: deep.contactSourceUrls,
-      verifiedSiteIssues: deep.verifiedSiteIssues,
+      verifiedSiteIssues: combinedIssues,
       snippet: c.snippet,
       textSummary: site?.textSummary?.slice(0, 1200) || c.snippet.slice(0, 800),
       sourceUrl: c.sourceUrl,
@@ -784,7 +941,11 @@ Visible Site Copy: ${s.textSummary.slice(0, 400)}`;
 Evaluate ONLY the verified prospects listed in VERIFIED SITE DOSSIER below using Modules 1-3 strictly:
 1. Never invent businesses, emails, URLs, or technical defects absent from VERIFIED SITE DOSSIER. If Verified Emails is "(none found)", set "email": "".
 2. Score Buying Intent (0-100) using Module 1 Fit + WTP Proof + Trigger Timing + Reachability.
-3. For each prospect, select recommendedTemplateId ("T1"-"T12"; use "T10" if emailType is "role_inbox"), write a sharp 1-2 sentence verified firstLine citing ONLY real facts observed on their site/listing, plus concise Module 2 plain-text draftSubject (2-5 words) and draftBody (45-85 words, zero {{...}} placeholders, with plain opt-out line).
+3. For each prospect, select recommendedTemplateId ("T1"-"T12"; use "T10" if emailType is "role_inbox"), write a sharp 1-2 sentence verified firstLine citing ONLY real verified site facts/audit issues observed on their site/listing, plus concise plain-text draftSubject (2-5 words) and draftBody (50-115 words, zero {{...}} placeholders, ${
+    input.settings.include_opt_out_footer === true
+      ? "include one brief plain opt-out line at the bottom"
+      : "omit generic opt-out/unsubscribe footers"
+  }).
 
 Return ONLY valid JSON:
 {
@@ -926,6 +1087,7 @@ Score, prioritize highest buying intent first, and draft non-hallucinated outrea
         socials: p.socials,
         decisionMaker: p.contactName,
         mxVerified: p.email ? p.mxVerified : undefined,
+        requireEmail: strat.channel.toLowerCase() === "email",
       });
       if (!verdict.contactable) return false;
       const k = (p.website || p.business).toLowerCase().replace(/^https?:\/\//, "").replace(/\/+$/, "");

@@ -645,8 +645,15 @@ function readEnvSearchKeys(): DecryptedAdminSearchKey[] {
     { provider: "brave", envVar: "BRAVE_SEARCH_API_KEY" },
     { provider: "jina", envVar: "JINA_API_KEY" },
     { provider: "pagespeed", envVar: "PAGESPEED_API_KEY" },
+    { provider: "bytemine", envVar: "BYTEMINE_API_KEY" },
+    { provider: "apollo", envVar: "APOLLO_API_KEY" },
     { provider: "hunter", envVar: "HUNTER_API_KEY" },
     { provider: "cufinder", envVar: "CUFINDER_API_KEY" },
+    { provider: "snov", envVar: "SNOV_CREDENTIALS" },
+    { provider: "tomba", envVar: "TOMBA_CREDENTIALS" },
+    { provider: "getprospect", envVar: "GETPROSPECT_API_KEY" },
+    { provider: "cloudflare_browser", envVar: "CLOUDFLARE_BROWSER_CREDENTIALS" },
+    { provider: "screenshotone", envVar: "SCREENSHOTONE_API_KEY" },
   ];
   const out: DecryptedAdminSearchKey[] = [];
   for (const d of defs) {

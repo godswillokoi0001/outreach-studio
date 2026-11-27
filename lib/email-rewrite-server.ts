@@ -783,7 +783,7 @@ HARD GROUNDING & ANTI-HALLUCINATION RULES:
 2. If verified hooks/facts say NONE FOUND, return verifiedHooks: [] and write naturally from verified role/industry/business reality without fabricating hooks.
 3. Learn from Sample Emails in KB (tone, cadence, sentence structure) WITHOUT copying them word for word.
 4. No placeholders ([Name], [Company], {{...}}), no banned clichés ("hope this email finds you well", "came across your website", "game-changer", "synergy", "delve").
-5. Always end cold outreach emails with sender identity (${snap.settings.sender_name || snap.userContext.variables.USER_NAME}${snap.settings.sender_company ? ` · ${snap.settings.sender_company}` : ""}) and a clear plain opt-out / unsubscribe line (${compliance.frameworkName}).
+5. End cold outreach emails naturally with sender identity (${snap.settings.sender_name || snap.userContext.variables.USER_NAME}${snap.settings.sender_company ? ` · ${snap.settings.sender_company}` : ""})${snap.settings.include_opt_out_footer === true ? ` and one brief plain opt-out line (${compliance.frameworkName})` : " — do NOT add generic unsubscribe or opt-out footers unless the account enables them"}.
 6. Produce 2-3 subjectOptions AND plain-language reasoning for every chosen pattern field.`;
 
   const orchestrated = await buildOrchestratedSystemPrompt({
@@ -944,6 +944,7 @@ Step 2: Write a tailored subject (plus 2-3 subjectOptions) and complete human em
       senderCompany: snap.settings.sender_company || snap.userContext.variables.USER_COMPANY || "",
       otherLeadBusinesses,
       sampleEmails: kb.sampleEmails,
+      includeOptOutFooter: snap.settings.include_opt_out_footer === true,
     });
 
     const { data: llmCheck } = await LLMGateway.completeJSON<{

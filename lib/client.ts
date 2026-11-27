@@ -95,13 +95,12 @@ export async function authedPost<T>(
     headers["X-Google-Token"] = workspaceToken;
   }
 
-  // AI routes are safe to replay, so they back off and retry instead of
-  // failing the moment the provider is busy. Anything else (sending mail,
-  // writing a sheet) only retries when a caller explicitly opts in.
+  // Server-side LLMGateway already performs multi-key failover. Keep client retries
+  // fast (at most 2 attempts, 2-4s backoff) so email drafting never hangs for minutes.
   const isAiRoute = path.startsWith("/api/ai/");
-  const maxAttempts = options?.retryTransient || isAiRoute ? 6 : 1;
+  const maxAttempts = options?.retryTransient || isAiRoute ? 2 : 1;
   const backoffMs = (attempt: number) =>
-    Math.min(8_000, 900 * 2 ** attempt) + Math.round(Math.random() * 400);
+    Math.min(4_000, 2_000 * (attempt + 1)) + Math.round(Math.random() * 300);
   const serialized = body === undefined ? undefined : JSON.stringify(body);
   void rotateAiProvider;
 
@@ -151,7 +150,9 @@ export async function authedPost<T>(
       if (isTransientStatus && attempt < maxAttempts - 1) {
         const retryAfter = Number(res.headers.get("retry-after"));
         await sleep(
-          Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter * 1000 : backoffMs(attempt),
+          Number.isFinite(retryAfter) && retryAfter > 0
+            ? Math.min(4_000, retryAfter * 1000)
+            : backoffMs(attempt),
         );
         continue;
       }

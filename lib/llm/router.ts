@@ -286,6 +286,7 @@ export function rankPoolCandidates(input: {
     Boolean(input.requiresTools) ||
     input.feature === "operator_chat" ||
     Boolean(input.feature?.startsWith("growth_")) ||
+    Boolean(input.feature?.startsWith("compose")) ||
     input.feature === "research" ||
     input.feature === "research_chat" ||
     input.feature === "qualify";
@@ -301,6 +302,19 @@ export function rankPoolCandidates(input: {
 
     for (const model of key.models) {
       if (!model.enabled) continue;
+      if (/nemotron-3-ultra-550b|550b/i.test(model.id)) continue;
+      const slowMega = isSlowMegaModel(model.id);
+      if (
+        slowMega &&
+        (input.taskType === "fast" ||
+          input.taskType === "balanced" ||
+          Boolean(input.requiresTools) ||
+          Boolean(input.feature?.startsWith("compose")) ||
+          input.feature === "research" ||
+          input.feature === "operator_chat")
+      ) {
+        continue;
+      }
       if (input.requiresTools && !model.capabilities.tools) continue;
       if (input.requiresTools && !isChatCapableModelId(model.id)) continue;
       // Hard-exclude tiny <= 8B models from tool-calling, operator_chat, research, and Growth Advisor smart/balanced seats
@@ -322,16 +336,23 @@ export function rankPoolCandidates(input: {
       }
 
       let score = 0;
-      const slowMega = isSlowMegaModel(model.id);
 
       // 1. Headroom steering: healthy headroom strictly outranks keys >= 85% cap
       score += headroom.lowHeadroom ? -200 : 120 - Math.round(headroom.utilization * 40);
 
-      // 2. Strongly demote slow 400B-550B+ preview models so responsive models ALWAYS run first
+      // 2. Strongly demote slow 400B-550B+ preview models & thinking queues on interactive/compose paths
       if (slowMega) {
         score -= isGrowthOrOperator ? 600 : input.taskType === "smart" ? 180 : 320;
       } else if (FAST_RESPONSIVE_MODEL_RE.test(model.id)) {
-        score += input.taskType === "fast" ? 55 : 45;
+        score += input.taskType === "fast" ? 85 : 75;
+      }
+      if (key.provider === "groq" || key.provider === "google") {
+        if (!model.capabilities.reasoning && /(flash\b|llama-3\.3-70b|llama-3\.1-8b)/i.test(model.id)) {
+          score += 50;
+        }
+      }
+      if (model.capabilities.reasoning && (input.taskType === "fast" || Boolean(input.feature?.startsWith("compose")))) {
+        score -= 80;
       }
 
       // 3. Native Google Search grounding priority only when key has not rejected free-tier grounding

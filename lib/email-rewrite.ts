@@ -249,6 +249,7 @@ export function runDeterministicRewriteAudit(input: {
   senderCompany: string;
   otherLeadBusinesses?: string[];
   sampleEmails?: string[];
+  includeOptOutFooter?: boolean;
 }): {
   passed: boolean;
   noPlaceholdersOrWrongNames: boolean;
@@ -333,10 +334,10 @@ export function runDeterministicRewriteAudit(input: {
 
   // 3. Compliance & sender identity check
   let compliancePresent = true;
-  if (input.kind !== "reply") {
+  if (input.includeOptOutFooter === true && input.kind !== "reply") {
     if (!OPTOUT_PHRASE_RE.test(body)) {
       compliancePresent = false;
-      issues.push("Missing clear opt-out or unsubscribe line required for outreach compliance.");
+      issues.push("Missing clear opt-out or unsubscribe line required by your footer setting.");
     }
   }
   const hasSender =

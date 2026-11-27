@@ -586,7 +586,7 @@ export function GrowthExecuteModal({
                   />
                 </Field>
 
-                <Field label="Sample outreach message (includes opt-out compliance)">
+                <Field label="Sample outreach message (uses your Knowledge-Brain voice)">
                   <textarea
                     rows={5}
                     value={blueprint.sampleEmailBody}

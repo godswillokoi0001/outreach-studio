@@ -3884,3 +3884,397 @@ test("AI Rewrite E2E: multi-lead pipeline, sample style prompt, 3x self-check re
     clearRouterStateForTests();
   }
 });
+
+test("Phase 1 10x: Forensic Website Auditor isolates hidden-DOM Lorem ipsum, catches broken nav links, captures Lighthouse screenshot & runs Vision", async () => {
+  const { extractVisibleDom, runForensicWebsiteAudit } = await import("./search/forensicAudit");
+  const { seedGatewayCachesForTests, resetGatewayCachesForTests } = await import("./llm/store");
+  const { encryptSecret } = await import("./key-vault");
+  const { clearSearchCacheAndQuotasForTests } = await import("./search/quotaAndCache");
+  const { clearRouterStateForTests } = await import("./llm/router");
+
+  const hiddenHtml = `<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>Bright Smile Clinic</title></head>
+    <body>
+      <header><nav><a href="/book">Book Now</a><a href="/broken-page">Pricing</a><a href="/blocked-portal">Portal</a></nav></header>
+      <div style="display:none">Lorem ipsum dolor sit amet template fragment</div>
+      <main><h1>Modern Family Dentistry in Austin</h1><a href="tel:+15125550199">Call Us</a></main>
+    </body></html>`;
+
+  const dom = extractVisibleDom(hiddenHtml);
+  assert.deepEqual(dom.visiblePlaceholders, []);
+  assert.ok(dom.hiddenDomOnlyArtifacts.includes("hidden_dom_only:lorem ipsum"));
+  assert.equal(dom.hasViewportMeta, true);
+  assert.equal(dom.hasClickablePhone, true);
+
+  clearSearchCacheAndQuotasForTests();
+  resetGatewayCachesForTests();
+  clearRouterStateForTests();
+
+  const fakePngBase64 = Buffer.from("fake-mobile-screenshot-bytes").toString("base64");
+  seedGatewayCachesForTests({
+    adminSettings: makeSampleAdminSettings({
+      masterMode: "auto",
+      strategy: "balanced",
+      fallbackChain: [{ provider: "google", model: "gemini-2.5-flash" }],
+    }),
+    adminKeys: [
+      {
+        id: "k_vis_1",
+        provider: "google",
+        label: "Google Vision Test",
+        encryptedKey: encryptSecret("AIzaSy-test-key"),
+        maskedKey: "AIza•••key",
+        enabled: true,
+        rpmLimit: 30,
+        rpdLimit: 1000,
+        healthStatus: "healthy",
+        cooldownUntil: null,
+        cooldownStep: 0,
+        lastError: null,
+        lastCheckedAt: null,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        models: [
+          {
+            id: "gemini-2.5-flash",
+            displayName: "Gemini 2.5 Flash",
+            enabled: true,
+            seats: ["fast", "balanced", "smart"],
+            capabilities: { json: true, tools: true, vision: true, reasoning: false },
+            isFreeTier: true,
+            contextWindow: 1_000_000,
+          },
+        ],
+      },
+    ],
+    userSettings: {
+      forensic_user: {
+        ownerId: "forensic_user",
+        mode: "system_auto",
+        activeProvider: null,
+        activeKeyId: null,
+        activeModel: null,
+        fallbackToSystemAuto: true,
+        updatedAt: new Date().toISOString(),
+      },
+    },
+  });
+
+  const prevFetch = globalThis.fetch;
+  let visionSawImage = false;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = typeof input === "string" ? input : input.toString();
+    if (url === "https://brightsmile-audit.example/" || url === "https://brightsmile-audit.example") {
+      return new Response(hiddenHtml, { status: 200, headers: { "content-type": "text/html" } });
+    }
+    if (url === "https://brightsmile-audit.example/broken-page") {
+      return new Response("Not Found", { status: 404 });
+    }
+    if (url === "https://brightsmile-audit.example/blocked-portal") {
+      return new Response("Forbidden", { status: 403 });
+    }
+    if (url === "https://brightsmile-audit.example/book") {
+      return new Response("OK", { status: 200 });
+    }
+    if (url.startsWith("https://www.googleapis.com/pagespeedonline/v5/runPagespeed")) {
+      return new Response(
+        JSON.stringify({
+          lighthouseResult: {
+            categories: {
+              performance: { score: 0.48 },
+              accessibility: { score: 0.82 },
+              seo: { score: 0.9 },
+            },
+            audits: {
+              "largest-contentful-paint": { numericValue: 4800, title: "Largest Contentful Paint", displayValue: "4.8 s", score: 0.25 },
+              "final-screenshot": { details: { data: `data:image/jpeg;base64,${fakePngBase64}` } },
+            },
+          },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+    if (url.includes("generativelanguage.googleapis.com")) {
+      const payload = JSON.parse(String(init?.body ?? "{}")) as {
+        contents?: { parts?: { inlineData?: { data?: string } }[] }[];
+      };
+      visionSawImage = Boolean(payload.contents?.[0]?.parts?.some((p) => p.inlineData?.data === fakePngBase64));
+      return new Response(
+        JSON.stringify({
+          candidates: [
+            {
+              content: {
+                role: "model",
+                parts: [
+                  {
+                    text: JSON.stringify({
+                      siteLooksSolid: false,
+                      overallVerdict: "Slow mobile load (48/100, LCP 4.8s) and broken Pricing nav link",
+                      issues: [
+                        {
+                          issue: 'Hero loads in 4.8s on mobile and the "Pricing" nav link returns HTTP 404.',
+                          evidence_type: "broken_link",
+                          proof: "Pricing -> 404; Mobile Lighthouse 48/100",
+                        },
+                      ],
+                    }),
+                  },
+                ],
+              },
+            },
+          ],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+    return new Response("OK", { status: 200 });
+  }) as typeof fetch;
+
+  try {
+    const audit = await runForensicWebsiteAudit("https://brightsmile-audit.example", {
+      ownerId: "forensic_user",
+      runVision: true,
+      checkLinks: true,
+      bypassCache: true,
+    });
+    assert.ok(audit);
+    assert.equal(audit.brokenLinks.length, 1);
+    assert.equal(audit.brokenLinks[0]?.status, 404);
+    assert.equal(audit.lighthouse?.mobileScore, 48);
+    assert.equal(audit.lighthouse?.lcpSeconds, 4.8);
+    assert.ok(audit.mobileScreenshotUrl?.startsWith("data:image/jpeg;base64,"));
+    assert.equal(visionSawImage, true);
+    assert.equal(audit.dom.visiblePlaceholders.length, 0);
+    assert.ok(audit.auditEvidence.some((e) => e.evidence_type === "broken_link" && e.proof.includes("404")));
+  } finally {
+    globalThis.fetch = prevFetch;
+    clearSearchCacheAndQuotasForTests();
+    resetGatewayCachesForTests();
+    clearRouterStateForTests();
+  }
+});
+
+test("Phase 2 & 3 10x: Default email_required firewall blocks phone-only leads, Exa People + Apollo resolve contacts, and 550B mega models are hard-excluded", async () => {
+  const { validateContactableLead } = await import("./search/contactGate");
+  const { findDeepContactsForProspect } = await import("./search/contactFinder");
+  const { rankPoolCandidates, clearRouterStateForTests } = await import("./llm/router");
+  const { seedGatewayCachesForTests, resetGatewayCachesForTests } = await import("./llm/store");
+  const { clearSearchCacheAndQuotasForTests } = await import("./search/quotaAndCache");
+
+  // Default requires verified email (prevents zero-email leads like Walton Family Dentistry)
+  const phoneOnlyBlocked = validateContactableLead({
+    business: "Walton Family Dentistry",
+    website: "https://waltondentistry.example",
+    location: "Austin, TX",
+    phone: "+15125550111",
+    email: "",
+  });
+  assert.equal(phoneOnlyBlocked.contactable, false);
+
+  // Explicit opt-in mode allows phone/social-only
+  const phoneOnlyAllowed = validateContactableLead({
+    business: "Walton Family Dentistry",
+    website: "https://waltondentistry.example",
+    location: "Austin, TX",
+    phone: "+15125550111",
+    email: "",
+    requireEmail: false,
+  });
+  assert.equal(phoneOnlyAllowed.contactable, true);
+
+  // Layer 2 waterfall: Exa People + Apollo resolve decision-maker LinkedIn + verified email
+  clearSearchCacheAndQuotasForTests();
+  resetGatewayCachesForTests();
+  seedGatewayCachesForTests({
+    searchKeys: [
+      {
+        id: "srch_exa",
+        provider: "exa",
+        label: "Exa",
+        apiKey: "exa-test",
+        maskedKey: "exa",
+        enabled: true,
+        healthStatus: "healthy",
+        lastError: null,
+        lastCheckedAt: null,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      },
+      {
+        id: "srch_apollo",
+        provider: "apollo",
+        label: "Apollo",
+        apiKey: "apollo-test",
+        maskedKey: "apollo",
+        enabled: true,
+        healthStatus: "healthy",
+        lastError: null,
+        lastCheckedAt: null,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      },
+    ],
+  });
+
+  const prevFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = typeof input === "string" ? input : input.toString();
+    if (url.startsWith("https://northstar-dental-test.example")) {
+      return new Response(`<html><body><h1>Northstar Dental</h1></body></html>`, {
+        status: 200,
+        headers: { "content-type": "text/html" },
+      });
+    }
+    if (url === "https://api.exa.ai/search") {
+      return new Response(
+        JSON.stringify({
+          results: [
+            {
+              url: "https://www.linkedin.com/in/sarah-jenkins-dds",
+              title: "Dr. Sarah Jenkins - Owner at Northstar Dental | LinkedIn",
+              text: "Owner and Dentist at Northstar Dental.",
+            },
+          ],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+    if (url === "https://api.apollo.io/api/v1/mixed_people/search") {
+      return new Response(
+        JSON.stringify({
+          people: [
+            {
+              name: "Dr. Sarah Jenkins",
+              title: "Owner",
+              email: "sarah@gmail.com",
+              linkedin_url: "https://www.linkedin.com/in/sarah-jenkins-dds",
+            },
+          ],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+    return new Response("Not found", { status: 404 });
+  }) as typeof fetch;
+
+  try {
+    const deep = await findDeepContactsForProspect({
+      business: "Northstar Dental",
+      website: "https://northstar-dental-test.example",
+      location: "Austin, TX",
+      allowTargetedSearch: false,
+      timeoutMs: 3_000,
+    });
+    assert.ok(deep.decisionMakers.some((d) => d.name.includes("Sarah Jenkins")));
+    assert.ok(deep.socials.some((s) => s.platform === "LinkedIn" && s.url.includes("sarah-jenkins-dds")));
+    assert.equal(deep.primaryEmail, "sarah@gmail.com");
+  } finally {
+    globalThis.fetch = prevFetch;
+    clearSearchCacheAndQuotasForTests();
+    resetGatewayCachesForTests();
+  }
+
+  // Router hard-excludes 550B slow mega models from compose, research, balanced, fast & agentTurn
+  clearRouterStateForTests();
+  const ranked = rankPoolCandidates({
+    taskType: "balanced",
+    feature: "compose_initial",
+    settings: makeSampleAdminSettings({
+      masterMode: "auto",
+      strategy: "balanced",
+      fallbackChain: [],
+    }),
+    keys: [
+      {
+        id: "k_mix",
+        provider: "openrouter",
+        label: "OpenRouter Mix",
+        encryptedKey: "x",
+        maskedKey: "or•••x",
+        enabled: true,
+        rpmLimit: 20,
+        rpdLimit: 1000,
+        healthStatus: "healthy",
+        cooldownUntil: null,
+        cooldownStep: 0,
+        lastError: null,
+        lastCheckedAt: null,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        models: [
+          {
+            id: "nvidia/nemotron-3-ultra-550b-a55b:free",
+            displayName: "Nemotron 550B",
+            enabled: true,
+            seats: ["fast", "balanced", "smart"],
+            capabilities: { json: true, tools: true, vision: false, reasoning: true },
+            isFreeTier: true,
+            contextWindow: 128_000,
+          },
+          {
+            id: "google/gemini-2.5-flash",
+            displayName: "Gemini 2.5 Flash",
+            enabled: true,
+            seats: ["fast", "balanced"],
+            capabilities: { json: true, tools: true, vision: true, reasoning: false },
+            isFreeTier: true,
+            contextWindow: 128_000,
+          },
+        ],
+      },
+    ],
+  });
+  assert.equal(ranked.length, 1);
+  assert.equal(ranked[0]?.model.id, "google/gemini-2.5-flash");
+});
+
+test("Phase 5 10x: validateEmailQuality enforces zero AI slop, zero forced opt-out footer, personal voice, Words to AVOID & <= 115 words", async () => {
+  const { validateEmailQuality, extractWordsToAvoid } = await import("./compose");
+  const { buildOrchestratedSystemPrompt } = await import("./ai/orchestrator");
+
+  const avoided = extractWordsToAvoid(
+    "Master Knowledge:\nWrite in first-person I.\nWords to AVOID: conversion optimization, bespoke, synergy\nWords to USE: free look",
+  );
+  assert.deepEqual(avoided, ["conversion optimization", "bespoke", "synergy"]);
+
+  const badDraft = validateEmailQuality({
+    subject: "website improvements",
+    body: "Hi there,\n\nWe help clinics with conversion optimization and improved mobile responsiveness using bespoke solutions. If you'd rather not hear from me again, just let me know.\n\nBest,\nGodswill",
+    kind: "initial",
+    leadBusiness: "Oakwood Dental",
+    leadContactName: "Dr. Patel",
+    wordsToAvoid: avoided,
+    includeOptOutFooter: false,
+    identity: "personal",
+  });
+  assert.equal(badDraft.passed, false);
+  assert.ok(badDraft.issues.some((i) => /slop|clich/i.test(i)));
+  assert.ok(badDraft.issues.some((i) => /opt-out/i.test(i)));
+  assert.ok(badDraft.issues.some((i) => /solo\/personal/i.test(i)));
+  assert.ok(badDraft.issues.some((i) => /Words to AVOID/i.test(i)));
+
+  const goodBody =
+    "Hi Dr. Patel,\n\nI pulled up Oakwood Dental's site on a phone and noticed the Pricing nav link hits a 404 error, and the page takes 4.8s to load your main header.\n\nI rebuild slow clinic pages so mobile visitors can tap straight through to book without bouncing.\n\nWant to get a free look at a live 2-screen mockup for Oakwood Dental?\n\nGodswill";
+  const goodDraft = validateEmailQuality({
+    subject: "oakwood pricing link",
+    body: goodBody,
+    kind: "initial",
+    leadBusiness: "Oakwood Dental",
+    leadContactName: "Dr. Patel",
+    wordsToAvoid: avoided,
+    includeOptOutFooter: false,
+    identity: "personal",
+  });
+  assert.equal(goodDraft.passed, true, `Unexpected quality issues: ${goodDraft.issues.join("; ")}`);
+  assert.ok(goodDraft.wordCount >= 50 && goodDraft.wordCount <= 115);
+
+  const built = await buildOrchestratedSystemPrompt({
+    workflow: "draft_outreach",
+    knowledgeDigest:
+      "Master Knowledge:\nPosition as solo developer 'I'.\nWords to AVOID: digital landscape, leverage.\nSample Style Example: Want to get a free look?",
+    taskInstructions: "Draft Touch 1.",
+  });
+  const tokens = Math.ceil(built.system.length / 4);
+  assert.ok(tokens <= 4_500, `Expected <= 4500 tokens, got ${tokens}`);
+  assert.ok(built.system.includes("Words to AVOID: digital landscape, leverage"));
+  assert.ok(built.system.includes("Want to get a free look?"));
+});

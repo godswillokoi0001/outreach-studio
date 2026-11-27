@@ -4,7 +4,7 @@ import { getActiveOwnerAiContext } from "./ai/context";
 import { normalizeWebsite } from "./columns";
 import { LLMGateway } from "./llm/gateway";
 import { isFetchableUrl } from "./outreach-utils";
-import { inspectProspectWebsite, WebSearchService } from "./search/webSearch";
+import { inspectProspectWebsite, runForensicWebsiteAudit, WebSearchService } from "./search/webSearch";
 import type { Lead, ResearchResult } from "./types";
 
 export interface SiteSnapshot {
@@ -288,8 +288,18 @@ export async function researchLeadServer(
       ? `"${cleanBiz}" ${lead.location ? lead.location.trim() : ""} official website`
       : "";
 
-  const [inspected, searchRes] = await Promise.all([
+  const ownerIdForAudit = options?.ownerId ?? lead.ownerId ?? getActiveOwnerAiContext()?.ownerId ?? "anonymous";
+
+  const [inspected, forensic, searchRes] = await Promise.all([
     inspectProspectWebsite(lead.website, { timeoutMs: 5_000, checkContactPage: true }),
+    lead.website
+      ? runForensicWebsiteAudit(lead.website, {
+          ownerId: ownerIdForAudit,
+          runVision: true,
+          checkLinks: true,
+          timeoutMs: 6_500,
+        }).catch(() => null)
+      : Promise.resolve(null),
     webQuery
       ? WebSearchService.search(webQuery, { maxResults: 5, locationHint: lead.location ?? undefined }).catch(
           () => null,
@@ -345,8 +355,10 @@ Detected platform: ${inspected.platform ?? "(unknown)"}
 Visible hints: ${inspected.statusHints.join("; ") || "(none)"}
 Approximate word count on homepage: ${inspected.wordCount}
 
+${forensic ? `\nFORENSIC AUDIT MEASUREMENTS (100% deterministic / screenshot-verified — cite ONLY these metrics & proofs, NEVER invent flaws):\nOverall Verdict: ${forensic.overallVerdict}\nMobile Performance: ${forensic.lighthouse?.mobileScore ?? "n/a"}/100 (LCP: ${forensic.lighthouse?.lcpSeconds ?? "n/a"}s, CLS: ${forensic.lighthouse?.clsScore ?? "n/a"})\nFree Subdomain Platform: ${forensic.freeSubdomainPlatform ?? "none (custom domain)"}\nBroken Nav/CTA Links Checked: ${forensic.brokenLinks.length ? forensic.brokenLinks.map((b) => `${b.label} (${b.url}) -> HTTP ${b.status}`).join("; ") : "0 broken"}\nVisible Placeholders: ${forensic.dom.visiblePlaceholders.join(", ") || "none"} (hidden DOM excluded: ${forensic.dom.hiddenDomOnlyArtifacts.join(", ") || "none"})\nVerified Evidence Items: ${forensic.auditEvidence.length ? forensic.auditEvidence.map((a) => `[${a.evidence_type}] ${a.issue} — Proof: ${a.proof}`).join(" | ") : "none"}` : ""}
+
 PAGE TEXT (truncated):
-${inspected.textSummary.slice(0, 2_500)}`
+${(forensic?.dom.visibleText || inspected.textSummary).slice(0, 2_500)}`
     : `WEBSITE CHECK: none available. ${lead.website ? "The stored URL could not be fetched." : "No website URL is stored for this prospect."}`;
 
   const searchBlock =
@@ -379,7 +391,7 @@ ${manual ? `OWNER-SUPPLIED RESEARCH (treat as reliable observations from the bus
 
 Run Workflow A (research_and_qualify) and return the complete structured JSON.`;
 
-  const ownerId = options?.ownerId ?? lead.ownerId ?? getActiveOwnerAiContext()?.ownerId ?? "anonymous";
+  const ownerId = ownerIdForAudit;
   const { data: result } = await LLMGateway.completeJSON<ResearchResult>({
     ownerId,
     taskType: "balanced",
@@ -395,6 +407,11 @@ Run Workflow A (research_and_qualify) and return the complete structured JSON.`;
 
   return {
     ...result,
+    audit_evidence: forensic?.auditEvidence ?? result.audit_evidence,
+    verified_site_issues: forensic
+      ? forensic.auditEvidence.map((e) => `${e.issue} (${e.proof})`)
+      : result.verified_site_issues,
+    mobile_screenshot_url: forensic?.mobileScreenshotUrl ?? result.mobile_screenshot_url ?? null,
     score: clampedScore,
     kill_switch_triggered: killSwitch,
     disqualification_reason: killSwitch ? (result.disqualification_reason || "Hard kill-switch triggered.") : null,
@@ -409,7 +426,14 @@ Run Workflow A (research_and_qualify) and return the complete structured JSON.`;
             : "DISQUALIFIED",
     checked_at: new Date().toISOString(),
     technical_signals: snapshot
-      ? { ...snapshot.signals, status: snapshot.status, reachable: snapshot.reachable }
+      ? {
+          ...snapshot.signals,
+          status: snapshot.status,
+          reachable: snapshot.reachable,
+          mobileScore: forensic?.lighthouse?.mobileScore ?? null,
+          lcpSeconds: forensic?.lighthouse?.lcpSeconds ?? null,
+          brokenLinksCount: forensic?.brokenLinks.length ?? 0,
+        }
       : undefined,
   };
 }

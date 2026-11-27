@@ -24,6 +24,12 @@ export interface Finding {
   evidence: string;
 }
 
+export interface AuditEvidenceItem {
+  issue: string;
+  evidence_type: "lighthouse" | "broken_link" | "dom_visible" | "vision_screenshot";
+  proof: string;
+}
+
 export interface ResearchResult {
   business_name_confirmed: boolean;
   industry: string;
@@ -52,6 +58,8 @@ export interface ResearchResult {
   socials?: { platform: string; url: string; verification_status?: string }[];
   contact_source_urls?: { channel: string; value: string; sourceUrl: string }[];
   verified_site_issues?: string[];
+  audit_evidence?: AuditEvidenceItem[];
+  mobile_screenshot_url?: string | null;
   email_type?: "direct" | "role_inbox" | "invalid";
   mx_verified?: boolean;
   first_line?: string;
@@ -293,6 +301,8 @@ export interface Settings {
   ai_providers: string;
   /** JSON UI preferences (operator dock mode and panel position) for the account. */
   ui_prefs: string;
+  /** Optional opt-out line in cold email footer (default OFF per plain personal voice). */
+  include_opt_out_footer?: boolean;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -320,6 +330,7 @@ export const DEFAULT_SETTINGS: Settings = {
   ai_key_hint: "",
   ai_providers: "",
   ui_prefs: "",
+  include_opt_out_footer: false,
 };
 
 export const LEAD_STATUS_LABELS: Record<string, string> = {

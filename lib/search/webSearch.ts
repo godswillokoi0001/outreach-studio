@@ -586,6 +586,103 @@ export async function verifySearchKey(input: {
     return { ok: true, count: 1, ms: Date.now() - started, sampleTitle: "CUFinder API" };
   }
 
+  if (input.provider === "apollo") {
+    const { res, text } = await fetchWithTimeout(
+      "https://api.apollo.io/api/v1/auth/health",
+      { method: "GET", headers: { "X-Api-Key": key, "Content-Type": "application/json" } },
+      6_000,
+      20_000,
+    );
+    if (!res.ok) throw new Error(`Apollo HTTP ${res.status}: ${text.slice(0, 120)}`);
+    return { ok: true, count: 1, ms: Date.now() - started, sampleTitle: "Apollo.io API" };
+  }
+
+  if (input.provider === "bytemine") {
+    const { res, text } = await fetchWithTimeout(
+      "https://api.bytemine.ai/v1/credits",
+      { method: "GET", headers: { Authorization: `Bearer ${key}` } },
+      6_000,
+      20_000,
+    );
+    if (!res.ok) throw new Error(`Bytemine HTTP ${res.status}: ${text.slice(0, 120)}`);
+    return { ok: true, count: 1, ms: Date.now() - started, sampleTitle: "Bytemine API" };
+  }
+
+  if (input.provider === "snov") {
+    const [clientId, clientSecret] = key.split(":").map((s) => s.trim());
+    if (!clientId || !clientSecret) throw new Error("Use format clientId:clientSecret for Snov.io.");
+    const { res, text } = await fetchWithTimeout(
+      "https://api.snov.io/v1/oauth/access_token",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          grant_type: "client_credentials",
+          client_id: clientId,
+          client_secret: clientSecret,
+        }).toString(),
+      },
+      6_000,
+      20_000,
+    );
+    if (!res.ok) throw new Error(`Snov.io HTTP ${res.status}: ${text.slice(0, 120)}`);
+    return { ok: true, count: 1, ms: Date.now() - started, sampleTitle: "Snov.io OAuth" };
+  }
+
+  if (input.provider === "tomba") {
+    const [apiKey, secretKey] = key.split(":").map((s) => s.trim());
+    if (!apiKey || !secretKey) throw new Error("Use format apiKey:secretKey for Tomba.");
+    const { res, text } = await fetchWithTimeout(
+      "https://api.tomba.io/v1/me",
+      { method: "GET", headers: { "X-Tomba-Key": apiKey, "X-Tomba-Secret": secretKey } },
+      6_000,
+      20_000,
+    );
+    if (!res.ok) throw new Error(`Tomba HTTP ${res.status}: ${text.slice(0, 120)}`);
+    return { ok: true, count: 1, ms: Date.now() - started, sampleTitle: "Tomba API" };
+  }
+
+  if (input.provider === "getprospect") {
+    const { res, text } = await fetchWithTimeout(
+      "https://api.getprospect.com/public/v1/credits",
+      { method: "GET", headers: { apiKey: key } },
+      6_000,
+      20_000,
+    );
+    if (!res.ok) throw new Error(`GetProspect HTTP ${res.status}: ${text.slice(0, 120)}`);
+    return { ok: true, count: 1, ms: Date.now() - started, sampleTitle: "GetProspect API" };
+  }
+
+  if (input.provider === "cloudflare_browser") {
+    const colon = key.indexOf(":");
+    if (colon <= 0) throw new Error("Use format accountId:apiToken for Cloudflare Browser Rendering.");
+    const accountId = key.slice(0, colon).trim();
+    const token = key.slice(colon + 1).trim();
+    const { res, text } = await fetchWithTimeout(
+      `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accountId)}/browser-rendering/content`,
+      {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ url: "https://example.com" }),
+      },
+      8_000,
+      30_000,
+    );
+    if (!res.ok) throw new Error(`Cloudflare Browser HTTP ${res.status}: ${text.slice(0, 120)}`);
+    return { ok: true, count: 1, ms: Date.now() - started, sampleTitle: "Cloudflare Browser" };
+  }
+
+  if (input.provider === "screenshotone") {
+    const { res, text } = await fetchWithTimeout(
+      `https://api.screenshotone.com/take?access_key=${encodeURIComponent(key)}&url=https%3A%2F%2Fexample.com&format=jpeg&viewport_width=390`,
+      { method: "GET" },
+      8_000,
+      60_000,
+    );
+    if (!res.ok) throw new Error(`ScreenshotOne HTTP ${res.status}: ${text.slice(0, 120)}`);
+    return { ok: true, count: 1, ms: Date.now() - started, sampleTitle: "ScreenshotOne API" };
+  }
+
   let results: WebSearchResult[] = [];
   if (input.provider === "exa") results = await searchExa("B2B SaaS websites", key, 3);
   else if (input.provider === "tavily") results = await searchTavily("test", key, 3);
@@ -768,3 +865,4 @@ export const WebSearchService = {
 };
 
 export { checkMobilePageSpeed };
+export { runForensicWebsiteAudit } from "./forensicAudit";

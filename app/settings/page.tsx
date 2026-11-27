@@ -428,6 +428,14 @@ export default function SettingsPage() {
               />
             </Field>
           </div>
+          <div style={{ margin: "12px 0" }}>
+            <Toggle
+              checked={Boolean(form.include_opt_out_footer)}
+              onChange={(checked) => set("include_opt_out_footer", checked)}
+              label="Include opt-out line in email footer"
+              hint="Off by default so cold emails stay personal and concise. Enable if you want every draft to include a plain-text opt-out line."
+            />
+          </div>
           <div className="row">
             <button
               className="btn btn-primary"

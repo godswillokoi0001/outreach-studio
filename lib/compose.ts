@@ -108,58 +108,163 @@ async function reviewDraft(
 }
 
 const BANNED_SLOP_RE =
-  /\b(?:hope this (?:email|message) finds you well|i came across your website|i was browsing your site|game[- ]changer|synergy|delve into|unlock your potential|revolutionize your)\b/i;
+  /\b(?:hope this (?:email|message) finds you well|thrilled to reach out|i came across your website|i was browsing your site|conversion optimization|improved mobile responsiveness|digital landscape|take your business to the next level|game[- ]changer|synergy|delve(?: into)?|unlock your potential|revolutionize your|elevate|leverage|seamless|bespoke|utilize)\b/gi;
+
+const FORCED_OPTOUT_FOOTER_RE =
+  /(?:if you['’]?d rather not hear from me again|reply ["']?stop["']? to opt out|to opt out,? reply|unsubscribe from future emails|click here to unsubscribe)/i;
+
+export interface EmailQualityInput {
+  subject: string;
+  body: string;
+  kind: "initial" | "followup";
+  leadBusiness?: string | null;
+  leadContactName?: string | null;
+  wordsToAvoid?: string[];
+  includeOptOutFooter?: boolean;
+  identity?: "personal" | "company";
+}
+
+export interface EmailQualityReport {
+  passed: boolean;
+  wordCount: number;
+  issues: string[];
+}
+
+export function extractWordsToAvoid(knowledge: string, exclusionsText?: string): string[] {
+  const combined = `${knowledge}\n${exclusionsText ?? ""}`;
+  const out = new Set<string>();
+  const matches = combined.matchAll(/(?:words?(?:\s*\/\s*claims)?\s*to\s*avoid|avoid using|never use|banned words?)\s*[:-]\s*([^\n]+)/gi);
+  for (const m of matches) {
+    const line = (m[1] ?? "").trim();
+    for (const part of line.split(/[,;|]/)) {
+      const clean = part.replace(/^["'`]+|["'`]+$/g, "").trim();
+      if (clean.length >= 3 && clean.length <= 40) out.add(clean);
+    }
+  }
+  return Array.from(out).slice(0, 20);
+}
+
+/**
+ * Deterministic email quality firewall run before saving any drafted email.
+ * Enforces zero banned AI slop, zero forced opt-out footers when disabled,
+ * zero user `Words to AVOID`, crisp 50-115 word range on Touch 1, and personal "I" voice.
+ */
+export function validateEmailQuality(input: EmailQualityInput): EmailQualityReport {
+  const issues: string[] = [];
+  const subj = input.subject.trim();
+  const body = input.body.trim();
+  const words = body.split(/\s+/).filter(Boolean).length;
+
+  if (!subj) issues.push("Missing email subject.");
+
+  if (input.kind === "initial") {
+    if (words < 50 || words > 115) {
+      issues.push(`Touch 1 length (${words} words) must be 50-115 words for crisp mobile reading.`);
+    }
+  } else if (words < 20 || words > 85) {
+    issues.push(`Follow-up length (${words} words) should be 20-85 words.`);
+  }
+
+  const slopMatches = body.match(BANNED_SLOP_RE);
+  if (slopMatches && slopMatches.length > 0) {
+    issues.push(`Remove generic AI slop/cliché phrasing: "${Array.from(new Set(slopMatches.map((m) => m.toLowerCase()))).slice(0, 3).join('", "')}".`);
+  }
+
+  for (const bad of input.wordsToAvoid ?? []) {
+    const escaped = bad.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    if (new RegExp(`\\b${escaped}\\b`, "i").test(`${subj}\n${body}`)) {
+      issues.push(`Contains phrase from user's Words to AVOID: "${bad}".`);
+    }
+  }
+
+  if (input.includeOptOutFooter !== true && FORCED_OPTOUT_FOOTER_RE.test(body)) {
+    issues.push("Remove forced opt-out/unsubscribe footer sentence (disabled in user settings).");
+  }
+
+  const unresolved = [...findUnresolvedPlaceholders(subj), ...findUnresolvedPlaceholders(body)];
+  if (unresolved.length > 0) {
+    issues.push(`Remove unresolved template placeholder(s): ${unresolved.join(", ")}.`);
+  }
+
+  if (input.identity === "personal" && /\b(?:we help|we specialize|our team|our agency|we build)\b/i.test(body)) {
+    issues.push('Sender identity is solo/personal: write with "I" instead of "We/Our team".');
+  }
+
+  const contactFirst = (input.leadContactName ?? "").trim().split(/\s+/)[0] ?? "";
+  if (contactFirst.length >= 2 && /^[A-Za-z]+$/.test(contactFirst)) {
+    const firstGreet = body.slice(0, 90).toLowerCase();
+    if (!firstGreet.includes(contactFirst.toLowerCase()) && /^(?:hi|hello|hey)\s+(?:there|team)/i.test(body.trim())) {
+      issues.push(`Use verified first name "${contactFirst}" in greeting instead of "Hi team/there".`);
+    }
+  }
+
+  if (!body.includes("?") && !/\b(?:free look|worth|open to|make sense|send over|take a look)\b/i.test(body)) {
+    issues.push("End with one clear, low-friction question.");
+  }
+
+  return {
+    passed: issues.length === 0,
+    wordCount: words,
+    issues,
+  };
+}
 
 async function withKnowledgeCheck(
   draft: ComposedEmail,
   campaign: CampaignConfig,
   knowledge: string,
   sendingTier: string,
+  qualityInput: Omit<EmailQualityInput, "subject" | "body" | "kind">,
+  kind: "initial" | "followup",
   regenerate: (issues: string[]) => Promise<ComposedEmail>,
   ownerId: string,
 ): Promise<ComposedEmail> {
-  const localIssues: string[] = [];
-  if (BANNED_SLOP_RE.test(draft.body)) {
-    localIssues.push("Remove banned AI cliché phrasing and open with a concrete verified observation.");
-  }
-  const unresolved = [
-    ...findUnresolvedPlaceholders(draft.subject),
-    ...findUnresolvedPlaceholders(draft.body),
-  ];
-  if (unresolved.length > 0) {
-    localIssues.push(`Remove unresolved template placeholder(s): ${unresolved.join(", ")}`);
+  const det = validateEmailQuality({
+    ...qualityInput,
+    subject: draft.subject,
+    body: draft.body,
+    kind,
+  });
+
+  // Only invoke extra LLM review call if deterministic gate passed cleanly, or skip to fast 1-shot rewrite
+  if (det.passed) {
+    const first = await reviewDraft(campaign, knowledge, draft, sendingTier, ownerId);
+    if (first.passed) {
+      return {
+        ...draft,
+        rationale: withKbLine(draft.rationale, first.kb_items_used),
+        check: { ...first, regenerated: false },
+      };
+    }
+    det.issues.push(...first.issues);
   }
 
-  const first = await reviewDraft(campaign, knowledge, draft, sendingTier, ownerId);
-  const combinedIssues = Array.from(new Set([...localIssues, ...first.issues]));
-  if (first.passed && localIssues.length === 0) {
-    return {
-      ...draft,
-      rationale: withKbLine(draft.rationale, first.kb_items_used),
-      check: { ...first, regenerated: false },
-    };
-  }
-
-  let second: ComposedEmail;
+  const combinedIssues = Array.from(new Set(det.issues));
   try {
-    second = await regenerate(combinedIssues);
+    const revised = await regenerate(combinedIssues);
+    const secondDet = validateEmailQuality({
+      ...qualityInput,
+      subject: revised.subject,
+      body: revised.body,
+      kind,
+    });
+    return {
+      ...revised,
+      rationale: withKbLine(revised.rationale, []),
+      check: {
+        passed: secondDet.passed,
+        issues: secondDet.issues,
+        kb_items_used: [],
+        regenerated: true,
+      },
+    };
   } catch {
     return {
       ...draft,
-      subject: stripUnresolvedPlaceholders(draft.subject),
-      body: stripUnresolvedPlaceholders(draft.body),
-      rationale: withKbLine(draft.rationale, first.kb_items_used),
-      check: { ...first, passed: localIssues.length === 0 && first.passed, issues: combinedIssues, regenerated: false },
+      rationale: withKbLine(draft.rationale, []),
+      check: { passed: det.passed, issues: combinedIssues, kb_items_used: [], regenerated: false },
     };
   }
-  const recheck = await reviewDraft(campaign, knowledge, second, sendingTier, ownerId);
-  return {
-    ...second,
-    subject: stripUnresolvedPlaceholders(second.subject),
-    body: stripUnresolvedPlaceholders(second.body),
-    rationale: withKbLine(second.rationale, recheck.kb_items_used.length ? recheck.kb_items_used : first.kb_items_used),
-    check: { ...recheck, regenerated: true },
-  };
 }
 
 function withKbLine(rationale: string, items: string[]): string {
@@ -217,9 +322,14 @@ Website status: ${research.website_status}
 Awareness level: ${research.awareness_level || "(infer from facts)"}
 Recommended template ID: ${research.recommended_template_id || "(route via Module 3 Step B)"}
 Hook candidates: ${(research.personalized_hook_candidates ?? []).join(" | ") || "(none)"}
-Verified facts: ${research.verified_facts.map((f) => `${f.fact} [${f.source}]`).join(" | ") || "(none)"}
-Website observations: ${research.website_facts.join(" | ") || "(none)"}
-Findings: ${research.findings.map((f) => `[${f.severity}] ${f.area}: ${f.observation} (evidence: ${f.evidence})`).join(" | ") || "(none)"}
+  Verified facts: ${research.verified_facts.map((f) => `${f.fact} [${f.source}]`).join(" | ") || "(none)"}
+  Website observations: ${research.website_facts.join(" | ") || "(none)"}
+  Verified forensic audit proof (PRIORITY — use these concrete measured facts for first line instead of generic guesses): ${
+    research.audit_evidence?.length
+      ? research.audit_evidence.map((e) => `[${e.evidence_type}] ${e.issue} (Proof: ${e.proof})`).join(" | ")
+      : research.verified_site_issues?.join(" | ") || "(none)"
+  }
+  Findings: ${research.findings.map((f) => `[${f.severity}] ${f.area}: ${f.observation} (evidence: ${f.evidence})`).join(" | ") || "(none)"}
 Missing data (DO NOT GUESS): ${(research.missing_data ?? []).join(" | ") || "(none)"}
 Best opportunity: ${research.opportunities.map((o) => `${o.opportunity} (${o.service})`).join(" | ") || "(none)"}
 Recommended angle: ${research.recommended_angle}
@@ -302,18 +412,30 @@ Select the optimal Module 3 template (T1-T12) and write the Touch 1 email passin
     campaign,
     knowledge,
     sendingTier,
+    {
+      leadBusiness: lead.business,
+      leadContactName: lead.contact_name,
+      wordsToAvoid: extractWordsToAvoid(`${knowledge}\n${orchestrated.variables.USER_EXCLUSIONS}`),
+      includeOptOutFooter: settings.include_opt_out_footer === true,
+      identity: campaign.identity,
+    },
+    "initial",
     async (issues) => {
       const { data: revised } = await LLMGateway.completeJSON<ComposedEmail>({
         ownerId,
-        taskType: "balanced",
-        feature: "compose_initial",
+        taskType: "fast",
+        feature: "compose_initial_rewrite",
         systemPrompt: orchestrated.system,
         messages: [
           {
             role: "user",
-            content: `${user}\n\nYOUR PREVIOUS DRAFT FAILED THE 8-POINT QUALITY / KB CHECK:\n${issues
+            content: `${user}\n\nYOUR PREVIOUS DRAFT FAILED THE QUALITY GATE:\n${issues
               .map((issue) => `- ${issue}`)
-              .join("\n")}\n\nRewrite the email cleanly so every issue is fixed and ZERO {{...}} tags exist.`,
+              .join("\n")}\n\nRewrite the email cleanly (50-115 words, zero AI slop, ${
+              settings.include_opt_out_footer === true
+                ? "with brief opt-out line"
+                : "zero generic opt-out/unsubscribe footers"
+            }, zero {{...}} tags).`,
           },
         ],
         schema: SCHEMA,
@@ -387,18 +509,30 @@ This is Touch #${step} in the Module 3 Follow-Up Matrix. Write a shorter same-th
     campaign,
     knowledge,
     sendingTier,
+    {
+      leadBusiness: lead.business,
+      leadContactName: lead.contact_name,
+      wordsToAvoid: extractWordsToAvoid(`${knowledge}\n${orchestrated.variables.USER_EXCLUSIONS}`),
+      includeOptOutFooter: settings.include_opt_out_footer === true,
+      identity: campaign.identity,
+    },
+    "followup",
     async (issues) => {
       const { data: revised } = await LLMGateway.completeJSON<ComposedEmail>({
         ownerId,
-        taskType: "balanced",
-        feature: "compose_followup",
+        taskType: "fast",
+        feature: "compose_followup_rewrite",
         systemPrompt: orchestrated.system,
         messages: [
           {
             role: "user",
-            content: `${user}\n\nYOUR PREVIOUS DRAFT FAILED THE 8-POINT QUALITY / KB CHECK:\n${issues
+            content: `${user}\n\nYOUR PREVIOUS DRAFT FAILED THE QUALITY GATE:\n${issues
               .map((issue) => `- ${issue}`)
-              .join("\n")}\n\nRewrite the follow-up cleanly so every point is fixed.`,
+              .join("\n")}\n\nRewrite the follow-up cleanly so every point is fixed (${
+              settings.include_opt_out_footer === true
+                ? "include brief opt-out line"
+                : "omit generic opt-out/unsubscribe footers"
+            }).`,
           },
         ],
         schema: SCHEMA,

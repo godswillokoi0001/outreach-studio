@@ -517,6 +517,9 @@ export async function executeAgentTool(
         const saveToLeads = Boolean(args.save_to_leads);
         const campaignId = asStr(args.campaign_id) || null;
 
+        const allowPhoneOrSocialOnly = /\b(phone[- ]?only|social[- ]?only|call only|instagram only|dm only)\b/i.test(
+          focus,
+        );
         const contactableCandidates = (res.candidates ?? []).filter((c) => {
           const v = validateContactableLead({
             business: c.business,
@@ -526,7 +529,8 @@ export async function executeAgentTool(
             phone: c.contact?.phone,
             socials: c.contact?.socials,
             decisionMaker: c.contact?.decision_maker,
-            mxVerified: c.contact?.email_status !== "Not found",
+            mxVerified: c.contact?.email ? c.contact?.email_status !== "Not found" : undefined,
+            requireEmail: !allowPhoneOrSocialOnly,
           });
           return v.contactable;
         });

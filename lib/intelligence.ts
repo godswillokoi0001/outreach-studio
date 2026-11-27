@@ -422,15 +422,19 @@ export async function discoverProspectsServer(input: {
     return { candidates: [], notes: emptyNote, groundingUrls: [] };
   }
 
-  // Step 2: Deep $0 contact pipeline on non-directory / non-agency-portfolio candidates
+  // Step 2: Over-fetch & deep contact waterfall so strict email_required filtering still fills target count
   const filteredResults = searchRes.results.filter(
     (r) =>
       !(/\/(?:portfolio|case-studies?|our-work|work\/)/i.test(r.url)) &&
       (!isDirectoryUrl(r.url) || r.sourceProvider === "osm"),
   );
+  const inspectBudget = Math.min(12, Math.max(8, input.count * 2));
   const topProspectSources = (filteredResults.length > 0 ? filteredResults : searchRes.results).slice(
     0,
-    Math.min(8, Math.max(5, input.count)),
+    inspectBudget,
+  );
+  const allowPhoneOrSocialOnly = /\b(phone[- ]?only|social[- ]?only|call only|instagram only|dm only)\b/i.test(
+    input.focus || "",
   );
 
   const deepContacts = await Promise.all(
@@ -604,6 +608,7 @@ Return ONLY valid JSON with a "candidates" array and short "notes".`;
         socials: candidate.contact.socials,
         decisionMaker: candidate.contact.decision_maker,
         mxVerified: dc ? dc.mxVerified : true,
+        requireEmail: !allowPhoneOrSocialOnly,
       });
       if (!verdict.contactable) {
         skippedNoContact += 1;
@@ -616,19 +621,16 @@ Return ONLY valid JSON with a "candidates" array and short "notes".`;
     .slice(0, input.count)
     .map((entry) => entry.candidate);
 
-  const inspectedCount = deepContacts.filter((d) => d.inspectedSite?.reachable).length;
-  const skipNote =
-    skippedNoContact > 0
-      ? ` Skipped ${skippedNoContact} business(es) with no publicly verifiable contact details.`
-      : "";
+  const inspectedCount = Math.max(topProspectSources.length, deepContacts.filter((d) => d.inspectedSite?.reachable).length);
+  const funnelNote = `Inspected ${inspectedCount} business(es) -> Qualified ${enrichedCandidates.length} with verified contacts -> Skipped ${skippedNoContact} with no reachable contact info.`;
 
   const value = {
     candidates: enrichedCandidates,
     notes: `${
       typeof data.notes === "string" && data.notes.trim()
         ? data.notes.trim()
-        : `Sources queried: ${searchRes.providersSucceeded.join(", ")}. Inspected ${inspectedCount} live site(s).`
-    }${skipNote}`,
+        : `Sources queried: ${searchRes.providersSucceeded.join(", ")}.`
+    } ${funnelNote}`,
     groundingUrls,
   };
   discoveryCache.set(cacheKey, { at: Date.now(), value });

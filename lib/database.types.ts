@@ -27,6 +27,7 @@ type SettingsRow = {
   ai_base_url: string;
   ai_verified_at: string;
   ai_key_hint: string;
+  include_opt_out_footer?: boolean;
   created_at: string;
   updated_at: string;
 };

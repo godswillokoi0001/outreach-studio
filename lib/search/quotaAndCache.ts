@@ -2,7 +2,7 @@ import type { SearchProviderId, SearchResetCycle } from "@/lib/llm/types";
 import { SEARCH_PROVIDER_CATALOG, getSearchProviderMeta } from "@/lib/llm/types";
 import { supabaseServer } from "@/lib/supabase-server";
 
-export type CacheEntryKind = "search" | "site" | "pagespeed";
+export type CacheEntryKind = "search" | "site" | "pagespeed" | "contact";
 export type QuotaTrackedProviderId = SearchProviderId | "duckduckgo" | "osm";
 
 export interface SearchQuotaRecord {
@@ -21,7 +21,8 @@ export interface SearchQuotaRecord {
 const TTL_MS: Record<CacheEntryKind, number> = {
   search: 7 * 24 * 60 * 60_000, // 7 days
   site: 14 * 24 * 60 * 60_000, // 14 days
-  pagespeed: 24 * 60 * 60_000, // 24 hours
+  pagespeed: 7 * 24 * 60 * 60_000, // 7 days
+  contact: 30 * 24 * 60 * 60_000, // 30 days
 };
 
 // Fast in-memory L1 cache & quota mirrors (backed by Supabase tables when configured)

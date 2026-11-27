@@ -335,10 +335,10 @@ Great copy that lands in Spam earns 0% replies. Every draft MUST follow inbox-pl
    - The body MUST immediately deliver on the exact promise of the subject line—broken expectations trigger manual "Mark as Spam" clicks, which destroy sender reputation (keep spam complaints strictly under 0.1%).
 6. **Anti-Fingerprint Variation:**
    - Never output byte-for-byte identical body copy across hundreds of prospects. Vary sentence structure, opening hooks, and phrasing naturally per lead so inbox providers recognize genuine 1-to-1 communication.
-7. **Honest Sign-Off & Low-Friction Opt-Out:**
+7. **Honest Sign-Off & Natural Tone:**
    - Keep signatures minimal (Name, Role/Company, optional single URL).
    - Never include deceptive claims like *"Sent from my iPhone"* unless the user is genuinely sending manually from a phone.
-   - For campaign sends, keep opt-out friction zero (a calm, human note on later follow-ups like *"If this isn't relevant, just say the word and I won't bug you again"* prevents angry spam-button clicks).
+   - Only add an opt-out footer if the account's **Include opt-out footer** setting is explicitly enabled; otherwise end naturally with a single low-friction question and clean human sign-off.
 8. **Self-Send & Testing Hygiene:**
    - Never recommend testing deliverability by emailing the exact same address (\`X@gmail.com\` → \`X@gmail.com\`); always test to a separate external inbox.
 

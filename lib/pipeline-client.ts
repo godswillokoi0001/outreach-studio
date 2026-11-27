@@ -254,8 +254,8 @@ export async function runComposeBatch(
   const errors: string[] = [];
   let processed = 0;
 
-  for (let i = 0; i < batch.length; i++) {
-    const lead = batch[i];
+  const runnable: { lead: Lead; campaign: Campaign }[] = [];
+  for (const lead of batch) {
     if (lead.email_norm && suppressedSet.has(lead.email_norm.toLowerCase())) {
       await updateLeadFields(uid, lead.id, { status: "suppressed" });
       details.push(`${lead.email_norm} skipped (suppressed)`);
@@ -285,41 +285,54 @@ export async function runComposeBatch(
       }
       continue;
     }
-    try {
-      const { composed } = await authedPost<{ composed: ComposedEmail }>("/api/ai/compose", {
-        kind: "initial",
-        lead,
-        research: lead.research,
-        campaign: campaign.config,
-        settings,
-        knowledge,
-        model: settings.model,
-      });
-      const autoApprove = Boolean(campaign.config.auto_approve_initial && !campaign.config.require_approval);
-      const msgStatus: Message["status"] = autoApprove ? "approved" : "pending_approval";
-      await createMessage(uid, {
-        lead_id: lead.id,
-        campaign_id: campaign.id,
-        step: 1,
-        kind: "initial",
-        subject: composed.subject,
-        body: composed.body,
-        angle: composed.angle,
-        rationale: composed.rationale,
-        service: composed.service,
-        status: msgStatus,
-      });
-      await updateLeadFields(uid, lead.id, {
-        status: autoApprove ? "approved" : "email_generated",
-      });
-      await writeLeadEvent(uid, lead.id, "email_composed", { step: 1, status: msgStatus });
-      processed += 1;
-      details.push(`Drafted email for ${lead.business ?? lead.email ?? "Prospect"}`);
-      if (i < batch.length - 1) await sleep(900);
-    } catch (err) {
-      errors.push(`${lead.business ?? lead.email ?? lead.id}: ${errorMessage(err)}`);
-      if (isQuotaError(err)) break;
-    }
+    runnable.push({ lead, campaign });
+  }
+
+  // Concurrency-capped (2 max, 300ms stagger) so 5 drafts finish in <25s without flooding rate limits
+  for (let i = 0; i < runnable.length; i += 2) {
+    const chunk = runnable.slice(i, i + 2);
+    let quotaHit = false;
+    await Promise.all(
+      chunk.map(async ({ lead, campaign }, idx) => {
+        if (idx > 0) await sleep(300);
+        try {
+          const { composed } = await authedPost<{ composed: ComposedEmail }>("/api/ai/compose", {
+            kind: "initial",
+            lead,
+            research: lead.research,
+            campaign: campaign.config,
+            settings,
+            knowledge,
+            model: settings.model,
+          });
+          const autoApprove = Boolean(campaign.config.auto_approve_initial && !campaign.config.require_approval);
+          const msgStatus: Message["status"] = autoApprove ? "approved" : "pending_approval";
+          await createMessage(uid, {
+            lead_id: lead.id,
+            campaign_id: campaign.id,
+            step: 1,
+            kind: "initial",
+            subject: composed.subject,
+            body: composed.body,
+            angle: composed.angle,
+            rationale: composed.rationale,
+            service: composed.service,
+            status: msgStatus,
+          });
+          await updateLeadFields(uid, lead.id, {
+            status: autoApprove ? "approved" : "email_generated",
+          });
+          await writeLeadEvent(uid, lead.id, "email_composed", { step: 1, status: msgStatus });
+          processed += 1;
+          details.push(`Drafted email for ${lead.business ?? lead.email ?? "Prospect"}`);
+        } catch (err) {
+          errors.push(`${lead.business ?? lead.email ?? lead.id}: ${errorMessage(err)}`);
+          if (isQuotaError(err)) quotaHit = true;
+        }
+      }),
+    );
+    if (quotaHit) break;
+    if (i + 2 < runnable.length) await sleep(300);
   }
 
   if (processed > 0) {

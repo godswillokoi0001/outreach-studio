@@ -60,9 +60,15 @@ export interface AdapterCallConfig {
   baseUrl?: string | null;
 }
 
+export interface AdapterImage {
+  mimeType: string;
+  dataBase64: string;
+}
+
 export interface AdapterMessage {
   role: "system" | "user" | "assistant" | "tool";
   content: unknown;
+  images?: AdapterImage[];
   tool_call_id?: string;
   tool_calls?: unknown[];
 }
@@ -480,10 +486,25 @@ async function callGoogleAdapter(input: AdapterCallInput): Promise<AdapterCallOu
       ? input.agentContents
       : input.messages
           .filter((m) => m.role !== "system")
-          .map((m) => ({
-            role: m.role === "assistant" ? "model" : "user",
-            parts: [{ text: typeof m.content === "string" ? m.content : JSON.stringify(m.content) }],
-          }));
+          .map((m) => {
+            const msgParts: Record<string, unknown>[] = [
+              { text: typeof m.content === "string" ? m.content : JSON.stringify(m.content) },
+            ];
+            for (const img of m.images ?? []) {
+              if (img.dataBase64 && img.mimeType) {
+                msgParts.push({
+                  inlineData: {
+                    mimeType: img.mimeType,
+                    data: img.dataBase64,
+                  },
+                });
+              }
+            }
+            return {
+              role: m.role === "assistant" ? "model" : "user",
+              parts: msgParts,
+            };
+          });
 
   const genConfig: Record<string, unknown> = {};
   if (typeof input.temperature === "number") genConfig.temperature = input.temperature;
@@ -606,9 +627,24 @@ async function callOpenAICompatAdapter(
   } else {
     for (const m of input.messages) {
       if (m.role === "system") continue;
+      const textContent = typeof m.content === "string" ? m.content : JSON.stringify(m.content ?? "");
+      const contentPayload =
+        !isCloudflare && m.images && m.images.length > 0
+          ? [
+              { type: "text", text: textContent },
+              ...m.images
+                .filter((img) => img.dataBase64 && img.mimeType)
+                .map((img) => ({
+                  type: "image_url",
+                  image_url: { url: `data:${img.mimeType};base64,${img.dataBase64}` },
+                })),
+            ]
+          : isCloudflare && typeof m.content !== "string"
+            ? JSON.stringify(m.content ?? "")
+            : m.content;
       wireMessages.push({
         role: m.role,
-        content: isCloudflare && typeof m.content !== "string" ? JSON.stringify(m.content ?? "") : m.content,
+        content: contentPayload,
         ...(m.tool_call_id ? { tool_call_id: m.tool_call_id } : {}),
         ...(m.tool_calls ? { tool_calls: m.tool_calls } : {}),
       });
@@ -1033,7 +1069,7 @@ export async function fetchProviderCatalogModels(cfg: {
         isFreeTier: isFree,
       };
     })
-    .filter((m) => Boolean(m.id) && !nonChat.test(m.id));
+    .filter((m) => Boolean(m.id) && !nonChat.test(m.id) && !/nemotron-3-ultra-550b|550b/i.test(m.id));
 
   if (cfg.provider === "openrouter" && cfg.freeTierOnly) {
     const freeOnly = models.filter((m) => m.id.endsWith(":free"));

@@ -336,7 +336,20 @@ export async function loadUserContextServer(
     digestParts.push(overrides.knowledgeDigest.trim());
   } else {
     if (masterKnowledge.trim()) {
-      digestParts.push(`### Master Knowledge\n${masterKnowledge.trim()}`);
+      digestParts.push(`### Master Knowledge (Priority Voice & Rules)\n${masterKnowledge.trim()}`);
+    }
+    // Prioritize notes/sources explicitly containing Words to USE / AVOID or Sample Style Examples first
+    const priorityNoteRe = /\b(words to use|words to avoid|sample|style|voice|template|tone|directive|cta)\b/i;
+    const priorityNotes = notes.filter((n) => priorityNoteRe.test(`${n.title}\n${n.content}`));
+    const standardNotes = notes.filter((n) => !priorityNoteRe.test(`${n.title}\n${n.content}`));
+
+    if (priorityNotes.length > 0) {
+      digestParts.push(
+        `### Priority Voice Rules & Examples\n${priorityNotes
+          .slice(0, 8)
+          .map((n) => `- **${n.title}**: ${n.content.slice(0, 1400)}`)
+          .join("\n")}`,
+      );
     }
     if (sources.length > 0) {
       digestParts.push(
@@ -346,10 +359,10 @@ export async function loadUserContextServer(
           .join("\n")}`,
       );
     }
-    if (notes.length > 0) {
+    if (standardNotes.length > 0) {
       digestParts.push(
-        `### Additional Notes\n${notes
-          .slice(0, 16)
+        `### Additional Notes\n${standardNotes
+          .slice(0, 12)
           .map((n) => `- **${n.title}**: ${n.content.slice(0, 1000)}`)
           .join("\n")}`,
       );

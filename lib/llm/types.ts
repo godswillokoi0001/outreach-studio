@@ -18,8 +18,15 @@ export type SearchProviderId =
   | "jina"
   | "pagespeed"
   | "brave"
+  | "bytemine"
+  | "apollo"
   | "hunter"
-  | "cufinder";
+  | "cufinder"
+  | "snov"
+  | "tomba"
+  | "getprospect"
+  | "cloudflare_browser"
+  | "screenshotone";
 
 export type SearchResetCycle = "monthly" | "daily" | "one_time" | "keyless";
 
@@ -33,7 +40,7 @@ export interface SearchProviderMeta {
   defaultRpdLimit: number;
   defaultQuotaLimit: number;
   resetCycle: SearchResetCycle;
-  kind: "search" | "enrichment" | "pagespeed";
+  kind: "search" | "enrichment" | "pagespeed" | "screenshot";
 }
 
 export const SEARCH_PROVIDER_CATALOG: SearchProviderMeta[] = [
@@ -122,10 +129,70 @@ export const SEARCH_PROVIDER_CATALOG: SearchProviderMeta[] = [
     kind: "pagespeed",
   },
   {
+    id: "bytemine",
+    label: "Bytemine (100 free/mo)",
+    blurb: "B2B decision-maker emails & direct dials (100 free monthly credits); runs only if $0 crawl finds nothing.",
+    docsUrl: "https://bytemine.ai/",
+    keyPrefixes: [],
+    defaultRpmLimit: 20,
+    defaultRpdLimit: 100,
+    defaultQuotaLimit: 100,
+    resetCycle: "monthly",
+    kind: "enrichment",
+  },
+  {
+    id: "apollo",
+    label: "Apollo.io (75 free/mo)",
+    blurb: "Decision-maker name, title, verified email & LinkedIn (75 free monthly credits); Layer 2 waterfall.",
+    docsUrl: "https://developer.apollo.io/",
+    keyPrefixes: [],
+    defaultRpmLimit: 20,
+    defaultRpdLimit: 75,
+    defaultQuotaLimit: 75,
+    resetCycle: "monthly",
+    kind: "enrichment",
+  },
+  {
     id: "hunter",
-    label: "Hunter.io (Optional Contact Hook)",
-    blurb: "Optional domain email finder (25 free monthly searches); $0 multi-page crawler always runs first.",
+    label: "Hunter.io (50 free/mo)",
+    blurb: "Domain email finder & verification (50 free monthly credits); $0 sitemap + Exa People run first.",
     docsUrl: "https://hunter.io/api",
+    keyPrefixes: [],
+    defaultRpmLimit: 15,
+    defaultRpdLimit: 50,
+    defaultQuotaLimit: 50,
+    resetCycle: "monthly",
+    kind: "enrichment",
+  },
+  {
+    id: "cufinder",
+    label: "CUFinder (50 free/mo)",
+    blurb: "Domain email & company contact enricher (50 free monthly credits); $0 sitemap crawler runs first.",
+    docsUrl: "https://dashboard.cufinder.io/",
+    keyPrefixes: [],
+    defaultRpmLimit: 15,
+    defaultRpdLimit: 50,
+    defaultQuotaLimit: 50,
+    resetCycle: "monthly",
+    kind: "enrichment",
+  },
+  {
+    id: "snov",
+    label: "Snov.io (50 free/mo)",
+    blurb: "Domain & decision-maker email lookup (enter clientId:clientSecret; 50 free monthly credits).",
+    docsUrl: "https://snov.io/api",
+    keyPrefixes: [],
+    defaultRpmLimit: 15,
+    defaultRpdLimit: 50,
+    defaultQuotaLimit: 50,
+    resetCycle: "monthly",
+    kind: "enrichment",
+  },
+  {
+    id: "tomba",
+    label: "Tomba (25 free/mo)",
+    blurb: "Verified domain emails & roles (enter apiKey:secretKey; 25 free monthly searches).",
+    docsUrl: "https://tomba.io/api",
     keyPrefixes: [],
     defaultRpmLimit: 15,
     defaultRpdLimit: 25,
@@ -134,16 +201,40 @@ export const SEARCH_PROVIDER_CATALOG: SearchProviderMeta[] = [
     kind: "enrichment",
   },
   {
-    id: "cufinder",
-    label: "CUFinder (Optional Contact Hook)",
-    blurb: "Optional domain email & company contact enricher (50 free credits); $0 sitemap crawler runs first.",
-    docsUrl: "https://dashboard.cufinder.io/",
+    id: "getprospect",
+    label: "GetProspect (50 free/mo)",
+    blurb: "Optional contact email finder (50 free monthly credits); runs only when Layer 1 misses.",
+    docsUrl: "https://getprospect.com/",
     keyPrefixes: [],
     defaultRpmLimit: 15,
     defaultRpdLimit: 50,
     defaultQuotaLimit: 50,
     resetCycle: "monthly",
     kind: "enrichment",
+  },
+  {
+    id: "cloudflare_browser",
+    label: "Cloudflare Browser Rendering (Free)",
+    blurb: "Headless Chromium mobile screenshots & rendered DOM (enter accountId:apiToken; 10 free min/day).",
+    docsUrl: "https://developers.cloudflare.com/browser-rendering/",
+    keyPrefixes: [],
+    defaultRpmLimit: 15,
+    defaultRpdLimit: 200,
+    defaultQuotaLimit: 200,
+    resetCycle: "daily",
+    kind: "screenshot",
+  },
+  {
+    id: "screenshotone",
+    label: "ScreenshotOne (100 free/mo)",
+    blurb: "Optional clean mobile webpage screenshot fallback (100 free/mo) when PageSpeed omits screenshot.",
+    docsUrl: "https://screenshotone.com/",
+    keyPrefixes: [],
+    defaultRpmLimit: 20,
+    defaultRpdLimit: 100,
+    defaultQuotaLimit: 100,
+    resetCycle: "monthly",
+    kind: "screenshot",
   },
 ];
 
@@ -155,8 +246,15 @@ export const ALL_SEARCH_PROVIDER_IDS: SearchProviderId[] = [
   "brave",
   "jina",
   "pagespeed",
+  "bytemine",
+  "apollo",
   "hunter",
   "cufinder",
+  "snov",
+  "tomba",
+  "getprospect",
+  "cloudflare_browser",
+  "screenshotone",
 ];
 
 export function isSearchProviderId(raw: unknown): raw is SearchProviderId {

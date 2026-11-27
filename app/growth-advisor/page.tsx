@@ -281,7 +281,7 @@ function GrowthAdvisorContent() {
         {report && (
           <Card
             title="Strategic Growth Thesis"
-            sub={`Researched ${new Date(report.generatedAt).toLocaleString()} · Automatically updates when your profile or results change`}
+            sub={`Researched ${new Date(report.generatedAt).toLocaleString()} · Powered by your Knowledge Base, live Supabase pipeline metrics & 2026 market search`}
             actions={
               <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
                 <NarratorControl
@@ -301,7 +301,7 @@ function GrowthAdvisorContent() {
                   <Globe size={12} />
                   Live web sources:
                 </span>
-                {report.sources.slice(0, 5).map((src, i) => (
+                {report.sources.slice(0, 6).map((src, i) => (
                   <a
                     key={i}
                     href={src.uri}
@@ -327,6 +327,148 @@ function GrowthAdvisorContent() {
                 ))}
               </div>
             )}
+          </Card>
+        )}
+
+        {/* 1. Live Market Pulse + 2. Candid Pipeline Diagnosis */}
+        {report && (report.marketPulse?.length || report.pipelineDiagnosis) && (
+          <div className="grid grid-2" style={{ gap: 14 }}>
+            {report.marketPulse && report.marketPulse.length > 0 && (
+              <Card
+                title="Live Market Pulse (Trending Now in Your Field)"
+                sub="Verified 2026 signals shaping buyer urgency right now"
+              >
+                <div className="stack" style={{ gap: 10 }}>
+                  {report.marketPulse.map((item, idx) => (
+                    <div
+                      key={idx}
+                      style={{
+                        padding: "9px 11px",
+                        borderRadius: 8,
+                        border: "1px solid var(--line-soft)",
+                        background: "var(--surface-2)",
+                      }}
+                    >
+                      <div className="strong" style={{ fontSize: 13, marginBottom: 4 }}>
+                        {item.trend}
+                      </div>
+                      <p className="tiny muted" style={{ margin: "0 0 6px", lineHeight: 1.45 }}>
+                        {item.whyNow}
+                      </p>
+                      {item.sourceUrl && (
+                        <a
+                          href={item.sourceUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="tiny row"
+                          style={{ gap: 4, color: "var(--teal-deep)" }}
+                        >
+                          {item.sourceTitle || item.sourceUrl} <ExternalLink size={10} />
+                        </a>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </Card>
+            )}
+
+            {report.pipelineDiagnosis && (
+              <Card
+                title="Candid Pipeline & Positioning Diagnosis"
+                sub="Grounded in your live workspace leads, replies & Knowledge Base"
+                actions={
+                  report.pipelineDiagnosis.untouchedLeadsCount > 0 ? (
+                    <Badge tone="warn">
+                      {report.pipelineDiagnosis.untouchedLeadsCount} untouched lead
+                      {report.pipelineDiagnosis.untouchedLeadsCount === 1 ? "" : "s"}
+                    </Badge>
+                  ) : undefined
+                }
+              >
+                <div className="stack" style={{ gap: 10 }}>
+                  <p style={{ margin: 0, fontSize: 13.2, lineHeight: 1.55 }}>{report.pipelineDiagnosis.summary}</p>
+                  {report.pipelineDiagnosis.strengths.length > 0 && (
+                    <div>
+                      <div className="label" style={{ marginBottom: 4 }}>What works in your positioning</div>
+                      <ul className="tiny" style={{ paddingLeft: 16, margin: 0 }}>
+                        {report.pipelineDiagnosis.strengths.map((s, i) => (
+                          <li key={i}>{s}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                  {report.pipelineDiagnosis.bottlenecks.length > 0 && (
+                    <div>
+                      <div className="label" style={{ marginBottom: 4 }}>Honest bottlenecks to fix</div>
+                      <ul className="tiny muted" style={{ paddingLeft: 16, margin: 0 }}>
+                        {report.pipelineDiagnosis.bottlenecks.map((b, i) => (
+                          <li key={i}>{b}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                  {report.pipelineDiagnosis.quickWinAction && (
+                    <Banner tone="info">
+                      <strong>Fastest win right now:</strong> {report.pipelineDiagnosis.quickWinAction}
+                    </Banner>
+                  )}
+                </div>
+              </Card>
+            )}
+          </div>
+        )}
+
+        {/* 3. Top 3 Ranked Growth Plays */}
+        {report?.topPlays && report.topPlays.length > 0 && (
+          <Card
+            title="Top 3 Ranked Growth Plays"
+            sub="Micro-niche focus, wedge offers tailored to your Knowledge Base, and 1-click campaign execution"
+          >
+            <div className="grid grid-3" style={{ gap: 12 }}>
+              {report.topPlays.map((play) => {
+                const matchedRec =
+                  report.recommendations.find((r) => r.id === play.linkedRecommendationId) ??
+                  report.recommendations[Math.max(0, play.rank - 1)] ??
+                  null;
+                return (
+                  <div
+                    key={play.rank}
+                    className="stack"
+                    style={{
+                      gap: 8,
+                      padding: 12,
+                      borderRadius: 10,
+                      border: "1px solid var(--line)",
+                      background: "var(--surface-2)",
+                      justifyContent: "space-between",
+                    }}
+                  >
+                    <div className="stack" style={{ gap: 6 }}>
+                      <div className="row" style={{ justifyContent: "space-between", gap: 6 }}>
+                        <Badge tone="ok">Play #{play.rank}</Badge>
+                        <span className="tiny muted">{play.realisticWeeklyTarget}</span>
+                      </div>
+                      <div className="strong" style={{ fontSize: 13.6 }}>{play.title}</div>
+                      <div className="tiny">
+                        <span className="muted">Target:</span> <strong>{play.microNiche}</strong> · {play.geoFocus}
+                      </div>
+                      <div className="tiny muted"><strong>Why now:</strong> {play.whyNow}</div>
+                      <div className="tiny"><strong>Wedge offer:</strong> {play.wedgeOffer}</div>
+                      <div className="tiny muted"><strong>Hook:</strong> {play.openingHook}</div>
+                      <div className="tiny muted"><strong>Channels + Referral:</strong> {play.channelSequence} {play.referralLoop ? `· ${play.referralLoop}` : ""}</div>
+                    </div>
+                    <button
+                      type="button"
+                      className="btn btn-primary btn-sm"
+                      onClick={() => openExecute(matchedRec)}
+                    >
+                      <Play size={12} />
+                      Launch Campaign From This Play
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
           </Card>
         )}
 

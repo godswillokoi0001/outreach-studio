@@ -21,7 +21,7 @@ let activeRunner: string | null = null;
 function jobStorageKey(uid: string): string {
   return `os:outreach-batch-job:${uid || "anon"}`;
 }
-const MAX_STALLS = 24;
+const MAX_STALLS = 2;
 const RESUME_WINDOW_MS = 45 * 60 * 1000;
 
 interface StoredJob {
@@ -195,15 +195,13 @@ export function BatchRunner({
           result.processed === 0 && result.errors.length > 0 && !result.waitSeconds;
 
         if (stalled && stallCount.current < MAX_STALLS) {
-          // The provider or the network hiccuped. Pause, say so, and try the
-          // same batch again instead of ending the run.
+          // Server-side LLMGateway already failed over across healthy keys.
+          // Wait at most 2-4s once or twice instead of stalling the UI for minutes.
           stallCount.current += 1;
-          // 8s, 16s, 32s … up to 5 minutes between rounds, so 24 rounds cover
-          // roughly an hour and a half of provider trouble without giving up.
-          const waitSec = Math.min(300, 8 * 2 ** (stallCount.current - 1));
+          const waitSec = Math.min(4, stallCount.current * 2);
           setError(null);
           handle.update({
-            detail: `Service busy — retrying in ${waitSec}s (attempt ${stallCount.current}/${MAX_STALLS})…`,
+            detail: `Retrying briefly in ${waitSec}s (attempt ${stallCount.current}/${MAX_STALLS})…`,
             estimatedMs: Date.now() - startedAt + waitSec * 1000 + 4_000,
           });
           await new Promise<void>((resolve) => setTimeout(resolve, waitSec * 1000));
