@@ -1500,6 +1500,11 @@
 }
 
 @media (max-width: 760px) {
+  /* On phones the brand aside would push the sign-in action below the fold;
+     the top bar already carries the logo, so the form leads. */
+  .auth-aside {
+    display: none;
+  }
   .site-nav {
     padding: 12px 18px 0;
     gap: 12px;

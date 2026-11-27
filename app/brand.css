@@ -269,9 +269,14 @@ tr.clickable:hover td { background: #f4fbfb; }
     linear-gradient(155deg, #081625 0%, #0b2033 55%, #0d2c3f 100%);
 }
 .auth-aside h2 { font-weight: 700; }
-.auth-card { border-radius: 18px; background: var(--bg); color: var(--ink); }
+.auth-card { border-radius: 18px; background: var(--surface); color: var(--ink); }
+.auth-panel { background: var(--surface); }
 .auth-mode-thumb { background: #081625; }
 .auth-google { border-color: var(--line); color: var(--ink); }
+/* The Google button ships a white skin in globals.css; route it through the
+   surface token so it follows the theme instead of glowing white in dark. */
+.auth-google.gsi-material-button { background-color: var(--surface); }
+.auth-google.gsi-material-button:hover:not(:disabled) { background-color: var(--surface-2); }
 
 /* ---------- footer ------------------------------------------------------- */
 .landing-footer { border-top: 1px solid var(--line); }

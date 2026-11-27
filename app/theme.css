@@ -45,6 +45,14 @@
   --info: #25539a;
   --info-soft: #eaf0fa;
 
+  /* Aliases used by feature screens; kept here so no view invents its own
+     fallback colour that would ignore the theme. */
+  --surface-3: #ffffff;
+  --canvas: var(--bg);
+  --surface-sunken: #eef2f7;
+  --line-active: var(--teal-deep);
+  --danger: var(--bad);
+
   /* Shape */
   --radius: 12px;
   --radius-sm: 8px;
@@ -261,6 +269,78 @@ a:hover {
 .nav-link.active .nav-icon {
   color: var(--teal);
 }
+/* Nav links are anchors in the workspace and buttons in the admin console;
+   both must look identical. */
+button.nav-link {
+  width: 100%;
+  text-align: left;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+}
+
+/* Touch: every control gets a 44px hit area without changing desktop density. */
+@media (pointer: coarse) {
+  .btn,
+  .theme-toggle-btn,
+  .sidebar-toggle,
+  .sidebar-close,
+  .topbar-burger {
+    min-height: 44px;
+  }
+  .btn-sm {
+    min-height: 38px;
+  }
+  a.nav-link {
+    min-height: 44px;
+  }
+}
+
+/* Missing route ---------------------------------------------------------- */
+.not-found {
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  padding: 22px clamp(18px, 5vw, 48px) 48px;
+}
+.not-found-top {
+  width: 100%;
+  max-width: 1160px;
+  margin: 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 18px;
+  border-bottom: 1px solid var(--line);
+}
+.not-found-brand {
+  display: inline-flex;
+  align-items: center;
+}
+.not-found-body {
+  width: 100%;
+  max-width: 620px;
+  margin: auto;
+  padding: 48px 0;
+}
+.not-found-body .page-title {
+  font-size: clamp(26px, 4vw, 34px);
+}
+
+.sidebar-foot {
+  padding: 12px 14px;
+  border-top: 1px solid var(--sidebar-line);
+}
+.sidebar-foot .tiny {
+  color: #c3ccda;
+  word-break: break-all;
+}
+.sidebar-signout {
+  color: #e5e7eb;
+}
+
 .nav-pill {
   display: none;
 }
@@ -618,6 +698,48 @@ a:hover {
   font-weight: 600;
   color: var(--ink-2);
   letter-spacing: -0.005em;
+}
+
+/* Admin/forms label written as a block above a control. */
+.field-label {
+  display: block;
+  font-size: 11.8px;
+  font-weight: 600;
+  color: var(--ink-2);
+  letter-spacing: -0.005em;
+  margin-bottom: 5px;
+}
+
+.row-between {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.agent-history-body {
+  min-width: 0;
+}
+
+/* Ordered setup instructions inside error and integration banners. */
+.setup-steps {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 5px;
+  font-size: 11.9px;
+  line-height: 1.5;
+  color: var(--ink-2);
+}
+.setup-steps code {
+  font-family: var(--mono);
+  font-size: 11px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  padding: 0 4px;
+  word-break: break-all;
 }
 .hint {
   font-size: 11.5px;

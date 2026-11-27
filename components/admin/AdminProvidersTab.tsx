@@ -202,7 +202,7 @@ export function AdminProvidersTab({
                       )}
                     </div>
                     {prov.lastTestError && (
-                      <div className="tiny" style={{ color: "#b91c1c", marginTop: 2 }}>
+                      <div className="tiny" style={{ color: "var(--bad)", marginTop: 2 }}>
                         {prov.lastTestError}
                       </div>
                     )}
@@ -278,7 +278,7 @@ export function AdminProvidersTab({
                       <button
                         type="button"
                         className="btn btn-sm btn-ghost"
-                        style={{ color: "#b91c1c" }}
+                        style={{ color: "var(--bad)" }}
                         onClick={async () => {
                           const ok = await confirmDialog({
                             title: `Delete platform ${prov.label} key?`,

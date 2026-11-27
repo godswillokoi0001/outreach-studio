@@ -98,8 +98,8 @@ function ContactRow({
             status === "Verified"
               ? "var(--teal-deep, #15803d)"
               : status === "Unverified"
-                ? "#b45309"
-                : "var(--muted, #64748b)",
+                ? "var(--warn)"
+                : "var(--muted)",
         }}
       >
         {status}
@@ -255,7 +255,7 @@ function ProspectCard({
                         fontSize: 9.5,
                         fontWeight: 700,
                         textTransform: "uppercase",
-                        color: c.status === "met" ? "var(--teal-deep, #15803d)" : c.status === "not_met" ? "#dc2626" : "#b45309",
+                        color: c.status === "met" ? "var(--ok)" : c.status === "not_met" ? "var(--bad)" : "var(--warn)",
                       }}
                     >
                       {c.status.replace("_", " ")}
@@ -269,7 +269,7 @@ function ProspectCard({
 
           {review.weaknesses_and_risks && review.weaknesses_and_risks.length > 0 && (
             <div style={{ marginTop: 6, fontSize: 11, color: "var(--ink-2)" }}>
-              <span className="strong" style={{ color: "#b91c1c" }}>Risks / Weaknesses: </span>
+              <span className="strong" style={{ color: "var(--bad)" }}>Risks / Weaknesses: </span>
               {review.weaknesses_and_risks.join("; ")}
             </div>
           )}

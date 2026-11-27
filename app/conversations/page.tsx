@@ -575,7 +575,7 @@ export default function ConversationsPage() {
                       <div className="label" style={{ marginBottom: 4 }}>
                         Suggested reply
                       </div>
-                      <pre className="pre" style={{ background: "#fff" }}>
+                      <pre className="pre" style={{ background: "var(--surface)" }}>
                         {reply.draft_reply}
                       </pre>
                       <div className="row" style={{ marginTop: 6 }}>

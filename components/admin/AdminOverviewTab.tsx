@@ -211,7 +211,7 @@ export function AdminOverviewTab({
                       <div className="row" style={{ gap: 8 }}>
                         <CheckCircle2
                           size={13}
-                          style={{ color: p.status === "healthy" ? "var(--teal-deep)" : "#d97706" }}
+                          style={{ color: p.status === "healthy" ? "var(--ok)" : "var(--warn)" }}
                         />
                         <span className="strong">{p.label}</span>
                       </div>

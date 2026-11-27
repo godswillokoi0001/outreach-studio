@@ -1,6 +1,6 @@
 "use client";
 
-import type { ReactNode } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { CountUp } from "./motion/CountUp";
 
@@ -98,6 +98,60 @@ export function Modal({
   children: ReactNode;
   large?: boolean;
 }) {
+  const dialogRef = useRef<HTMLDivElement | null>(null);
+  const restoreRef = useRef<HTMLElement | null>(null);
+  // Callers usually pass an inline closure; keep the latest one without
+  // re-running the focus setup on every parent render.
+  const closeRef = useRef(onClose);
+  useEffect(() => {
+    closeRef.current = onClose;
+  });
+
+  // Keyboard contract for every dialog in the app: Escape closes, Tab stays
+  // inside, and focus returns to the control that opened it.
+  useEffect(() => {
+    if (!open) return undefined;
+    restoreRef.current = document.activeElement as HTMLElement | null;
+    const node = dialogRef.current;
+    const selector =
+      'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
+    const focusables = () => Array.from(node?.querySelectorAll<HTMLElement>(selector) ?? []);
+    (focusables()[0] ?? node)?.focus();
+
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.stopPropagation();
+        closeRef.current();
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const items = focusables();
+      if (items.length === 0) {
+        event.preventDefault();
+        return;
+      }
+      const first = items[0];
+      const last = items[items.length - 1];
+      const active = document.activeElement;
+      if (event.shiftKey && (active === first || !node?.contains(active))) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && active === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener("keydown", onKey, true);
+    const overflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+
+    return () => {
+      document.removeEventListener("keydown", onKey, true);
+      document.body.style.overflow = overflow;
+      restoreRef.current?.focus?.();
+    };
+  }, [open]);
+
   return (
     <AnimatePresence>
       {open && (
@@ -113,9 +167,11 @@ export function Modal({
           <motion.div
             className={`modal${large ? " modal-lg" : ""}`}
             onClick={(event) => event.stopPropagation()}
+            ref={dialogRef}
             role="dialog"
             aria-modal="true"
             aria-label={title}
+            tabIndex={-1}
             initial={{ opacity: 0, y: 18, scale: 0.97 }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: 12, scale: 0.98 }}

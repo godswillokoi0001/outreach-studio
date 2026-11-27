@@ -32,6 +32,7 @@ export function ThemeToggle({ compact = false }: { compact?: boolean }) {
   const choice = useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
   const [open, setOpen] = useState(false);
   const wrapRef = useRef<HTMLDivElement | null>(null);
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
 
   // Derived, not stored: the media-query listener below notifies the store,
   // which re-renders this component with the new value.
@@ -58,8 +59,30 @@ export function ThemeToggle({ compact = false }: { compact?: boolean }) {
     const onDown = (event: MouseEvent) => {
       if (!wrapRef.current?.contains(event.target as Node)) setOpen(false);
     };
+    const items = () =>
+      Array.from(wrapRef.current?.querySelectorAll<HTMLElement>('[role="menuitemradio"]') ?? []);
+    items()[0]?.focus();
+
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setOpen(false);
+      if (event.key === "Escape") {
+        setOpen(false);
+        triggerRef.current?.focus();
+        return;
+      }
+      if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
+      const list = items();
+      if (list.length === 0) return;
+      event.preventDefault();
+      const index = list.indexOf(document.activeElement as HTMLElement);
+      const next =
+        event.key === "Home"
+          ? 0
+          : event.key === "End"
+            ? list.length - 1
+            : event.key === "ArrowDown"
+              ? (index + 1) % list.length
+              : (index - 1 + list.length) % list.length;
+      list[next].focus();
     };
     document.addEventListener("mousedown", onDown);
     document.addEventListener("keydown", onKey);
@@ -73,6 +96,7 @@ export function ThemeToggle({ compact = false }: { compact?: boolean }) {
     applyTheme(next);
     notify();
     setOpen(false);
+    triggerRef.current?.focus();
   };
 
   const Icon = ICONS[choice];
@@ -80,6 +104,7 @@ export function ThemeToggle({ compact = false }: { compact?: boolean }) {
   return (
     <div className="theme-toggle" ref={wrapRef}>
       <button
+        ref={triggerRef}
         type="button"
         className="theme-toggle-btn"
         aria-haspopup="menu"

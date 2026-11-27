@@ -38,6 +38,8 @@ html[data-theme="dark"] {
   --bad-soft: rgba(244, 144, 138, 0.14);
   --info: #93bdf0;
   --info-soft: rgba(147, 189, 240, 0.14);
+  --surface-3: #132940;
+  --surface-sunken: #0a1929;
 
   --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 18px 44px -34px rgba(0, 0, 0, 0.9);
   --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.35);
@@ -362,6 +364,35 @@ html[data-theme="dark"] .auth-card {
   border-color: var(--line);
   color: var(--ink);
 }
+/* The sign-in panel and its mode switch are white in the light layout; without
+   these the panel keeps a white sheet under light-on-dark text. */
+html[data-theme="dark"] .auth-panel {
+  background: var(--surface);
+  color: var(--ink);
+}
+html[data-theme="dark"] .auth-mode {
+  background: var(--surface-2);
+  border-color: var(--line);
+}
+html[data-theme="dark"] .auth-mode-thumb {
+  background: var(--surface-3);
+  border-color: var(--line);
+  box-shadow: var(--shadow-sm);
+}
+html[data-theme="dark"] .auth-mode button {
+  color: var(--muted);
+}
+html[data-theme="dark"] .auth-mode button.active {
+  color: var(--ink);
+}
+html[data-theme="dark"] .auth-google.gsi-material-button {
+  background-color: var(--surface-2);
+  border-color: var(--line);
+  color: var(--ink);
+}
+html[data-theme="dark"] .auth-google.gsi-material-button:hover:not(:disabled) {
+  background-color: var(--surface-3);
+}
 html[data-theme="dark"] .legal-page {
   background: var(--bg);
   color: var(--ink);
@@ -514,4 +545,72 @@ html[data-theme="dark"] .pv-pill {
 .theme-menu-item em {
   margin-left: 5px;
   margin-right: auto;
+}
+
+/* ---------- campaign workspace -------------------------------------------
+   These surfaces predate the token layer and paint light hovers and stripes.
+   Re-declared here so the campaign list, next-step card and prospect rows do
+   not turn white inside a dark page. */
+
+html[data-theme="dark"] .detail-card,
+html[data-theme="dark"] .pick-list,
+html[data-theme="dark"] .kebab-menu,
+html[data-theme="dark"] .mini-rows,
+html[data-theme="dark"] .mini-rows li,
+html[data-theme="dark"] .camp-row {
+  background: var(--surface);
+  border-color: var(--line);
+}
+
+html[data-theme="dark"] .camp-row:hover,
+html[data-theme="dark"] .pick-row:hover,
+html[data-theme="dark"] .mini-action:hover,
+html[data-theme="dark"] .setup-step:hover {
+  background: var(--surface-2);
+  border-color: #27425c;
+}
+
+html[data-theme="dark"] .camp-row[data-active="true"] {
+  background: var(--surface-2);
+  border-color: rgba(32, 204, 200, 0.38);
+  box-shadow: inset 0 0 0 1px rgba(32, 204, 200, 0.08);
+}
+
+html[data-theme="dark"] .mini-rows li:nth-child(even) {
+  background: var(--surface-2);
+}
+
+html[data-theme="dark"] .camp-row-bar,
+html[data-theme="dark"] .pipe-bar {
+  background: var(--surface-3);
+}
+
+html[data-theme="dark"] .next-card {
+  background: var(--surface-2);
+  border-color: rgba(32, 204, 200, 0.24);
+}
+
+html[data-theme="dark"] .pick-row[data-checked="true"] {
+  background: rgba(32, 204, 200, 0.12);
+}
+
+html[data-theme="dark"] .setup-step {
+  background: var(--surface-2);
+  border-color: var(--line);
+}
+
+html[data-theme="dark"] .funnel-track {
+  background: var(--surface-2);
+  border-color: var(--line);
+}
+
+html[data-theme="dark"] .funnel-fill,
+html[data-theme="dark"] .spark-bar {
+  background: linear-gradient(180deg, rgba(32, 204, 200, 0.85), rgba(32, 204, 200, 0.35));
+}
+
+html[data-theme="dark"] .next-side .btn {
+  background: var(--surface-3);
+  border-color: var(--line);
+  color: var(--ink);
 }

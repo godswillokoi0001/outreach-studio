@@ -20,6 +20,7 @@ import {
 import { clearWorkspaceToken, writeWorkspaceToken } from "@/lib/workspace-token";
 import { invalidateDataCache } from "@/lib/db-client";
 import { clearAllAccountClientData, syncActiveOwnerSessionMarker } from "@/lib/client-cleanup";
+import { isWorkspaceRoute } from "@/lib/routes";
 import { BrandLoader } from "./BrandLoader";
 import { PreAuth } from "./PreAuth";
 import { Shell } from "./Shell";
@@ -114,6 +115,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const isPublicLegalPage = pathname === "/privacy-policy" || pathname === "/terms";
   const isAdminRoute = pathname === "/admin" || pathname.startsWith("/admin/");
+  // A mistyped address is not a sign-in prompt: let the 404 page render. The
+  // marketing landing replaces every other signed-out route.
+  const isUnknownRoute = !isWorkspaceRoute(pathname) && !pathname.startsWith("/auth");
   const [user, setUser] = useState<AppUser | null>(null);
   const [workspaceReady, setWorkspaceReady] = useState(false);
   const [workspaceToken, setWorkspaceToken] = useState<string | null>(null);
@@ -267,7 +271,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setWorkspaceIssue(null);
   };
 
-  if (isPublicLegalPage || isAdminRoute) return <>{children}</>;
+  if (isPublicLegalPage || isAdminRoute || isUnknownRoute) return <>{children}</>;
 
   if (loading) {
     return <BrandLoader fullScreen />;

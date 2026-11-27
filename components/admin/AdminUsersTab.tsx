@@ -600,7 +600,7 @@ export function AdminUsersTab({
                       <button
                         type="button"
                         className="btn btn-sm btn-ghost"
-                        style={{ color: "#b91c1c" }}
+                        style={{ color: "var(--bad)" }}
                         onClick={() => void handleDeleteUser(detail.user.ownerId, detail.user.email)}
                       >
                         <Trash2 size={12} /> Delete user

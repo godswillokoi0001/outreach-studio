@@ -10,15 +10,14 @@ import {
   LogOut,
   Megaphone,
   Menu,
-  Moon,
   Shield,
   Sliders,
-  Sun,
   Users,
   X,
 } from "lucide-react";
 import { BrandLoader } from "@/components/BrandLoader";
 import { BrandLockup } from "@/components/BrandMark";
+import { ThemeToggle } from "@/components/ThemeToggle";
 import { Badge } from "@/components/ui";
 import { AdminReauthModal } from "@/components/admin/Admin2faGate";
 import { AdminAdvancedTab } from "@/components/admin/AdminAdvancedTab";
@@ -53,38 +52,11 @@ export default function AdminPage() {
 
   const [section, setSection] = useState<AdminSection>("overview");
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
-  const [theme, setTheme] = useState<"light" | "dark">("light");
   const [reauthModal, setReauthModal] = useState<{
     open: boolean;
     label: string;
     pendingFn: ((token: string) => Promise<void>) | null;
   }>({ open: false, label: "", pendingFn: null });
-
-  useEffect(() => {
-    const t = window.setTimeout(() => {
-      try {
-        const saved = window.localStorage.getItem("knowrevo:theme");
-        if (saved === "dark" || saved === "light") {
-          setTheme(saved);
-          document.documentElement.dataset.theme = saved;
-        }
-      } catch {
-        /* ignore */
-      }
-    }, 0);
-    return () => window.clearTimeout(t);
-  }, []);
-
-  const toggleTheme = () => {
-    const next = theme === "dark" ? "light" : "dark";
-    setTheme(next);
-    document.documentElement.dataset.theme = next;
-    try {
-      window.localStorage.setItem("knowrevo:theme", next);
-    } catch {
-      /* ignore */
-    }
-  };
 
   const checkSession = useCallback(async () => {
     setChecking(true);
@@ -170,58 +142,50 @@ export default function AdminPage() {
 
   return (
     <div className="app">
-      {mobileNavOpen && (
-        <div className="sidebar-backdrop" onClick={() => setMobileNavOpen(false)} />
-      )}
-
       <aside className={`sidebar ${mobileNavOpen ? "open" : ""}`}>
         <div className="brand" style={{ justifyContent: "space-between" }}>
           <BrandLockup tone="dark" subtitle="Admin Console" />
           <button
             type="button"
-            className="btn btn-ghost btn-sm mobile-close"
+            className="sidebar-close"
             onClick={() => setMobileNavOpen(false)}
             aria-label="Close navigation"
+            title="Close menu"
           >
-            <X size={16} />
+            <X size={15} />
           </button>
         </div>
 
         <nav className="nav" aria-label="Admin navigation">
-          <div className="nav-section">
-            <div className="nav-label">Operations</div>
-            {navItems.map((item) => {
-              const Icon = item.icon;
-              const isActive = section === item.id;
-              return (
-                <button
-                  key={item.id}
-                  type="button"
-                  className={`nav-link ${isActive ? "active" : ""}`}
-                  style={{ width: "100%", textAlign: "left", background: isActive ? "rgba(255,255,255,0.08)" : "transparent", border: "none", cursor: "pointer" }}
-                  onClick={() => {
-                    setSection(item.id);
-                    setMobileNavOpen(false);
-                  }}
-                >
-                  <Icon className="nav-icon" size={16} />
-                  <span>{item.label}</span>
-                </button>
-              );
-            })}
-          </div>
+          <div className="nav-group-label">Operations</div>
+          {navItems.map((item) => {
+            const Icon = item.icon;
+            const isActive = section === item.id;
+            return (
+              <button
+                key={item.id}
+                type="button"
+                className={`nav-link ${isActive ? "active" : ""}`}
+                aria-current={isActive ? "page" : undefined}
+                onClick={() => {
+                  setSection(item.id);
+                  setMobileNavOpen(false);
+                }}
+              >
+                <Icon className="nav-icon" size={16} aria-hidden="true" />
+                <span className="nav-text">{item.label}</span>
+              </button>
+            );
+          })}
         </nav>
 
-        <div style={{ padding: "12px 14px", borderTop: "1px solid rgba(255,255,255,0.08)" }} className="stack">
-          <div className="tiny" style={{ color: "#d1d5db", wordBreak: "break-all" }}>
-            {admin.email}
-          </div>
+        <div className="sidebar-foot stack">
+          <div className="tiny">{admin.email}</div>
           <div className="row" style={{ gap: 6, justifyContent: "space-between" }}>
             <Badge tone="info">{admin.role.replace("_", " ").toUpperCase()}</Badge>
             <button
               type="button"
-              className="btn btn-ghost btn-sm"
-              style={{ color: "#e5e7eb" }}
+              className="btn btn-ghost btn-sm sidebar-signout"
               onClick={() => void handleLogout()}
             >
               <LogOut size={13} /> Sign out
@@ -229,6 +193,14 @@ export default function AdminPage() {
           </div>
         </div>
       </aside>
+
+      <button
+        type="button"
+        className="sidebar-scrim"
+        aria-label="Close navigation"
+        tabIndex={mobileNavOpen ? 0 : -1}
+        onClick={() => setMobileNavOpen(false)}
+      />
 
       <div className="main">
         <header className="topbar">
@@ -252,14 +224,7 @@ export default function AdminPage() {
             2FA Active
           </Badge>
 
-          <button
-            type="button"
-            className="btn btn-ghost btn-sm"
-            onClick={toggleTheme}
-            title={`Switch to ${theme === "dark" ? "light" : "dark"} theme`}
-          >
-            {theme === "dark" ? <Sun size={14} /> : <Moon size={14} />}
-          </button>
+          <ThemeToggle compact />
         </header>
 
         <main className="page">
