@@ -11,6 +11,7 @@ import {
 import {
   isGoogleGroundingBlocked,
   markGoogleGroundingBlocked,
+  MAX_AUTO_ATTEMPTS,
   rankPoolCandidates,
   recordCandidateFailure,
   recordCandidateSuccess,
@@ -34,7 +35,6 @@ import {
   type TaskSeat,
 } from "./types";
 
-const MAX_AUTO_ATTEMPTS = 8;
 const AUTO_WALL_BUDGET_MS = 42_000;
 
 export class LLMGatewayError extends Error {
@@ -259,7 +259,8 @@ async function runPooledAutoFailover<T>(input: {
         actualProvider: candidate.key.provider,
         actualKeyId: candidate.key.id,
         actualModel: candidate.model.id,
-        fallbackHops: input.initialHops + i,
+        // Hops count real upstream attempts, not skipped/benched candidates.
+        fallbackHops: input.initialHops + Math.max(0, attempts - 1),
         fallbackUsed: input.fallbackUsedFromByok || i > 0,
         grounded: raw.grounded,
         groundingSource: raw.grounded ? "google_search" : null,
@@ -317,8 +318,8 @@ async function runPooledAutoFailover<T>(input: {
     actualProvider: "google",
     actualKeyId: "exhausted",
     actualModel: "exhausted",
-    fallbackHops: input.initialHops + triedKeys.size,
-    fallbackUsed: input.fallbackUsedFromByok || triedKeys.size > 1,
+    fallbackHops: input.initialHops + Math.max(0, attempts - 1),
+    fallbackUsed: input.fallbackUsedFromByok || attempts > 1,
     grounded: false,
     latencyMs: Date.now() - input.startedAt,
     status: "failed",

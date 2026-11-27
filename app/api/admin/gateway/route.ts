@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { isSafeProviderUrl } from "@/lib/ai/context";
 import { handleApiError } from "@/lib/api-helpers";
 import { validateApiKeyInput } from "@/lib/key-vault";
+import { summarizeKeyAnalytics } from "@/lib/llm/analytics";
 import { LLMGateway } from "@/lib/llm/gateway";
 import { fetchProviderCatalogModels } from "@/lib/llm/providers";
 import { clearAllInMemoryModelCooldowns, evaluateKeyHeadroom } from "@/lib/llm/router";
@@ -21,6 +22,7 @@ import {
   saveAdminSearchKey,
   toggleAdminSearchKey,
   toAdminAiKeyPublic,
+  updateAdminSearchKey,
 } from "@/lib/llm/store";
 import {
   getProviderMeta,
@@ -36,9 +38,11 @@ import {
 } from "@/lib/llm/types";
 import { requireAdmin } from "@/lib/platform/admin-auth";
 import { appendAdminAuditLog } from "@/lib/platform/store-server";
+import { buildSearchProviderStates } from "@/lib/search/providerStatus";
 import {
   getSearchQuotaMonitorSnapshot,
   resetSearchProviderQuota,
+  setSearchProviderQuotaLimit,
   type QuotaTrackedProviderId,
 } from "@/lib/search/quotaAndCache";
 import { verifySearchKey } from "@/lib/search/webSearch";
@@ -72,18 +76,73 @@ async function buildAdminGatewayPayload() {
     searchKeys,
     searchCatalog: SEARCH_PROVIDER_CATALOG,
     searchQuotas: quotaSnap.quotas,
+    searchProviderStates: buildSearchProviderStates({
+      keys: searchKeys,
+      quotas: quotaSnap.quotas,
+    }),
     totalCacheHitsSaved: quotaSnap.totalCacheHitsSaved,
     builtInSearchStatus: "Built-in Keyless Fallback: DuckDuckGo + OpenStreetMap + DNS MX Ready",
     executionLogs,
   };
 }
 
+async function buildKeyAnalytics(keyId: string | null, provider: string | null) {
+  const logs = await listAiExecutionLogs({
+    limit: 300,
+    ...(keyId ? { actualKeyId: keyId } : provider ? { actualProvider: provider } : {}),
+  });
+  return summarizeKeyAnalytics({ logs, keyId, provider: keyId ? null : provider });
+}
+
 export async function GET(req: NextRequest) {
   try {
     await requireAdmin(req, "admin");
-    return NextResponse.json(await buildAdminGatewayPayload(), {
-      headers: { "Cache-Control": "private, no-store, max-age=0" },
-    });
+    const action = req.nextUrl.searchParams.get("action");
+    const headers = { "Cache-Control": "private, no-store, max-age=0" };
+
+    if (action === "key_analytics") {
+      const keyId = req.nextUrl.searchParams.get("keyId")?.trim() || null;
+      const provider = req.nextUrl.searchParams.get("provider")?.trim().toLowerCase() || null;
+      return NextResponse.json(
+        { ok: true, analytics: await buildKeyAnalytics(keyId, provider) },
+        { headers },
+      );
+    }
+
+    if (action === "search_key_analytics") {
+      const provider = req.nextUrl.searchParams.get("provider")?.trim().toLowerCase() || "";
+      if (!provider) {
+        return NextResponse.json({ error: "provider required." }, { status: 400 });
+      }
+      const [searchKeys, quotaSnap] = await Promise.all([
+        listAdminSearchKeysPublic(),
+        getSearchQuotaMonitorSnapshot(),
+      ]);
+      const states = buildSearchProviderStates({ keys: searchKeys, quotas: quotaSnap.quotas });
+      const state = states.find((s) => s.provider === provider);
+      if (!state) return NextResponse.json({ error: "Unknown provider." }, { status: 404 });
+      const calls = state.quota.used + state.quota.cacheHits;
+      return NextResponse.json(
+        {
+          ok: true,
+          analytics: {
+            provider: state.provider,
+            status: state.status,
+            used: state.quota.used,
+            limit: state.quota.limit,
+            resetCycle: state.quota.resetCycle,
+            nextResetAt: state.quota.nextResetAt,
+            cacheHitsSaved: state.quota.cacheHits,
+            hitRate: calls > 0 ? Math.round((state.quota.cacheHits / calls) * 1000) / 10 : null,
+            recentLogs: [],
+          },
+          state,
+        },
+        { headers },
+      );
+    }
+
+    return NextResponse.json(await buildAdminGatewayPayload(), { headers });
   } catch (err) {
     return handleApiError(err);
   }
@@ -103,10 +162,12 @@ export async function POST(req: NextRequest) {
         | "fetch_models"
         | "test_key"
         | "add_search_key"
+        | "update_search_key"
         | "toggle_search_key"
         | "test_search_key"
         | "delete_search_key"
-        | "reset_search_quota";
+        | "reset_search_quota"
+        | "update_search_quota";
       masterMode?: "auto" | "manual";
       strategy?: RoutingStrategy;
       fallbackChain?: { provider: GatewayProviderId; model: string }[];
@@ -121,6 +182,7 @@ export async function POST(req: NextRequest) {
       rpdLimit?: number;
       models?: GatewayModelConfig[];
       freeTierOnly?: boolean;
+      quotaLimit?: number;
       totpCode?: string;
     };
 
@@ -168,6 +230,28 @@ export async function POST(req: NextRequest) {
       return NextResponse.json(await buildAdminGatewayPayload());
     }
 
+    if (body.action === "update_search_quota") {
+      if (!isSearchProviderId(body.provider)) {
+        return NextResponse.json({ error: "Invalid search provider." }, { status: 400 });
+      }
+      const limit = Number(body.quotaLimit);
+      if (!Number.isFinite(limit) || limit < 0) {
+        return NextResponse.json({ error: "A non-negative quota limit is required." }, { status: 400 });
+      }
+      const rec = await setSearchProviderQuotaLimit(body.provider, limit);
+      await appendAdminAuditLog({
+        actorId: ctx.admin.id,
+        actorEmail: ctx.admin.email,
+        actorRole: ctx.admin.role,
+        action: "search_quota_limit_updated",
+        targetType: "search_provider_quotas",
+        targetId: body.provider,
+        details: { quotaLimit: rec.quotaLimit },
+        req,
+      });
+      return NextResponse.json(await buildAdminGatewayPayload());
+    }
+
     if (body.action === "add_search_key") {
       if (!isSearchProviderId(body.provider)) {
         return NextResponse.json({ error: "Select Exa, Tavily, Firecrawl, Serper, Brave, Jina, PageSpeed, Hunter, or CUFinder." }, { status: 400 });
@@ -199,6 +283,41 @@ export async function POST(req: NextRequest) {
         req,
       });
       return NextResponse.json(await buildAdminGatewayPayload(), { status: 201 });
+    }
+
+    if (body.action === "update_search_key") {
+      const keyId = String(body.keyId ?? "").trim();
+      if (!keyId) return NextResponse.json({ error: "keyId required." }, { status: 400 });
+      const existing = (await listAdminSearchKeys()).find((k) => k.id === keyId);
+      if (!existing) return NextResponse.json({ error: "Search key not found." }, { status: 404 });
+
+      let encryptedKey: string | undefined;
+      let maskedKey: string | undefined;
+      if (String(body.apiKey ?? "").trim()) {
+        const check = validateApiKeyInput(body.apiKey);
+        if (!check.ok) return NextResponse.json({ error: check.error }, { status: 400 });
+        const enc = encryptGatewayKey(check.value);
+        encryptedKey = enc.encryptedKey;
+        maskedKey = enc.maskedKey;
+      }
+      await updateAdminSearchKey({
+        id: keyId,
+        label: body.label,
+        encryptedKey,
+        maskedKey,
+        enabled: typeof body.enabled === "boolean" ? body.enabled : undefined,
+      });
+      await appendAdminAuditLog({
+        actorId: ctx.admin.id,
+        actorEmail: ctx.admin.email,
+        actorRole: ctx.admin.role,
+        action: encryptedKey ? "search_key_rotated" : "search_key_updated",
+        targetType: "admin_ai_keys",
+        targetId: keyId,
+        details: { provider: existing.provider, maskedKey: maskedKey ?? null, label: body.label ?? null },
+        req,
+      });
+      return NextResponse.json(await buildAdminGatewayPayload());
     }
 
     if (body.action === "toggle_search_key") {
@@ -449,14 +568,33 @@ export async function POST(req: NextRequest) {
           lastError: null,
         });
       } else {
-        await saveAdminAiKey({
+        let rotated: { encryptedKey: string; maskedKey: string } | null = null;
+        if (String(body.apiKey ?? "").trim()) {
+          const check = validateApiKeyInput(body.apiKey);
+          if (!check.ok) return NextResponse.json({ error: check.error }, { status: 400 });
+          rotated = encryptGatewayKey(check.value);
+        }
+        const updated: AdminAiKeyRecord = {
           ...existing,
           ...(body.label?.trim() ? { label: body.label.trim() } : {}),
           ...(typeof body.enabled === "boolean" ? { enabled: body.enabled } : {}),
           ...(typeof body.rpmLimit === "number" ? { rpmLimit: Math.max(1, body.rpmLimit) } : {}),
           ...(typeof body.rpdLimit === "number" ? { rpdLimit: Math.max(1, body.rpdLimit) } : {}),
           ...(Array.isArray(body.models) ? { models: body.models.slice(0, 120) } : {}),
-        });
+          ...(rotated
+            ? {
+                encryptedKey: rotated.encryptedKey,
+                maskedKey: rotated.maskedKey,
+                healthStatus: "healthy" as const,
+                cooldownUntil: null,
+                cooldownStep: 0,
+                lastError: null,
+                lastCheckedAt: new Date().toISOString(),
+              }
+            : {}),
+          updatedAt: new Date().toISOString(),
+        };
+        await saveAdminAiKey(updated);
       }
       await appendAdminAuditLog({
         actorId: ctx.admin.id,

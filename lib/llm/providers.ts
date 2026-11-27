@@ -137,7 +137,10 @@ function classifyHttpFailure(
 
   const authFailed = res.status === 401 || res.status === 403;
   const creditsExhausted =
-    res.status === 402 || /insufficient.*credit|billing|quota.*balance|top.?up/i.test(detail);
+    res.status === 402 ||
+    /insufficient.*(?:credit|balance|quota|funds)|no resource package|resource package|billing|quota.*balance|top.?up|payment required/i.test(
+      detail,
+    );
   const rateLimited = res.status === 429 && !payloadTooLarge;
   const modelNotFound = res.status === 404 || /model.*not found|does not exist/i.test(detail);
   // Payload/context-size errors (400/413/422) or unsupported request shapes (tools, JSON mode)

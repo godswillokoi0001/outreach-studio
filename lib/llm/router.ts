@@ -12,6 +12,13 @@ import {
   type TaskSeat,
 } from "./types";
 
+/**
+ * Hard ceiling on real upstream attempts per request. A skip (benched model,
+ * exhausted key) must never consume budget, and a request must never burn
+ * dozens of hops: 6 attempts is enough to cross every healthy provider.
+ */
+export const MAX_AUTO_ATTEMPTS = 6;
+
 const ESCALATION_LADDER_MS = [
   2 * 60_000, // 2 minutes
   10 * 60_000, // 10 minutes
@@ -240,9 +247,11 @@ export interface RankedPoolCandidate {
  * Catalog endpoints list media and specialist models next to chat models. They
  * are saved as "enabled" but reject tools/multi-turn chat, so routing an agent
  * request to them wastes a failover hop (and used to abort the whole pool).
+ * `allam-2-7b` (Arabic-only), Whisper/TTS audio models and Guard safety
+ * classifiers are also non-chat and must never take a compose/chat seat.
  */
 const NON_CHAT_MODEL_PATTERN =
-  /(?:^|[-/])(?:image|imagen|nano-banana|tts|transcribe|embedding|robotics|computer-use|deep-research|antigravity)(?:[-/]|$)/i;
+  /(?:^|[-/])(?:image|imagen|nano-banana|tts|playai-tts|transcribe|whisper|embedding|robotics|computer-use|deep-research|antigravity|allam|guard|safeguard)(?:[-/]|$)/i;
 
 export function isChatCapableModelId(modelId: string): boolean {
   return !NON_CHAT_MODEL_PATTERN.test(modelId.trim());
@@ -303,6 +312,8 @@ export function rankPoolCandidates(input: {
     for (const model of key.models) {
       if (!model.enabled) continue;
       if (/nemotron-3-ultra-550b|550b/i.test(model.id)) continue;
+      // Specialised/audio/safety models are never valid chat candidates in any seat.
+      if (!isChatCapableModelId(model.id)) continue;
       const slowMega = isSlowMegaModel(model.id);
       if (
         slowMega &&

@@ -1,10 +1,11 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import {
   Activity,
   CheckCircle2,
   Cpu,
+  ExternalLink,
   KeyRound,
   Loader2,
   Plus,
@@ -13,13 +14,13 @@ import {
   Save,
   Sliders,
   TestTube2,
-  Trash2,
-  Globe,
   Zap,
 } from "lucide-react";
 import {
   getProviderMeta,
   getSearchProviderMeta,
+  PROVIDER_CATEGORY_LABELS,
+  PROVIDER_CATEGORY_ORDER,
   type AdminAiKeyPublic,
   type AdminAiSettings,
   type AdminSearchKeyPublic,
@@ -27,17 +28,20 @@ import {
   type GatewayModelConfig,
   type GatewayProviderId,
   type ProviderCatalogMeta,
+  type ProviderCategory,
   type RoutingStrategy,
   type SearchProviderId,
   type SearchProviderMeta,
+  type SearchProviderState,
   type TaskSeat,
 } from "@/lib/llm/types";
 import type { AdminRole } from "@/lib/platform/types";
 import type { SearchQuotaRecord } from "@/lib/search/quotaAndCache";
 import { Badge, Banner, Card, Empty, Field, Modal } from "../ui";
 import { BrandLoader } from "../BrandLoader";
-import { useConfirm, useToast } from "../Feedback";
+import { useToast } from "../Feedback";
 import { AdminClientError, adminFetch } from "./admin-client";
+import { ApiKeyAnalyticsDrawer, type DrawerTarget } from "./ApiKeyAnalyticsDrawer";
 
 interface GatewayAdminPayload {
   settings: AdminAiSettings;
@@ -46,6 +50,7 @@ interface GatewayAdminPayload {
   searchKeys?: AdminSearchKeyPublic[];
   searchCatalog?: SearchProviderMeta[];
   searchQuotas?: SearchQuotaRecord[];
+  searchProviderStates?: SearchProviderState[];
   totalCacheHitsSaved?: number;
   builtInSearchStatus?: string;
   executionLogs: AiExecutionLogRecord[];
@@ -71,6 +76,7 @@ const STRATEGY_DESCRIPTIONS: Record<RoutingStrategy, { label: string; desc: stri
 };
 
 const SEATS: TaskSeat[] = ["smart", "balanced", "fast"];
+type CategoryTab = "all" | ProviderCategory;
 
 function formatCooldownRemaining(cooldownUntil?: string | null): string | null {
   if (!cooldownUntil) return null;
@@ -89,6 +95,53 @@ function formatTime(iso: string): string {
   }
 }
 
+function llmKeyStatus(k: AdminAiKeyPublic): "active" | "paused" | "cooldown" | "invalid" {
+  if (!k.enabled) return "paused";
+  if (k.healthStatus === "invalid") return "invalid";
+  if (k.healthStatus === "cooldown") return "cooldown";
+  return "active";
+}
+
+const STATUS_BADGE: Record<string, { tone?: string; label: string }> = {
+  active: { tone: "ok", label: "Active" },
+  paused: { tone: "warn", label: "Paused (Reserve)" },
+  cooldown: { tone: "warn", label: "Cooldown" },
+  invalid: { tone: "bad", label: "Invalid Key" },
+  not_configured: { label: "Not Configured" },
+  exhausted: { tone: "bad", label: "Exhausted" },
+  near_limit: { tone: "warn", label: "Near Limit" },
+  keyless: { tone: "info", label: "Keyless Always On" },
+};
+
+function ProviderCard({
+  title,
+  badges,
+  sub,
+  status,
+  onClick,
+}: {
+  title: string;
+  badges: string[];
+  sub: string;
+  status: string;
+  onClick: () => void;
+}) {
+  const badge = STATUS_BADGE[status] ?? { label: status };
+  return (
+    <button type="button" className="provider-card" onClick={onClick}>
+      <div className="row" style={{ gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+        <span className="strong">{title}</span>
+        {badges.filter(Boolean).map((b) => (
+          <Badge key={b}>{b}</Badge>
+        ))}
+        <Badge tone={badge.tone}>{badge.label}</Badge>
+      </div>
+      <div className="tiny muted provider-card-sub">{sub}</div>
+      <span className="provider-card-cta">Inspect Details →</span>
+    </button>
+  );
+}
+
 export function AdminProvidersTab({
   role,
   sessionToken,
@@ -100,7 +153,6 @@ export function AdminProvidersTab({
   reauthToken: string | null;
   onNeedReauth: (label: string, retryFn: (freshToken: string) => Promise<void>) => void;
 }) {
-  const confirmDialog = useConfirm();
   const toast = useToast();
   const isSuper = role === "super_admin";
 
@@ -108,12 +160,14 @@ export function AdminProvidersTab({
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [activeCategory, setActiveCategory] = useState<CategoryTab>("all");
+  const [drawer, setDrawer] = useState<DrawerTarget | null>(null);
 
   // Settings draft
   const [masterModeDraft, setMasterModeDraft] = useState<"auto" | "manual">("auto");
   const [strategyDraft, setStrategyDraft] = useState<RoutingStrategy>("balanced");
 
-  // Add Key Modal state
+  // LLM Add Key Modal
   const [addModalOpen, setAddModalOpen] = useState(false);
   const [newProvider, setNewProvider] = useState<GatewayProviderId>("google");
   const [newLabel, setNewLabel] = useState("");
@@ -126,17 +180,20 @@ export function AdminProvidersTab({
   const [fetchedAddModels, setFetchedAddModels] = useState<GatewayModelConfig[]>([]);
   const [addProbeNote, setAddProbeNote] = useState<string | null>(null);
 
+  // Search / contact / audit Add Key Modal
+  const [addSearchOpen, setAddSearchOpen] = useState(false);
+  const [searchCategory, setSearchCategory] = useState<Exclude<ProviderCategory, "ai_llm">>("web_search");
+  const [searchProviderInput, setSearchProviderInput] = useState<SearchProviderId>("tavily");
+  const [searchKeyFirst, setSearchKeyFirst] = useState("");
+  const [searchKeySecond, setSearchKeySecond] = useState("");
+  const [searchLabelInput, setSearchLabelInput] = useState("");
+
   // Edit Key / Models & Limits Modal state
   const [editingKey, setEditingKey] = useState<AdminAiKeyPublic | null>(null);
   const [editLabel, setEditLabel] = useState("");
   const [editRpmLimit, setEditRpmLimit] = useState(15);
   const [editRpdLimit, setEditRpdLimit] = useState(1500);
   const [editModels, setEditModels] = useState<GatewayModelConfig[]>([]);
-
-  // Web Search Key quick-add state
-  const [searchProviderInput, setSearchProviderInput] = useState<SearchProviderId>("tavily");
-  const [searchApiKeyInput, setSearchApiKeyInput] = useState("");
-  const [searchLabelInput, setSearchLabelInput] = useState("");
 
   const applyPayload = useCallback((payload: GatewayAdminPayload) => {
     setData(payload);
@@ -193,7 +250,7 @@ export function AdminProvidersTab({
         label,
         res.probe
           ? `Verified ${res.probe.model} (${res.probe.ms}ms)${res.warning ? ` — ${res.warning}` : ""}`
-          : "Updated AI gateway pool.",
+          : "Updated the API command center.",
       );
       return true;
     } catch (err) {
@@ -227,6 +284,31 @@ export function AdminProvidersTab({
     setAddModalOpen(true);
   };
 
+  const openSearchModal = useCallback(
+    (category: Exclude<ProviderCategory, "ai_llm">, provider?: SearchProviderId) => {
+      const candidates = (data?.searchCatalog ?? []).filter((m) => m.category === category);
+      const chosen = provider ?? candidates[0]?.id ?? "tavily";
+      setSearchCategory(category);
+      setSearchProviderInput(chosen);
+      setSearchKeyFirst("");
+      setSearchKeySecond("");
+      setSearchLabelInput("");
+      setAddSearchOpen(true);
+    },
+    [data?.searchCatalog],
+  );
+
+  useEffect(() => {
+    const onAdd = (event: Event) => {
+      const detail = (event as CustomEvent<{ provider?: SearchProviderId }>).detail;
+      const provider = detail?.provider;
+      const meta = provider ? getSearchProviderMeta(provider) : null;
+      if (meta) openSearchModal(meta.category, provider);
+    };
+    window.addEventListener("admin:add-search-key", onAdd);
+    return () => window.removeEventListener("admin:add-search-key", onAdd);
+  }, [openSearchModal]);
+
   const handleTestNewKey = async () => {
     if (!newApiKey.trim()) return;
     setBusy("add_test");
@@ -236,7 +318,6 @@ export function AdminProvidersTab({
       const res = await adminFetch<{
         ok: boolean;
         probe?: { model: string; ms: number; reply?: string };
-        models?: { id: string; label: string; isFreeTier?: boolean }[];
         warning?: string;
       }>("/api/admin/gateway", {
         method: "POST",
@@ -339,15 +420,56 @@ export function AdminProvidersTab({
     );
   };
 
-  if (loading && !data) return <BrandLoader />;
+  const states = useMemo(() => data?.searchProviderStates ?? [], [data?.searchProviderStates]);
+  const keys = useMemo(() => data?.keys ?? [], [data?.keys]);
+  const catalog = useMemo(() => data?.catalog ?? [], [data?.catalog]);
+  const executionLogs = useMemo(() => data?.executionLogs ?? [], [data?.executionLogs]);
 
-  const keys = data?.keys ?? [];
-  const catalog = data?.catalog ?? [];
-  const executionLogs = data?.executionLogs ?? [];
-  const healthyCount = keys.filter((k) => k.enabled && k.healthStatus === "healthy").length;
-  const cooldownCount = keys.filter((k) => k.healthStatus === "cooldown").length;
-  const invalidCount = keys.filter((k) => k.healthStatus === "invalid").length;
+  const summary = useMemo(() => {
+    const llmActive = keys.filter((k) => llmKeyStatus(k) === "active").length;
+    const llmPaused = keys.filter((k) => llmKeyStatus(k) === "paused").length;
+    const keyedSearch = states.filter((s) => s.kind !== "keyless");
+    const searchActive = keyedSearch.filter((s) => s.status === "active" || s.status === "near_limit").length;
+    const searchPaused = keyedSearch.filter((s) => s.status === "paused").length;
+    const cooldown =
+      keys.filter((k) => k.healthStatus === "cooldown").length +
+      keyedSearch.filter((s) => s.status === "cooldown" || s.status === "exhausted").length;
+    const notConfigured = keyedSearch.filter((s) => s.status === "not_configured").length;
+    return {
+      active: llmActive + searchActive,
+      paused: llmPaused + searchPaused,
+      cooldown,
+      notConfigured,
+      cacheHits: data?.totalCacheHitsSaved ?? 0,
+    };
+  }, [keys, states, data?.totalCacheHitsSaved]);
+
+  const categoryCounts = useCallback(
+    (category: ProviderCategory) => {
+      if (category === "ai_llm") {
+        const active = keys.filter((k) => llmKeyStatus(k) === "active").length;
+        const paused = keys.filter((k) => llmKeyStatus(k) === "paused").length;
+        const configuredProviders = new Set(keys.map((k) => k.provider));
+        const notConfigured = catalog.filter((c) => !configuredProviders.has(c.id)).length;
+        return { active, paused, notConfigured };
+      }
+      const rows = states.filter((s) => s.category === category && s.kind !== "keyless");
+      return {
+        active: rows.filter((s) => s.status === "active" || s.status === "near_limit").length,
+        paused: rows.filter((s) => s.status === "paused").length,
+        notConfigured: rows.filter((s) => s.status === "not_configured").length,
+      };
+    },
+    [keys, catalog, states],
+  );
+
+  const searchModalCatalog = (data?.searchCatalog ?? []).filter((m) => m.category === searchCategory);
+  const selectedSearchMeta = getSearchProviderMeta(searchProviderInput);
   const selectedProviderMeta = getProviderMeta(newProvider);
+  const visibleCategories: ProviderCategory[] =
+    activeCategory === "all" ? PROVIDER_CATEGORY_ORDER : [activeCategory];
+
+  if (loading && !data) return <BrandLoader />;
 
   return (
     <div className="stack" style={{ gap: 16 }}>
@@ -360,28 +482,12 @@ export function AdminProvidersTab({
         </Banner>
       )}
 
-      {/* Master Routing & Auto-Failover Mode */}
+      {/* API Command Center summary */}
       <Card
-        title="Unified LLM Gateway & Auto Routing"
-        sub="Control how free-tier & pooled keys execute across all features. Healthy keys are steered at 85% RPM/RPD before 429s hit."
+        title="API Command Center"
+        sub="Every key in its functional category. Add reserve keys, keep 2–3 active, and pause the rest in one click."
         actions={
           <div className="row" style={{ gap: 6 }}>
-            <Badge tone={healthyCount > 0 ? "ok" : "bad"}>{healthyCount} Healthy</Badge>
-            {cooldownCount > 0 && <Badge tone="warn">{cooldownCount} Cooldown</Badge>}
-            {invalidCount > 0 && <Badge tone="bad">{invalidCount} Invalid</Badge>}
-            {isSuper && (cooldownCount > 0 || invalidCount > 0) && (
-              <button
-                type="button"
-                className="btn btn-sm"
-                onClick={() =>
-                  void mutateGateway("Reset all cooldowns", { action: "clear_all_cooldowns" }, "clear_all_cooldowns")
-                }
-                disabled={busy !== null}
-              >
-                <RotateCcw size={12} />
-                Reset All Cooldowns
-              </button>
-            )}
             <button type="button" className="btn btn-sm" onClick={() => void loadData()} disabled={busy !== null}>
               <RefreshCw size={12} />
               Refresh
@@ -389,697 +495,306 @@ export function AdminProvidersTab({
           </div>
         }
       >
-        <div className="grid grid-2" style={{ gap: 12, marginBottom: 14 }}>
-          <button
-            type="button"
-            disabled={!isSuper || busy !== null}
-            onClick={() => setMasterModeDraft("auto")}
-            style={{
-              textAlign: "left",
-              padding: 14,
-              borderRadius: 10,
-              border: `1.5px solid ${masterModeDraft === "auto" ? "var(--teal-deep, #0f766e)" : "var(--line)"}`,
-              background: masterModeDraft === "auto" ? "var(--accent-soft, rgba(15,118,110,0.08))" : "var(--surface)",
-              cursor: isSuper ? "pointer" : "default",
-            }}
-          >
-            <div className="row" style={{ gap: 8, marginBottom: 4 }}>
-              <Zap size={15} style={{ color: "var(--teal-deep)" }} />
-              <span className="strong">AUTO (Smart Multi-Key Failover)</span>
-              {masterModeDraft === "auto" && <Badge tone="ok">Selected</Badge>}
-            </div>
-            <div className="tiny muted">
-              Automatically scores all healthy keys by seat capability, routing strategy, headroom (&lt;85% RPM/RPD), and fails over silently on errors.
-            </div>
-          </button>
-
-          <button
-            type="button"
-            disabled={!isSuper || busy !== null}
-            onClick={() => setMasterModeDraft("manual")}
-            style={{
-              textAlign: "left",
-              padding: 14,
-              borderRadius: 10,
-              border: `1.5px solid ${masterModeDraft === "manual" ? "var(--teal-deep, #0f766e)" : "var(--line)"}`,
-              background: masterModeDraft === "manual" ? "var(--accent-soft, rgba(15,118,110,0.08))" : "var(--surface)",
-              cursor: isSuper ? "pointer" : "default",
-            }}
-          >
-            <div className="row" style={{ gap: 8, marginBottom: 4 }}>
-              <Sliders size={15} />
-              <span className="strong">Manual Fallback Order</span>
-              {masterModeDraft === "manual" && <Badge tone="info">Selected</Badge>}
-            </div>
-            <div className="tiny muted">
-              Strictly walks configured keys and fallback sequence in explicit priority order while still honoring cooldowns.
-            </div>
-          </button>
+        <div className="summary-pills">
+          <span className="pill pill-ok">{summary.active} Active</span>
+          <span className="pill pill-warn">{summary.paused} Paused</span>
+          <span className="pill pill-bad">{summary.cooldown} Cooldown</span>
+          <span className="pill">{summary.notConfigured} Not Configured</span>
+          <span className="pill pill-info">{summary.cacheHits} Cache Hits Saved</span>
         </div>
 
-        <div className="row" style={{ gap: 12, flexWrap: "wrap", alignItems: "flex-end" }}>
-          <div style={{ flex: "1 1 280px" }}>
-            <Field
-              label="Routing Strategy"
-              hint={STRATEGY_DESCRIPTIONS[strategyDraft].desc}
-            >
-              <select
-                className="select"
-                value={strategyDraft}
-                disabled={!isSuper || busy !== null}
-                onChange={(e) => setStrategyDraft(e.target.value as RoutingStrategy)}
+        <div className="category-tabs" role="tablist" aria-label="Provider categories">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={activeCategory === "all"}
+            className={`category-tab${activeCategory === "all" ? " is-active" : ""}`}
+            onClick={() => setActiveCategory("all")}
+          >
+            All Categories
+          </button>
+          {PROVIDER_CATEGORY_ORDER.map((category) => {
+            const counts = categoryCounts(category);
+            return (
+              <button
+                key={category}
+                type="button"
+                role="tab"
+                aria-selected={activeCategory === category}
+                className={`category-tab${activeCategory === category ? " is-active" : ""}`}
+                onClick={() => setActiveCategory(category)}
               >
-                {(Object.keys(STRATEGY_DESCRIPTIONS) as RoutingStrategy[]).map((s) => (
-                  <option key={s} value={s}>
-                    {STRATEGY_DESCRIPTIONS[s].label}
-                  </option>
-                ))}
-              </select>
-            </Field>
-          </div>
-
-          {isSuper && (
-            <button
-              type="button"
-              className="btn btn-primary"
-              disabled={busy !== null}
-              onClick={() =>
-                void mutateGateway(
-                  "Save gateway routing settings",
-                  {
-                    action: "update_settings",
-                    masterMode: masterModeDraft,
-                    strategy: strategyDraft,
-                  },
-                  "save_settings",
-                )
-              }
-            >
-              {busy === "save_settings" ? <Loader2 size={14} className="spin" /> : <Save size={14} />}
-              Save Gateway Settings
-            </button>
-          )}
+                {PROVIDER_CATEGORY_LABELS[category]}
+                <em>
+                  {counts.active} active · {counts.paused} paused · {counts.notConfigured} not set
+                </em>
+              </button>
+            );
+          })}
         </div>
       </Card>
 
-      {/* Quick-Add Free-Tier & Custom Provider Buttons */}
-      {isSuper && (
+      {/* Routing (AI category only) */}
+      {(activeCategory === "all" || activeCategory === "ai_llm") && (
         <Card
-          title="Quick-Add Free-Tier or Custom Key"
-          sub="Add multiple keys per provider (or mix Google AI Studio, NVIDIA NIM, Z.ai, Cloudflare, OpenRouter :free, Groq, Cerebras) to multiply free-tier capacity."
+          title="Unified LLM Gateway & Auto Routing"
+          sub="Control how free-tier & pooled keys execute across all features. Healthy keys are steered at 85% RPM/RPD before 429s hit."
           actions={
-            <button
-              type="button"
-              className="btn btn-primary btn-sm"
-              onClick={() => openAddModalForProvider("google")}
-            >
-              <Plus size={13} />
-              Add API Key
-            </button>
+            <div className="row" style={{ gap: 6 }}>
+              <Badge tone={summary.active > 0 ? "ok" : "bad"}>{summary.active} Active</Badge>
+              {summary.cooldown > 0 && <Badge tone="warn">{summary.cooldown} Cooldown</Badge>}
+              {isSuper && summary.cooldown > 0 && (
+                <button
+                  type="button"
+                  className="btn btn-sm"
+                  onClick={() =>
+                    void mutateGateway("Reset all cooldowns", { action: "clear_all_cooldowns" }, "clear_all_cooldowns")
+                  }
+                  disabled={busy !== null}
+                >
+                  <RotateCcw size={12} />
+                  Reset All Cooldowns
+                </button>
+              )}
+            </div>
           }
         >
-          <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
-            {catalog.map((meta) => (
+          <div className="grid grid-2" style={{ gap: 12, marginBottom: 14 }}>
+            <button
+              type="button"
+              disabled={!isSuper || busy !== null}
+              onClick={() => setMasterModeDraft("auto")}
+              style={{
+                textAlign: "left",
+                padding: 14,
+                borderRadius: 10,
+                border: `1.5px solid ${masterModeDraft === "auto" ? "var(--teal-deep, #0f766e)" : "var(--line)"}`,
+                background: masterModeDraft === "auto" ? "var(--accent-soft, rgba(15,118,110,0.08))" : "var(--surface)",
+                cursor: isSuper ? "pointer" : "default",
+              }}
+            >
+              <div className="row" style={{ gap: 8, marginBottom: 4 }}>
+                <Zap size={15} style={{ color: "var(--teal-deep)" }} />
+                <span className="strong">AUTO (Smart Multi-Key Failover)</span>
+                {masterModeDraft === "auto" && <Badge tone="ok">Selected</Badge>}
+              </div>
+              <div className="tiny muted">
+                Automatically scores all healthy keys by seat capability, routing strategy, headroom (&lt;85% RPM/RPD), and fails over silently on errors.
+              </div>
+            </button>
+
+            <button
+              type="button"
+              disabled={!isSuper || busy !== null}
+              onClick={() => setMasterModeDraft("manual")}
+              style={{
+                textAlign: "left",
+                padding: 14,
+                borderRadius: 10,
+                border: `1.5px solid ${masterModeDraft === "manual" ? "var(--teal-deep, #0f766e)" : "var(--line)"}`,
+                background: masterModeDraft === "manual" ? "var(--accent-soft, rgba(15,118,110,0.08))" : "var(--surface)",
+                cursor: isSuper ? "pointer" : "default",
+              }}
+            >
+              <div className="row" style={{ gap: 8, marginBottom: 4 }}>
+                <Sliders size={15} />
+                <span className="strong">Manual Fallback Order</span>
+                {masterModeDraft === "manual" && <Badge tone="info">Selected</Badge>}
+              </div>
+              <div className="tiny muted">
+                Strictly walks configured keys and fallback sequence in explicit priority order while still honoring
+                cooldowns.
+              </div>
+            </button>
+          </div>
+
+          <div className="row" style={{ gap: 12, flexWrap: "wrap", alignItems: "flex-end" }}>
+            <div style={{ flex: "1 1 280px" }}>
+              <Field label="Routing Strategy" hint={STRATEGY_DESCRIPTIONS[strategyDraft].desc}>
+                <select
+                  className="select"
+                  value={strategyDraft}
+                  disabled={!isSuper || busy !== null}
+                  onChange={(e) => setStrategyDraft(e.target.value as RoutingStrategy)}
+                >
+                  {(Object.keys(STRATEGY_DESCRIPTIONS) as RoutingStrategy[]).map((s) => (
+                    <option key={s} value={s}>
+                      {STRATEGY_DESCRIPTIONS[s].label}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+            </div>
+
+            {isSuper && (
               <button
-                key={meta.id}
                 type="button"
-                className="btn btn-sm"
-                onClick={() => openAddModalForProvider(meta.id)}
+                className="btn btn-primary"
+                disabled={busy !== null}
+                onClick={() =>
+                  void mutateGateway(
+                    "Save gateway routing settings",
+                    { action: "update_settings", masterMode: masterModeDraft, strategy: strategyDraft },
+                    "save_settings",
+                  )
+                }
               >
-                <Plus size={12} />
-                {meta.label}
+                {busy === "save_settings" ? <Loader2 size={14} className="spin" /> : <Save size={14} />}
+                Save Gateway Settings
               </button>
-            ))}
+            )}
           </div>
         </Card>
       )}
 
-      {/* Pooled Keys List */}
-      <Card
-        title="Pooled API Keys"
-        sub="Keys are encrypted at rest with AES-256-GCM. Cooldown state persists across serverless cold starts."
-      >
-        {keys.length === 0 ? (
-          <Empty title="No pooled keys configured yet">
-            <p className="tiny muted">Add at least one provider key above so the unified gateway can serve users automatically.</p>
-          </Empty>
-        ) : (
-          <div className="stack" style={{ gap: 10 }}>
-            {keys.map((k) => {
-              const meta = getProviderMeta(k.provider);
-              const cooldownLeft = k.healthStatus === "cooldown" ? formatCooldownRemaining(k.cooldownUntil) : null;
-              const rpmPct = Math.min(100, Math.round(((k.rpmUsed ?? 0) / Math.max(1, k.rpmLimit)) * 100));
-              const rpdPct = Math.min(100, Math.round(((k.rpdUsed ?? 0) / Math.max(1, k.rpdLimit)) * 100));
-              const enabledModels = k.models.filter((m) => m.enabled).length;
+      {/* One section per visible category */}
+      {visibleCategories.map((category) => {
+        const counts = categoryCounts(category);
+        const isLlm = category === "ai_llm";
+        const rows = states.filter((s) => s.category === category);
+        const configuredProviders = new Set(keys.map((k) => k.provider));
+        const missingLlmProviders = catalog.filter((c) => !configuredProviders.has(c.id));
 
-              return (
-                <div
-                  key={k.id}
-                  style={{
-                    padding: 14,
-                    borderRadius: 10,
-                    border: `1px solid ${
-                      !k.enabled
-                        ? "var(--line)"
-                        : k.healthStatus === "invalid"
-                          ? "var(--bad)"
-                          : k.healthStatus === "cooldown"
-                            ? "var(--warn)"
-                            : "var(--teal-deep)"
-                    }`,
-                    background: "var(--surface)",
+        return (
+          <Card
+            key={category}
+            title={PROVIDER_CATEGORY_LABELS[category]}
+            sub={`${counts.active} active · ${counts.paused} paused · ${counts.notConfigured} not configured`}
+            actions={
+              isSuper ? (
+                <button
+                  type="button"
+                  className="btn btn-primary btn-sm"
+                  onClick={() => {
+                    if (isLlm) openAddModalForProvider("google");
+                    else openSearchModal(category as Exclude<ProviderCategory, "ai_llm">);
                   }}
                 >
-                  <div className="row" style={{ justifyContent: "space-between", alignItems: "flex-start", gap: 10, flexWrap: "wrap" }}>
-                    <div style={{ minWidth: 240, flex: 1 }}>
-                      <div className="row" style={{ gap: 6, flexWrap: "wrap", alignItems: "center" }}>
-                        <span className="strong">{k.label || meta.label}</span>
-                        <Badge>{meta.label}</Badge>
-                        <Badge>{k.maskedKey}</Badge>
-                        {k.healthStatus === "healthy" ? (
-                          <Badge tone="ok">Healthy</Badge>
-                        ) : k.healthStatus === "cooldown" ? (
-                          <Badge tone="warn">Cooldown{cooldownLeft ? ` (${cooldownLeft})` : ""}</Badge>
-                        ) : (
-                          <Badge tone="bad">Invalid Key</Badge>
-                        )}
-                        {!k.enabled && <Badge>Paused</Badge>}
-                      </div>
+                  <Plus size={12} />
+                  Add Key to {isLlm ? "AI / LLM" : PROVIDER_CATEGORY_LABELS[category].split(" ")[0]}
+                </button>
+              ) : undefined
+            }
+          >
+            <div className="stack" style={{ gap: 10 }}>
+              {isLlm &&
+                keys.map((k) => {
+                  const meta = getProviderMeta(k.provider);
+                  const status = llmKeyStatus(k);
+                  const cooldownLeft = status === "cooldown" ? formatCooldownRemaining(k.cooldownUntil) : null;
+                  return (
+                    <ProviderCard
+                      key={k.id}
+                      title={k.label || meta.label}
+                      badges={[meta.label, k.maskedKey]}
+                      status={status}
+                      sub={`${k.models.filter((m) => m.enabled).length} / ${k.models.length} models · RPM ${k.rpmUsed ?? 0}/${k.rpmLimit} · RPD ${k.rpdUsed ?? 0}/${k.rpdLimit}${
+                        cooldownLeft ? ` · ${cooldownLeft}` : ""
+                      }`}
+                      onClick={() => setDrawer({ kind: "llm", providerLabel: k.provider, key: k })}
+                    />
+                  );
+                })}
 
-                      <div className="tiny muted" style={{ marginTop: 4 }}>
-                        {enabledModels} / {k.models.length} models enabled
-                        {k.baseUrl ? ` · ${k.baseUrl}` : ""}
-                        {k.lastCheckedAt ? ` · Checked ${formatTime(k.lastCheckedAt)}` : ""}
-                      </div>
+              {isLlm &&
+                missingLlmProviders.map((meta) => (
+                  <ProviderCard
+                    key={`missing_${meta.id}`}
+                    title={meta.label}
+                    badges={[meta.freeTierDefault ? "Free tier" : "Paid / BYOK"]}
+                    status="not_configured"
+                    sub={meta.blurb}
+                    onClick={() => setDrawer({ kind: "llm", providerLabel: meta.id, key: null })}
+                  />
+                ))}
 
-                      {k.lastError && (
-                        <div className="tiny" style={{ color: "var(--bad)", marginTop: 4 }}>
-                          Last error: {k.lastError}
-                        </div>
-                      )}
+              {!isLlm &&
+                rows
+                  .filter((s) => s.kind !== "keyless")
+                  .map((s) => {
+                    const smeta = getSearchProviderMeta(s.provider as SearchProviderId);
+                    return (
+                      <ProviderCard
+                        key={s.provider}
+                        title={s.hasKey && s.maskedKey ? `${s.label} · ${s.maskedKey}` : s.label}
+                        badges={[smeta.label !== s.label ? smeta.label : ""].filter(Boolean)}
+                        status={s.status}
+                        sub={
+                          s.quota.limit > 0
+                            ? `${s.quota.used} / ${s.quota.limit} used · ${s.quota.resetCycle} reset${
+                                s.status === "not_configured" ? ` · ${s.freeTierNote}` : ""
+                              }`
+                            : s.blurb
+                        }
+                        onClick={() => setDrawer({ kind: "search", state: s })}
+                      />
+                    );
+                  })}
 
-                      {/* Live RPM / RPD Headroom Bars */}
-                      <div className="grid grid-2" style={{ gap: 10, marginTop: 8, maxWidth: 460 }}>
-                        <div>
-                          <div className="row tiny muted" style={{ justifyContent: "space-between" }}>
-                            <span>RPM Window</span>
-                            <span>{k.rpmUsed ?? 0} / {k.rpmLimit} ({rpmPct}%)</span>
-                          </div>
-                          <div style={{ height: 5, borderRadius: 4, background: "var(--line)", overflow: "hidden", marginTop: 3 }}>
-                            <div
-                              style={{
-                                height: "100%",
-                                width: `${rpmPct}%`,
-                                background: rpmPct >= 85 ? "var(--warn)" : "var(--teal-deep, #0f766e)",
-                              }}
-                            />
-                          </div>
-                        </div>
-                        <div>
-                          <div className="row tiny muted" style={{ justifyContent: "space-between" }}>
-                            <span>RPD Window</span>
-                            <span>{k.rpdUsed ?? 0} / {k.rpdLimit} ({rpdPct}%)</span>
-                          </div>
-                          <div style={{ height: 5, borderRadius: 4, background: "var(--line)", overflow: "hidden", marginTop: 3 }}>
-                            <div
-                              style={{
-                                height: "100%",
-                                width: `${rpdPct}%`,
-                                background: rpdPct >= 85 ? "var(--warn)" : "var(--teal-deep, #0f766e)",
-                              }}
-                            />
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="row" style={{ gap: 6, flexWrap: "wrap", alignItems: "center" }}>
-                      {isSuper && (
-                        <label className="row tiny" style={{ gap: 5, cursor: "pointer", marginRight: 4 }}>
-                          <input
-                            type="checkbox"
-                            checked={k.enabled}
-                            disabled={busy !== null}
-                            onChange={(e) =>
-                              void mutateGateway(
-                                `${e.target.checked ? "Enable" : "Pause"} ${k.label}`,
-                                { action: "toggle_key", keyId: k.id, enabled: e.target.checked },
-                                `toggle_${k.id}`,
-                              )
-                            }
-                          />
-                          Enabled
-                        </label>
-                      )}
-
+              {/* Keyless built-ins */}
+              <div>
+                <div className="tiny muted" style={{ marginBottom: 6 }}>Built-in keyless (always on)</div>
+                <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
+                  {rows
+                    .filter((s) => s.kind === "keyless")
+                    .map((s) => (
                       <button
+                        key={s.provider}
                         type="button"
                         className="btn btn-sm"
-                        disabled={busy !== null}
-                        onClick={() =>
-                          void mutateGateway(
-                            `Test ${k.label}`,
-                            { action: "test_key", keyId: k.id },
-                            `test_${k.id}`,
-                          )
-                        }
+                        onClick={() => setDrawer({ kind: "search", state: s })}
                       >
-                        {busy === `test_${k.id}` ? <Loader2 size={12} className="spin" /> : <TestTube2 size={12} />}
-                        Test Key
+                        <CheckCircle2 size={12} />
+                        {s.label}
                       </button>
-
-                      <button
-                        type="button"
-                        className="btn btn-sm"
-                        disabled={busy !== null}
-                        onClick={() =>
-                          void mutateGateway(
-                            `Fetch live models for ${k.label}`,
-                            { action: "fetch_models", keyId: k.id },
-                            `fetch_${k.id}`,
-                          )
-                        }
-                      >
-                        {busy === `fetch_${k.id}` ? <Loader2 size={12} className="spin" /> : <Cpu size={12} />}
-                        Fetch Models
-                      </button>
-
-                      {isSuper && (
-                        <>
-                          <button
-                            type="button"
-                            className="btn btn-sm"
-                            disabled={busy !== null}
-                            onClick={() => openEditModal(k)}
-                          >
-                            <Sliders size={12} />
-                            Models &amp; Limits
-                          </button>
-
-                          {k.healthStatus !== "healthy" && (
-                            <button
-                              type="button"
-                              className="btn btn-sm"
-                              disabled={busy !== null}
-                              onClick={() =>
-                                void mutateGateway(
-                                  `Clear cooldown for ${k.label}`,
-                                  { action: "clear_cooldown", keyId: k.id },
-                                  `clear_${k.id}`,
-                                )
-                              }
-                            >
-                              <RotateCcw size={12} />
-                              Reset Cooldown
-                            </button>
-                          )}
-
-                          <button
-                            type="button"
-                            className="btn btn-sm btn-ghost"
-                            disabled={busy !== null}
-                            onClick={async () => {
-                              const ok = await confirmDialog({
-                                title: `Remove ${k.label}?`,
-                                message: "This pooled key will be permanently removed from the gateway.",
-                                confirmLabel: "Delete key",
-                                tone: "bad",
-                              });
-                              if (ok) {
-                                void mutateGateway(
-                                  `Delete ${k.label}`,
-                                  { action: "delete_key", keyId: k.id },
-                                  `delete_${k.id}`,
-                                );
-                              }
-                            }}
-                          >
-                            <Trash2 size={12} />
-                          </button>
-                        </>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </Card>
-
-      {/* Web Search & Enrichment Keys */}
-      <Card
-        title="Web Search & Enrichment Keys (Optional — Keyless Backup Always Active)"
-        sub="Decoupled from paid Gemini grounding so discovery & research run across EVERY LLM provider at $0."
-        actions={
-          <Badge tone="ok">
-            {data?.builtInSearchStatus || "Built-in Keyless Fallback: DuckDuckGo + OpenStreetMap + DNS MX Ready"}
-          </Badge>
-        }
-      >
-        <div className="stack" style={{ gap: 12 }}>
-          <Banner tone="info">
-            <div className="row" style={{ gap: 6, flexWrap: "wrap" }}>
-              <Globe size={14} />
-              <span>
-                <strong>Smart Zero-Cost Priority:</strong> OpenStreetMap (0 credits) + plain HTML inspection run first. Monthly-refilling search keys (<strong>Exa</strong>, <strong>Tavily</strong>, <strong>Firecrawl</strong>) run before reserve keys (<strong>Serper</strong>) and keyless fallbacks (<strong>DuckDuckGo</strong>, <strong>Jina Reader</strong>, <strong>PageSpeed Insights</strong>).
-              </span>
-            </div>
-          </Banner>
-
-          {(data?.searchKeys ?? []).length > 0 && (
-            <div className="stack" style={{ gap: 8 }}>
-              {(data?.searchKeys ?? []).map((sk) => {
-                const smeta = getSearchProviderMeta(sk.provider);
-                return (
-                  <div
-                    key={sk.id}
-                    className="row"
-                    style={{
-                      justifyContent: "space-between",
-                      alignItems: "center",
-                      padding: 10,
-                      borderRadius: 8,
-                      border: `1px solid ${sk.enabled ? "var(--teal-deep)" : "var(--line)"}`,
-                      background: "var(--surface)",
-                      gap: 8,
-                      flexWrap: "wrap",
-                    }}
-                  >
-                    <div className="row" style={{ gap: 6, alignItems: "center", flexWrap: "wrap" }}>
-                      <span className="strong">{sk.label || smeta.label}</span>
-                      <Badge>{smeta.label}</Badge>
-                      <Badge>{sk.maskedKey}</Badge>
-                      <Badge tone={sk.enabled ? "ok" : undefined}>{sk.enabled ? "Active" : "Paused"}</Badge>
-                    </div>
-                    <div className="row" style={{ gap: 6 }}>
-                      <button
-                        type="button"
-                        className="btn btn-sm"
-                        disabled={busy !== null}
-                        onClick={() =>
-                          void mutateGateway(
-                            `Test ${smeta.label}`,
-                            { action: "test_search_key", keyId: sk.id },
-                            `test_search_${sk.id}`,
-                          )
-                        }
-                      >
-                        {busy === `test_search_${sk.id}` ? <Loader2 size={12} className="spin" /> : <TestTube2 size={12} />}
-                        Test Search
-                      </button>
-                      {isSuper && !sk.id.startsWith("srch_env_") && (
-                        <>
-                          <button
-                            type="button"
-                            className="btn btn-sm"
-                            disabled={busy !== null}
-                            onClick={() =>
-                              void mutateGateway(
-                                `${sk.enabled ? "Pause" : "Enable"} ${sk.label}`,
-                                { action: "toggle_search_key", keyId: sk.id, enabled: !sk.enabled },
-                                `toggle_search_${sk.id}`,
-                              )
-                            }
-                          >
-                            {sk.enabled ? "Pause" : "Enable"}
-                          </button>
-                          <button
-                            type="button"
-                            className="btn btn-sm btn-ghost"
-                            disabled={busy !== null}
-                            onClick={() =>
-                              void mutateGateway(
-                                `Remove ${sk.label}`,
-                                { action: "delete_search_key", keyId: sk.id },
-                                `del_search_${sk.id}`,
-                              )
-                            }
-                          >
-                            <Trash2 size={12} />
-                          </button>
-                        </>
-                      )}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-
-          {isSuper && (
-            <form
-              className="row"
-              style={{ gap: 8, flexWrap: "wrap", alignItems: "flex-end" }}
-              onSubmit={async (e) => {
-                e.preventDefault();
-                if (!searchApiKeyInput.trim()) return;
-                const ok = await mutateGateway(
-                  `Add ${getSearchProviderMeta(searchProviderInput).label} key`,
-                  {
-                    action: "add_search_key",
-                    provider: searchProviderInput,
-                    apiKey: searchApiKeyInput.trim(),
-                    label: searchLabelInput.trim() || undefined,
-                  },
-                  "add_search_key",
-                );
-                if (ok) {
-                  setSearchApiKeyInput("");
-                  setSearchLabelInput("");
-                }
-              }}
-            >
-              <div style={{ flex: "0 1 180px" }}>
-                <Field label="Search Provider">
-                  <select
-                    className="select"
-                    value={searchProviderInput}
-                    onChange={(e) => setSearchProviderInput(e.target.value as SearchProviderId)}
-                  >
-                    {(data?.searchCatalog ?? []).map((sc) => (
-                      <option key={sc.id} value={sc.id}>
-                        {sc.label}
-                      </option>
                     ))}
-                  </select>
-                </Field>
-              </div>
-              <div style={{ flex: "1 1 220px" }}>
-                <Field label="Optional Label">
-                  <input
-                    className="input"
-                    type="text"
-                    value={searchLabelInput}
-                    onChange={(e) => setSearchLabelInput(e.target.value)}
-                    placeholder="e.g. Tavily Free Key"
-                  />
-                </Field>
-              </div>
-              <div style={{ flex: "1 1 240px" }}>
-                <Field label="Search API Key">
-                  <input
-                    className="input"
-                    type="password"
-                    autoComplete="off"
-                    value={searchApiKeyInput}
-                    onChange={(e) => setSearchApiKeyInput(e.target.value)}
-                    placeholder="tvly-... / exa-... / fc-... / jina_..."
-                  />
-                </Field>
-              </div>
-              <button
-                type="submit"
-                className="btn btn-primary btn-sm"
-                disabled={!searchApiKeyInput.trim() || busy !== null}
-              >
-                {busy === "add_search_key" ? <Loader2 size={12} className="spin" /> : <Plus size={12} />}
-                Save Search Key
-              </button>
-            </form>
-          )}
-        </div>
-      </Card>
-
-      {/* Search & Enrichment Quota Monitor */}
-      <Card
-        title="Search & Enrichment Quota Monitor"
-        sub="7-day search & 14-day site caches stretch free tiers 5–10x. Providers at ≥ 95% auto-skip until reset."
-        actions={
-          <Badge tone="ok">
-            Cache Hits Saved: {data?.totalCacheHitsSaved ?? 0}
-          </Badge>
-        }
-      >
-        {(data?.searchQuotas ?? []).length === 0 ? (
-          <Empty title="No quota counters recorded yet">
-            <p className="tiny muted">Run a prospect discovery or Growth Advisor research stage to view live usage.</p>
-          </Empty>
-        ) : (
-          <div className="grid grid-2" style={{ gap: 10 }}>
-            {(data?.searchQuotas ?? []).map((q) => {
-              const cycleLabel =
-                q.resetCycle === "monthly"
-                  ? "Monthly"
-                  : q.resetCycle === "daily"
-                    ? "Daily"
-                    : q.resetCycle === "one_time"
-                      ? "One-Time"
-                      : "Keyless";
-              const pct =
-                q.quotaLimit > 0 ? Math.min(100, Math.round((q.usedCount / q.quotaLimit) * 100)) : 0;
-              return (
-                <div
-                  key={q.provider}
-                  style={{
-                    padding: 12,
-                    borderRadius: 10,
-                    border: "1px solid var(--line)",
-                    background: "var(--surface)",
-                  }}
-                >
-                  <div className="row" style={{ justifyContent: "space-between", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-                    <div className="row" style={{ gap: 6, alignItems: "center" }}>
-                      <span className="strong tiny">{q.label}</span>
-                      <Badge>{cycleLabel}</Badge>
-                    </div>
-                    <Badge
-                      tone={
-                        q.status === "exhausted"
-                          ? "bad"
-                          : q.status === "near_limit"
-                            ? "warn"
-                            : q.status === "keyless"
-                              ? "info"
-                              : "ok"
-                      }
-                    >
-                      {q.status === "exhausted"
-                        ? "Exhausted — Auto-Skipped"
-                        : q.status === "near_limit"
-                          ? "Near Limit"
-                          : q.status === "keyless"
-                            ? "Keyless Always On"
-                            : "Healthy"}
-                    </Badge>
-                  </div>
-
-                  {q.quotaLimit > 0 ? (
-                    <div style={{ marginTop: 8 }}>
-                      <div className="row tiny muted" style={{ justifyContent: "space-between" }}>
-                        <span>{q.usedCount} / {q.quotaLimit} used</span>
-                        <span>{pct}%</span>
-                      </div>
-                      <div style={{ height: 5, borderRadius: 4, background: "var(--line)", overflow: "hidden", marginTop: 3 }}>
-                        <div
-                          style={{
-                            height: "100%",
-                            width: `${pct}%`,
-                            background: q.status === "exhausted" ? "#dc2626" : q.status === "near_limit" ? "#d97706" : "var(--teal-deep, #0f766e)",
-                          }}
-                        />
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="tiny muted" style={{ marginTop: 6 }}>
-                      {q.usedCount} free requests served ($0 credit cost)
-                    </div>
-                  )}
-
-                  {isSuper && q.usedCount > 0 && (
-                    <div className="row" style={{ justifyContent: "flex-end", marginTop: 8 }}>
-                      <button
-                        type="button"
-                        className="btn btn-sm"
-                        disabled={busy !== null}
-                        onClick={() =>
-                          void mutateGateway(
-                            `Reset ${q.label} counter`,
-                            { action: "reset_search_quota", provider: q.provider },
-                            `reset_quota_${q.provider}`,
-                          )
-                        }
-                      >
-                        <RotateCcw size={11} />
-                        Reset Counter
-                      </button>
-                    </div>
+                  {rows.filter((s) => s.kind === "keyless").length === 0 && (
+                    <span className="tiny muted">Keyless fallbacks are listed in their own categories.</span>
                   )}
                 </div>
-              );
-            })}
-          </div>
-        )}
-      </Card>
+              </div>
+
+              {isLlm && keys.length === 0 && missingLlmProviders.length === 0 && (
+                <Empty title="No pooled keys configured yet">
+                  <p className="tiny muted">Add at least one provider key above so the unified gateway can serve users automatically.</p>
+                </Empty>
+              )}
+            </div>
+          </Card>
+        );
+      })}
 
       {/* Live Execution Receipts Log */}
-      <Card
-        title="Live AI Execution Receipts"
-        sub="Every server-side LLM request logs requested mode, actual provider & model served, fallback hops, and latency."
-        actions={
-          <span className="tiny muted row" style={{ gap: 5 }}>
-            <Activity size={13} />
-            Latest {executionLogs.length} calls
-          </span>
-        }
-      >
-        {executionLogs.length === 0 ? (
-          <Empty title="No execution receipts recorded yet">
-            <p className="tiny muted">Run any AI action or test probe to see live execution proof here.</p>
-          </Empty>
-        ) : (
-          <div style={{ overflowX: "auto" }}>
-            <table className="table" style={{ width: "100%", fontSize: 12.5 }}>
-              <thead>
-                <tr>
-                  <th>Time</th>
-                  <th>Seat</th>
-                  <th>Feature</th>
-                  <th>Mode</th>
-                  <th>Actual Provider &amp; Model</th>
-                  <th>Hops</th>
-                  <th>Latency</th>
-                  <th>Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                {executionLogs.map((log) => (
-                  <tr key={log.id}>
-                    <td className="tiny muted">{formatTime(log.createdAt)}</td>
-                    <td>
-                      <Badge>{log.taskType}</Badge>
-                    </td>
-                    <td>{log.feature}</td>
-                    <td className="tiny">{log.requestedMode}</td>
-                    <td>
-                      <span className="strong">{log.actualProvider || "—"}</span>{" "}
-                      <span className="tiny muted">{log.actualModel || ""}</span>
-                      {log.grounded && (
-                        <>
-                          {" "}
-                          <Badge tone="info">Grounded</Badge>
-                        </>
-                      )}
-                    </td>
-                    <td>{log.fallbackHops}</td>
-                    <td>{log.latencyMs}ms</td>
-                    <td>
-                      <Badge tone={log.status === "success" ? "ok" : "bad"}>{log.status}</Badge>
-                      {log.errorSummary && (
-                        <div className="tiny muted" style={{ maxWidth: 260, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }} title={log.errorSummary}>
-                          {log.errorSummary}
-                        </div>
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </Card>
+      {(activeCategory === "all" || activeCategory === "ai_llm") && (
+        <Card
+          title="Live AI Execution Receipts"
+          sub="Every server-side LLM request logs requested mode, actual provider & model served, fallback hops, and latency. Click a row for full detail."
+          actions={
+            <span className="tiny muted row" style={{ gap: 5 }}>
+              <Activity size={13} />
+              Latest {executionLogs.length} calls
+            </span>
+          }
+        >
+          {executionLogs.length === 0 ? (
+            <Empty title="No execution receipts recorded yet">
+              <p className="tiny muted">Run any AI action or test probe to see live execution proof here.</p>
+            </Empty>
+          ) : (
+            <ReceiptsTable
+              logs={executionLogs}
+              onOpenKey={(log) => {
+                const match = keys.find((k) => k.id === log.actualKeyId);
+                if (match) setDrawer({ kind: "llm", providerLabel: match.provider, key: match });
+                else if (log.actualProvider)
+                  setDrawer({ kind: "llm", providerLabel: log.actualProvider, key: null });
+              }}
+            />
+          )}
+        </Card>
+      )}
 
-      {/* Add Key Modal */}
+      {/* Add LLM Key Modal */}
       <Modal
         open={addModalOpen}
         onClose={() => setAddModalOpen(false)}
@@ -1087,6 +802,14 @@ export function AdminProvidersTab({
         large
       >
         <form className="stack" style={{ gap: 12 }} onSubmit={(e) => void handleAddKeySubmit(e)}>
+          <div className="row" style={{ justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+            <span className="tiny muted">Encrypted with AES-256-GCM. Free-tier defaults are pre-filled.</span>
+            <a className="btn btn-sm" href={selectedProviderMeta.docsUrl} target="_blank" rel="noreferrer noopener">
+              Get API Key
+              <ExternalLink size={12} />
+            </a>
+          </div>
+
           <div className="grid grid-2" style={{ gap: 10 }}>
             <Field label="Provider">
               <select
@@ -1123,10 +846,7 @@ export function AdminProvidersTab({
             </Field>
           </div>
 
-          <Field
-            label="API Key"
-            hint={`Encrypted with AES-256-GCM before storage. Get a key at ${selectedProviderMeta.docsLabel}.`}
-          >
+          <Field label="API Key" hint={`Get a key at ${selectedProviderMeta.docsLabel}.`}>
             <input
               className="input"
               type="password"
@@ -1151,7 +871,7 @@ export function AdminProvidersTab({
             </Field>
           )}
 
-          {(selectedProviderMeta.requiresBaseUrl || newProvider === "zai" || newProvider === "custom") && (
+          {(selectedProviderMeta.requiresBaseUrl || newProvider === "custom") && (
             <Field label="API Base URL" hint="Public https:// endpoint URL.">
               <input
                 className="input"
@@ -1189,11 +909,7 @@ export function AdminProvidersTab({
 
           {newProvider === "openrouter" && (
             <label className="row tiny" style={{ gap: 8, cursor: "pointer" }}>
-              <input
-                type="checkbox"
-                checked={newFreeOnly}
-                onChange={(e) => setNewFreeOnly(e.target.checked)}
-              />
+              <input type="checkbox" checked={newFreeOnly} onChange={(e) => setNewFreeOnly(e.target.checked)} />
               <span>Free-tier models only (`:free` suffix)</span>
             </label>
           )}
@@ -1242,6 +958,139 @@ export function AdminProvidersTab({
                 Save Key to Pool
               </button>
             </div>
+          </div>
+        </form>
+      </Modal>
+
+      {/* Add Search / Contact / Audit Key Modal */}
+      <Modal
+        open={addSearchOpen}
+        onClose={() => setAddSearchOpen(false)}
+        title={`Add Key · ${PROVIDER_CATEGORY_LABELS[searchCategory]}`}
+        large
+      >
+        <form
+          className="stack"
+          style={{ gap: 12 }}
+          onSubmit={async (e) => {
+            e.preventDefault();
+            const apiKey = selectedSearchMeta.dualField
+              ? [searchKeyFirst.trim(), searchKeySecond.trim()].filter(Boolean).join(":")
+              : searchKeyFirst.trim();
+            if (!apiKey) return;
+            const ok = await mutateGateway(
+              `Add ${selectedSearchMeta.label} key`,
+              {
+                action: "add_search_key",
+                provider: searchProviderInput,
+                apiKey,
+                label: searchLabelInput.trim() || undefined,
+              },
+              "add_search_key",
+            );
+            if (ok) {
+              setAddSearchOpen(false);
+              setSearchKeyFirst("");
+              setSearchKeySecond("");
+            }
+          }}
+        >
+          <div className="row" style={{ justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+            <span className="tiny muted">{selectedSearchMeta.blurb}</span>
+            <a className="btn btn-sm" href={selectedSearchMeta.docsUrl} target="_blank" rel="noreferrer noopener">
+              Get API Key
+              <ExternalLink size={12} />
+            </a>
+          </div>
+
+          <div className="grid grid-2" style={{ gap: 10 }}>
+            <Field label="Provider" hint={`${selectedSearchMeta.freeTierNote}${selectedSearchMeta.requiresCard ? " · card required" : " · no card required"}`}>
+              <select
+                className="select"
+                value={searchProviderInput}
+                onChange={(e) => setSearchProviderInput(e.target.value as SearchProviderId)}
+              >
+                {searchModalCatalog.map((sc) => (
+                  <option key={sc.id} value={sc.id}>
+                    {sc.label}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            <Field label="Key Label (optional)">
+              <input
+                className="input"
+                type="text"
+                value={searchLabelInput}
+                onChange={(e) => setSearchLabelInput(e.target.value)}
+                placeholder={`${selectedSearchMeta.label} Reserve Key`}
+              />
+            </Field>
+          </div>
+
+          {selectedSearchMeta.dualField ? (
+            <div className="grid grid-2" style={{ gap: 10 }}>
+              <Field
+                label={selectedSearchMeta.dualField === "accountId:apiToken" ? "Account ID" : "Key part 1"}
+                hint={
+                  selectedSearchMeta.dualField === "clientId:clientSecret"
+                    ? "clientId from Snov.io"
+                    : selectedSearchMeta.dualField === "apiKey:secretKey"
+                      ? "apiKey from Tomba"
+                      : "Cloudflare Account ID"
+                }
+              >
+                <input
+                  className="input"
+                  type="password"
+                  autoComplete="off"
+                  required
+                  value={searchKeyFirst}
+                  onChange={(e) => setSearchKeyFirst(e.target.value)}
+                />
+              </Field>
+              <Field
+                label={selectedSearchMeta.dualField === "accountId:apiToken" ? "API Token" : "Key part 2"}
+                hint={
+                  selectedSearchMeta.dualField === "clientId:clientSecret"
+                    ? "clientSecret from Snov.io"
+                    : selectedSearchMeta.dualField === "apiKey:secretKey"
+                      ? "secretKey from Tomba"
+                      : "Cloudflare API token"
+                }
+              >
+                <input
+                  className="input"
+                  type="password"
+                  autoComplete="off"
+                  required
+                  value={searchKeySecond}
+                  onChange={(e) => setSearchKeySecond(e.target.value)}
+                />
+              </Field>
+            </div>
+          ) : (
+            <Field label="API Key" hint={`Encrypted at rest. ${selectedSearchMeta.freeTierNote}.`}>
+              <input
+                className="input"
+                type="password"
+                autoComplete="off"
+                required
+                value={searchKeyFirst}
+                onChange={(e) => setSearchKeyFirst(e.target.value)}
+                placeholder="Paste API key..."
+              />
+            </Field>
+          )}
+
+          <div className="row" style={{ justifyContent: "flex-end", gap: 8 }}>
+            <button type="button" className="btn btn-sm" onClick={() => setAddSearchOpen(false)}>
+              Cancel
+            </button>
+            <button type="submit" className="btn btn-primary btn-sm" disabled={busy !== null}>
+              {busy === "add_search_key" ? <Loader2 size={12} className="spin" /> : <KeyRound size={12} />}
+              Save Key
+            </button>
           </div>
         </form>
       </Modal>
@@ -1378,6 +1227,126 @@ export function AdminProvidersTab({
           </div>
         )}
       </Modal>
+
+      <ApiKeyAnalyticsDrawer
+        key={
+          drawer
+            ? drawer.kind === "llm"
+              ? `llm:${drawer.key?.id ?? drawer.providerLabel}`
+              : `search:${drawer.state.provider}`
+            : "closed"
+        }
+        open={drawer !== null}
+        target={drawer}
+        sessionToken={sessionToken}
+        isSuper={isSuper}
+        busy={busy}
+        onClose={() => setDrawer(null)}
+        onMutate={mutateGateway}
+        onRequestEdit={(key) => {
+          setDrawer(null);
+          openEditModal(key);
+        }}
+      />
+    </div>
+  );
+}
+
+function ReceiptsTable({
+  logs,
+  onOpenKey,
+}: {
+  logs: AiExecutionLogRecord[];
+  onOpenKey: (log: AiExecutionLogRecord) => void;
+}) {
+  const [filter, setFilter] = useState<"all" | "success" | "failed">("all");
+  const [expanded, setExpanded] = useState<string | null>(null);
+  const rows = logs.filter((l) => filter === "all" || l.status === filter);
+
+  return (
+    <div className="stack" style={{ gap: 10 }}>
+      <div className="row" style={{ gap: 6 }}>
+        {(["all", "success", "failed"] as const).map((f) => (
+          <button
+            key={f}
+            type="button"
+            className={`btn btn-sm${filter === f ? " btn-primary" : ""}`}
+            onClick={() => setFilter(f)}
+          >
+            {f === "all" ? "All" : f === "success" ? "Success" : "Failed"}
+          </button>
+        ))}
+      </div>
+      <div style={{ overflowX: "auto" }}>
+        <table className="table" style={{ width: "100%", fontSize: 12.5 }}>
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Seat</th>
+              <th>Feature</th>
+              <th>Mode</th>
+              <th>Actual Provider &amp; Model</th>
+              <th>Hops</th>
+              <th>Latency</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((log) => (
+              <Fragment key={log.id}>
+                <tr
+                  style={{ cursor: "pointer" }}
+                  onClick={() => setExpanded((v) => (v === log.id ? null : log.id))}
+                >
+                  <td className="tiny muted">{formatTime(log.createdAt)}</td>
+                  <td>
+                    <Badge>{log.taskType}</Badge>
+                  </td>
+                  <td>{log.feature}</td>
+                  <td className="tiny">{log.requestedMode}</td>
+                  <td>
+                    <span className="strong">{log.actualProvider || "—"}</span>{" "}
+                    <span className="tiny muted">{log.actualModel || ""}</span>
+                    {log.grounded && (
+                      <>
+                        {" "}
+                        <Badge tone="info">Grounded</Badge>
+                      </>
+                    )}
+                  </td>
+                  <td>{log.fallbackHops}</td>
+                  <td>{log.latencyMs}ms</td>
+                  <td>
+                    <Badge tone={log.status === "success" ? "ok" : "bad"}>{log.status}</Badge>
+                  </td>
+                </tr>
+                {expanded === log.id && (
+                  <tr>
+                    <td colSpan={8} className="tiny muted" style={{ whiteSpace: "pre-wrap" }}>
+                      {`Requested: ${log.requestedModel ?? "auto"} · Provider: ${log.actualProvider ?? "—"} · Model: ${log.actualModel ?? "—"} · Hops: ${log.fallbackHops}\n${
+                        log.errorSummary ? `Error: ${log.errorSummary}` : "No error recorded."
+                      }`}
+                      {log.actualKeyId && (
+                        <button
+                          type="button"
+                          className="btn btn-sm"
+                          style={{ marginLeft: 8 }}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            onOpenKey(log);
+                          }}
+                        >
+                          Inspect key
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                )}
+              </Fragment>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }

@@ -831,6 +831,50 @@ export async function saveAdminSearchKey(input: {
   invalidateAdminAiCaches();
 }
 
+/** Edit a search/enrichment/audit key: relabel, rotate the secret, or re-enable. */
+export async function updateAdminSearchKey(input: {
+  id: string;
+  label?: string;
+  encryptedKey?: string;
+  maskedKey?: string;
+  enabled?: boolean;
+}): Promise<void> {
+  if (!supabaseServer) return;
+  const now = new Date().toISOString();
+  const patch: Record<string, unknown> = { updated_at: now };
+  if (input.label?.trim()) patch.label = input.label.trim();
+  if (input.encryptedKey) patch.encrypted_key = input.encryptedKey;
+  if (input.maskedKey) patch.masked_key = input.maskedKey;
+  if (input.maskedKey) {
+    // A rotated secret invalidates the previous error/health signal.
+    patch.health_status = "healthy";
+    patch.last_error = null;
+    patch.last_checked_at = now;
+  }
+  if (typeof input.enabled === "boolean") patch.enabled = input.enabled;
+  const { error } = await supabaseServer
+    .from("admin_ai_keys")
+    .update(patch as never)
+    .eq("id", input.id);
+  if (error) {
+    const existing = (await readKnowledgeDoc<Record<string, unknown>[]>(PLATFORM_LLM_OWNER, DOC_ADMIN_KEYS)) ?? [];
+    const next = existing.map((row) =>
+      row.id === input.id
+        ? {
+            ...row,
+            ...(input.label?.trim() ? { label: input.label.trim() } : {}),
+            ...(input.encryptedKey ? { encrypted_key: input.encryptedKey } : {}),
+            ...(input.maskedKey ? { masked_key: input.maskedKey, health_status: "healthy", last_error: null } : {}),
+            ...(typeof input.enabled === "boolean" ? { enabled: input.enabled } : {}),
+            updated_at: now,
+          }
+        : row,
+    );
+    await writeKnowledgeDoc(PLATFORM_LLM_OWNER, DOC_ADMIN_KEYS, "system_llm_gateway", "Admin AI Gateway Pooled Keys", next);
+  }
+  invalidateAdminAiCaches();
+}
+
 export async function toggleAdminSearchKey(id: string, enabled: boolean): Promise<void> {
   if (!supabaseServer) return;
   const now = new Date().toISOString();
@@ -1225,6 +1269,9 @@ async function appendAiExecutionLogUnsafe(
 export async function listAiExecutionLogs(options?: {
   ownerId?: string;
   limit?: number;
+  actualKeyId?: string;
+  actualProvider?: string;
+  status?: "success" | "failed";
 }): Promise<AiExecutionLogRecord[]> {
   try {
     return await listAiExecutionLogsUnsafe(options);
@@ -1239,9 +1286,12 @@ export async function listAiExecutionLogs(options?: {
 async function listAiExecutionLogsUnsafe(options?: {
   ownerId?: string;
   limit?: number;
+  actualKeyId?: string;
+  actualProvider?: string;
+  status?: "success" | "failed";
 }): Promise<AiExecutionLogRecord[]> {
   if (!supabaseServer) return [];
-  const limit = Math.min(200, Math.max(10, options?.limit ?? 50));
+  const limit = Math.min(500, Math.max(10, options?.limit ?? 50));
 
   let q = supabaseServer
     .from("ai_execution_logs")
@@ -1250,6 +1300,15 @@ async function listAiExecutionLogsUnsafe(options?: {
     .limit(limit);
   if (options?.ownerId) {
     q = q.eq("owner_id", options.ownerId);
+  }
+  if (options?.actualKeyId) {
+    q = q.eq("actual_key_id", options.actualKeyId);
+  }
+  if (options?.actualProvider) {
+    q = q.eq("actual_provider", options.actualProvider);
+  }
+  if (options?.status) {
+    q = q.eq("status", options.status);
   }
 
   const { data, error } = await q;
@@ -1278,6 +1337,12 @@ async function listAiExecutionLogsUnsafe(options?: {
   }
 
   const existing = (await readKnowledgeDoc<AiExecutionLogRecord[]>(PLATFORM_LLM_OWNER, DOC_EXEC_LOGS)) ?? [];
-  const filtered = options?.ownerId ? existing.filter((x) => x.ownerId === options.ownerId) : existing;
+  const filtered = existing.filter((x) => {
+    if (options?.ownerId && x.ownerId !== options.ownerId) return false;
+    if (options?.actualKeyId && x.actualKeyId !== options.actualKeyId) return false;
+    if (options?.actualProvider && x.actualProvider !== options.actualProvider) return false;
+    if (options?.status && x.status !== options.status) return false;
+    return true;
+  });
   return filtered.slice(0, limit);
 }

@@ -30,6 +30,23 @@ export type SearchProviderId =
 
 export type SearchResetCycle = "monthly" | "daily" | "one_time" | "keyless";
 
+/** Functional buckets used by the admin API Command Center. */
+export type ProviderCategory = "ai_llm" | "web_search" | "contact_enrichment" | "website_audit";
+
+export const PROVIDER_CATEGORY_LABELS: Record<ProviderCategory, string> = {
+  ai_llm: "AI / LLM Engines",
+  web_search: "Web Search & Discovery",
+  contact_enrichment: "Contact Enrichment (Email, Phone & LinkedIn)",
+  website_audit: "Website Audit, Scraping & Screenshots",
+};
+
+export const PROVIDER_CATEGORY_ORDER: ProviderCategory[] = [
+  "ai_llm",
+  "web_search",
+  "contact_enrichment",
+  "website_audit",
+];
+
 export interface SearchProviderMeta {
   id: SearchProviderId;
   label: string;
@@ -41,6 +58,12 @@ export interface SearchProviderMeta {
   defaultQuotaLimit: number;
   resetCycle: SearchResetCycle;
   kind: "search" | "enrichment" | "pagespeed" | "screenshot";
+  category: Exclude<ProviderCategory, "ai_llm">;
+  /** Free-tier facts shown when the provider has no saved key yet. */
+  freeTierNote: string;
+  requiresCard: boolean;
+  /** Two-part keys (e.g. Tomba apiKey:secretKey) need a second input. */
+  dualField?: "clientId:clientSecret" | "apiKey:secretKey" | "accountId:apiToken";
 }
 
 export const SEARCH_PROVIDER_CATALOG: SearchProviderMeta[] = [
@@ -55,6 +78,9 @@ export const SEARCH_PROVIDER_CATALOG: SearchProviderMeta[] = [
     defaultQuotaLimit: 1000,
     resetCycle: "monthly",
     kind: "search",
+    category: "web_search",
+    freeTierNote: "$10 free credits, no card required",
+    requiresCard: false,
   },
   {
     id: "tavily",
@@ -67,6 +93,9 @@ export const SEARCH_PROVIDER_CATALOG: SearchProviderMeta[] = [
     defaultQuotaLimit: 1000,
     resetCycle: "monthly",
     kind: "search",
+    category: "web_search",
+    freeTierNote: "1,000 free credits / month",
+    requiresCard: false,
   },
   {
     id: "firecrawl",
@@ -79,6 +108,9 @@ export const SEARCH_PROVIDER_CATALOG: SearchProviderMeta[] = [
     defaultQuotaLimit: 500,
     resetCycle: "monthly",
     kind: "search",
+    category: "web_search",
+    freeTierNote: "500 free credits / month",
+    requiresCard: false,
   },
   {
     id: "serper",
@@ -91,6 +123,9 @@ export const SEARCH_PROVIDER_CATALOG: SearchProviderMeta[] = [
     defaultQuotaLimit: 2500,
     resetCycle: "one_time",
     kind: "search",
+    category: "web_search",
+    freeTierNote: "2,500 one-time free queries",
+    requiresCard: false,
   },
   {
     id: "brave",
@@ -103,6 +138,9 @@ export const SEARCH_PROVIDER_CATALOG: SearchProviderMeta[] = [
     defaultQuotaLimit: 2000,
     resetCycle: "monthly",
     kind: "search",
+    category: "web_search",
+    freeTierNote: "2,000 free queries / month (card required)",
+    requiresCard: true,
   },
   {
     id: "jina",
@@ -115,10 +153,13 @@ export const SEARCH_PROVIDER_CATALOG: SearchProviderMeta[] = [
     defaultQuotaLimit: 5000,
     resetCycle: "daily",
     kind: "enrichment",
+    category: "website_audit",
+    freeTierNote: "Keyless endpoint available; key raises limits",
+    requiresCard: false,
   },
   {
     id: "pagespeed",
-    label: "PageSpeed Insights",
+    label: "Google PageSpeed Insights",
     blurb: "Real Google Lighthouse mobile performance & LCP scores (optional API key boosts daily quota).",
     docsUrl: "https://developers.google.com/speed/docs/insights/v5/get-started",
     keyPrefixes: ["AIza"],
@@ -127,6 +168,9 @@ export const SEARCH_PROVIDER_CATALOG: SearchProviderMeta[] = [
     defaultQuotaLimit: 25000,
     resetCycle: "daily",
     kind: "pagespeed",
+    category: "website_audit",
+    freeTierNote: "Works keyless at a lower daily quota",
+    requiresCard: false,
   },
   {
     id: "bytemine",
@@ -139,6 +183,9 @@ export const SEARCH_PROVIDER_CATALOG: SearchProviderMeta[] = [
     defaultQuotaLimit: 100,
     resetCycle: "monthly",
     kind: "enrichment",
+    category: "contact_enrichment",
+    freeTierNote: "100 free credits / month",
+    requiresCard: false,
   },
   {
     id: "apollo",
@@ -151,6 +198,9 @@ export const SEARCH_PROVIDER_CATALOG: SearchProviderMeta[] = [
     defaultQuotaLimit: 75,
     resetCycle: "monthly",
     kind: "enrichment",
+    category: "contact_enrichment",
+    freeTierNote: "75 free credits / month",
+    requiresCard: false,
   },
   {
     id: "hunter",
@@ -163,6 +213,9 @@ export const SEARCH_PROVIDER_CATALOG: SearchProviderMeta[] = [
     defaultQuotaLimit: 50,
     resetCycle: "monthly",
     kind: "enrichment",
+    category: "contact_enrichment",
+    freeTierNote: "50 free credits / month",
+    requiresCard: false,
   },
   {
     id: "cufinder",
@@ -175,11 +228,14 @@ export const SEARCH_PROVIDER_CATALOG: SearchProviderMeta[] = [
     defaultQuotaLimit: 50,
     resetCycle: "monthly",
     kind: "enrichment",
+    category: "contact_enrichment",
+    freeTierNote: "50 free credits / month",
+    requiresCard: false,
   },
   {
     id: "snov",
     label: "Snov.io (50 free/mo)",
-    blurb: "Domain & decision-maker email lookup (enter clientId:clientSecret; 50 free monthly credits).",
+    blurb: "Domain & decision-maker email lookup (clientId + clientSecret; 50 free monthly credits).",
     docsUrl: "https://snov.io/api",
     keyPrefixes: [],
     defaultRpmLimit: 15,
@@ -187,11 +243,15 @@ export const SEARCH_PROVIDER_CATALOG: SearchProviderMeta[] = [
     defaultQuotaLimit: 50,
     resetCycle: "monthly",
     kind: "enrichment",
+    category: "contact_enrichment",
+    freeTierNote: "50 free credits / month",
+    requiresCard: false,
+    dualField: "clientId:clientSecret",
   },
   {
     id: "tomba",
     label: "Tomba (25 free/mo)",
-    blurb: "Verified domain emails & roles (enter apiKey:secretKey; 25 free monthly searches).",
+    blurb: "Verified domain emails & roles (apiKey + secretKey; 25 free monthly searches).",
     docsUrl: "https://tomba.io/api",
     keyPrefixes: [],
     defaultRpmLimit: 15,
@@ -199,6 +259,10 @@ export const SEARCH_PROVIDER_CATALOG: SearchProviderMeta[] = [
     defaultQuotaLimit: 25,
     resetCycle: "monthly",
     kind: "enrichment",
+    category: "contact_enrichment",
+    freeTierNote: "25 free searches / month",
+    requiresCard: false,
+    dualField: "apiKey:secretKey",
   },
   {
     id: "getprospect",
@@ -211,11 +275,14 @@ export const SEARCH_PROVIDER_CATALOG: SearchProviderMeta[] = [
     defaultQuotaLimit: 50,
     resetCycle: "monthly",
     kind: "enrichment",
+    category: "contact_enrichment",
+    freeTierNote: "50 free credits / month",
+    requiresCard: false,
   },
   {
     id: "cloudflare_browser",
     label: "Cloudflare Browser Rendering (Free)",
-    blurb: "Headless Chromium mobile screenshots & rendered DOM (enter accountId:apiToken; 10 free min/day).",
+    blurb: "Headless Chromium mobile screenshots & rendered DOM (Account ID + API Token; 10 free min/day).",
     docsUrl: "https://developers.cloudflare.com/browser-rendering/",
     keyPrefixes: [],
     defaultRpmLimit: 15,
@@ -223,6 +290,10 @@ export const SEARCH_PROVIDER_CATALOG: SearchProviderMeta[] = [
     defaultQuotaLimit: 200,
     resetCycle: "daily",
     kind: "screenshot",
+    category: "website_audit",
+    freeTierNote: "10 free browser minutes / day",
+    requiresCard: false,
+    dualField: "accountId:apiToken",
   },
   {
     id: "screenshotone",
@@ -235,6 +306,54 @@ export const SEARCH_PROVIDER_CATALOG: SearchProviderMeta[] = [
     defaultQuotaLimit: 100,
     resetCycle: "monthly",
     kind: "screenshot",
+    category: "website_audit",
+    freeTierNote: "100 free screenshots / month",
+    requiresCard: false,
+  },
+];
+
+/** Providers that never need a key and stay on by default. */
+export const KEYLESS_PROVIDERS: {
+  id: KeylessProviderId;
+  label: string;
+  category: Exclude<ProviderCategory, "ai_llm">;
+  blurb: string;
+}[] = [
+  {
+    id: "osm",
+    label: "OpenStreetMap Overpass",
+    category: "web_search",
+    blurb: "Free local-business POI search, runs first for geo queries.",
+  },
+  {
+    id: "duckduckgo",
+    label: "DuckDuckGo Keyless",
+    category: "web_search",
+    blurb: "HTML search fallback with no key or quota.",
+  },
+  {
+    id: "builtin_crawler",
+    label: "Direct Multi-Page + Sitemap + JSON-LD Crawler",
+    category: "contact_enrichment",
+    blurb: "Crawls /contact, /about, robots.txt and sitemaps for $0.",
+  },
+  {
+    id: "dns_mx",
+    label: "Node DNS MX Verifier",
+    category: "contact_enrichment",
+    blurb: "Confirms the domain accepts mail before a lead is saved.",
+  },
+  {
+    id: "exa_people",
+    label: "Exa People Search",
+    category: "contact_enrichment",
+    blurb: "Decision-maker discovery through the Exa index when available.",
+  },
+  {
+    id: "dom_audit",
+    label: "Deterministic DOM & Broken-Link Checker",
+    category: "website_audit",
+    blurb: "Zero-cost DOM, hidden-text and broken-link audit that runs first.",
   },
 ];
 
@@ -557,7 +676,7 @@ export const PROVIDER_CATALOG: ProviderCatalogMeta[] = [
   {
     id: "groq",
     label: "Groq",
-    blurb: "Ultra-fast LPU inference on free developer tier for Llama 3.3, Qwen & instant checks.",
+    blurb: "Ultra-fast LPU inference on the free developer tier for GPT-OSS, Qwen & instant checks.",
     style: "openai_compat",
     baseUrl: "https://api.groq.com/openai/v1",
     modelsPath: "/models",
@@ -567,21 +686,32 @@ export const PROVIDER_CATALOG: ProviderCatalogMeta[] = [
     freeTierDefault: true,
     defaultRpmLimit: 30,
     defaultRpdLimit: 1000,
+    // Groq retired free-tier Llama 3.3/3.1 on standard keys; current free
+    // production models are the GPT-OSS pair and Qwen. Fetch Models keeps
+    // this list in sync with whatever the key's /models endpoint returns.
     defaultModels: [
       {
-        id: "llama-3.3-70b-versatile",
-        displayName: "Llama 3.3 70B Versatile",
+        id: "openai/gpt-oss-120b",
+        displayName: "GPT-OSS 120B (Groq)",
         enabled: true,
-        seats: ["balanced", "smart"],
+        seats: ["smart", "balanced"],
+        capabilities: { json: true, tools: true, vision: false, reasoning: true },
+        isFreeTier: true,
+      },
+      {
+        id: "openai/gpt-oss-20b",
+        displayName: "GPT-OSS 20B (Groq)",
+        enabled: true,
+        seats: ["fast", "balanced"],
         capabilities: { json: true, tools: true, vision: false, reasoning: false },
         isFreeTier: true,
       },
       {
-        id: "llama-3.1-8b-instant",
-        displayName: "Llama 3.1 8B Instant",
+        id: "qwen/qwen3-32b",
+        displayName: "Qwen 3 32B (Groq)",
         enabled: true,
-        seats: ["fast"],
-        capabilities: { json: true, tools: true, vision: false, reasoning: false },
+        seats: ["balanced", "smart"],
+        capabilities: { json: true, tools: true, vision: false, reasoning: true },
         isFreeTier: true,
       },
     ],
@@ -826,6 +956,74 @@ export interface AdminSearchKeyPublic {
   lastCheckedAt?: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+export type SearchProviderStateStatus =
+  | "active"
+  | "paused"
+  | "not_configured"
+  | "cooldown"
+  | "exhausted"
+  | "near_limit"
+  | "invalid"
+  | "keyless";
+
+export type KeylessProviderId = "duckduckgo" | "osm" | "builtin_crawler" | "dns_mx" | "exa_people" | "dom_audit";
+
+/** One row per catalog provider, computed server-side for the admin command center. */
+export interface SearchProviderState {
+  provider: SearchProviderId | KeylessProviderId;
+  label: string;
+  category: Exclude<ProviderCategory, "ai_llm">;
+  kind: SearchProviderMeta["kind"] | "keyless";
+  status: SearchProviderStateStatus;
+  hasKey: boolean;
+  enabled: boolean;
+  keyId: string | null;
+  maskedKey: string | null;
+  docsUrl: string;
+  blurb: string;
+  freeTierNote: string;
+  requiresCard: boolean;
+  dualField: SearchProviderMeta["dualField"] | null;
+  healthStatus: KeyHealthStatus | null;
+  lastError: string | null;
+  quota: {
+    used: number;
+    limit: number;
+    resetCycle: SearchResetCycle;
+    cacheHits: number;
+    nextResetAt: string | null;
+  };
+}
+
+/** Real per-key stats aggregated from ai_execution_logs. */
+export interface KeyAnalyticsSnapshot {
+  keyId: string | null;
+  provider: string | null;
+  totalCalls: number;
+  calls24h: number;
+  calls7d: number;
+  successCount: number;
+  failedCount: number;
+  successRate: number | null;
+  avgLatencyMs: number | null;
+  p95LatencyMs: number | null;
+  avgFallbackHops: number | null;
+  topFeatures: { feature: string; count: number }[];
+  recentLogs: AiExecutionLogRecord[];
+}
+
+export interface SearchKeyAnalyticsSnapshot {
+  provider: SearchProviderId | KeylessProviderId;
+  status: SearchProviderStateStatus;
+  used: number;
+  limit: number;
+  resetCycle: SearchResetCycle;
+  nextResetAt: string | null;
+  cacheHitsSaved: number;
+  hitRate: number | null;
+  recentLogs: AiExecutionLogRecord[];
 }
 
 export interface GatewayReceipt {

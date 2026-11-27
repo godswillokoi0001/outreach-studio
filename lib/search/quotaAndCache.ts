@@ -200,6 +200,19 @@ export async function markSearchProviderExhausted(provider: SearchProviderId): P
   await persistQuotaRecord(rec);
 }
 
+export async function setSearchProviderQuotaLimit(
+  provider: SearchProviderId,
+  quotaLimit: number,
+): Promise<SearchQuotaRecord> {
+  const rec = await loadQuotaRecord(provider);
+  rec.quotaLimit = Math.max(0, Math.min(1_000_000, Math.round(quotaLimit)));
+  rec.updatedAt = new Date().toISOString();
+  rec.status = computeStatus(rec);
+  memQuotas.set(provider, rec);
+  await persistQuotaRecord(rec);
+  return rec;
+}
+
 export async function resetSearchProviderQuota(provider: QuotaTrackedProviderId): Promise<SearchQuotaRecord> {
   const rec = await loadQuotaRecord(provider);
   rec.usedCount = 0;

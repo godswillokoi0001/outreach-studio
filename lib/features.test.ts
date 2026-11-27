@@ -34,6 +34,7 @@ import {
   clearAllInMemoryModelCooldowns,
   clearRouterStateForTests,
   evaluateKeyHeadroom,
+  MAX_AUTO_ATTEMPTS,
   isCandidateCoolingDown,
   isChatCapableModelId,
   rankPoolCandidates,
@@ -41,6 +42,13 @@ import {
   recordKeyUsageHit,
 } from "./llm/router";
 import { GatewayProviderError } from "./llm/providers";
+import { summarizeKeyAnalytics } from "./llm/analytics";
+import {
+  buildSearchProviderStates,
+  computeSearchProviderStatus,
+  isSearchProviderSelectable,
+} from "./search/providerStatus";
+import type { SearchQuotaRecord } from "./search/quotaAndCache";
 import {
   encryptGatewayKey,
   getUserAiSettings,
@@ -71,7 +79,14 @@ import {
   WebSearchService,
 } from "./search/webSearch";
 import { DEFAULT_SETTINGS } from "./types";
-import type { AdminAiKeyRecord, AdminAiSettings, UserAiKeyRecord } from "./llm/types";
+import { SEARCH_PROVIDER_CATALOG } from "./llm/types";
+import type {
+  AdminAiKeyRecord,
+  AdminAiSettings,
+  AdminSearchKeyPublic,
+  AiExecutionLogRecord,
+  UserAiKeyRecord,
+} from "./llm/types";
 import { DEFAULT_ONBOARDING_ANSWERS } from "./onboarding";
 import { requireAdmin } from "./platform/admin-auth";
 import { hashAdminPassword, verifyAdminPassword } from "./platform/admin-credentials";
@@ -4550,3 +4565,246 @@ test("Admin AI Assistant secret/PII redaction and tool permission separation", a
   assert.equal(ADMIN_CHAT_CONFIRM_TOOLS.has("clear_stuck_job"), true);
 });
 
+
+// ---------------------------------------------------------------------------
+// Admin API Command Center: provider status, routing hygiene, key analytics
+// ---------------------------------------------------------------------------
+
+function makeQuotaRecord(
+  provider: SearchQuotaRecord["provider"],
+  overrides: Partial<SearchQuotaRecord> = {},
+): SearchQuotaRecord {
+  const base = SEARCH_PROVIDER_CATALOG.find((p) => p.id === provider);
+  const now = new Date().toISOString();
+  return {
+    provider,
+    label: base?.label ?? String(provider),
+    usedCount: 0,
+    quotaLimit: base?.defaultQuotaLimit ?? 100,
+    resetCycle: base?.resetCycle ?? "monthly",
+    exhaustedUntil: null,
+    lastResetAt: now,
+    cacheHitsSaved: 0,
+    status: "healthy",
+    updatedAt: now,
+    ...overrides,
+  };
+}
+
+function makeSearchKeyPublic(
+  provider: SearchQuotaRecord["provider"],
+  enabled: boolean,
+): AdminSearchKeyPublic {
+  const now = new Date().toISOString();
+  return {
+    id: `srch_${String(provider)}_1`,
+    provider: provider as AdminSearchKeyPublic["provider"],
+    label: `${String(provider)} key`,
+    maskedKey: "••••1234",
+    enabled,
+    healthStatus: "healthy",
+    lastError: null,
+    lastCheckedAt: null,
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
+test("unconfigured providers report not_configured (never healthy/exhausted) and paused keys stay paused", () => {
+  const quotas = SEARCH_PROVIDER_CATALOG.map((m) => makeQuotaRecord(m.id));
+
+  const empty = buildSearchProviderStates({ keys: [], quotas });
+  const keyed = empty.filter((s) => s.kind !== "keyless");
+  assert.equal(keyed.length, SEARCH_PROVIDER_CATALOG.length);
+  for (const state of keyed) {
+    assert.equal(state.status, "not_configured", `${state.provider} must not claim a live quota state`);
+    assert.equal(state.hasKey, false);
+    assert.equal(isSearchProviderSelectable(state.status), false);
+  }
+  assert.ok(empty.filter((s) => s.kind === "keyless").every((s) => s.status === "keyless"));
+
+  // Even an exhausted quota row cannot make an unconfigured provider look exhausted.
+  const exhaustedUnconfigured = buildSearchProviderStates({
+    keys: [],
+    quotas: quotas.map((q) => (q.provider === "brave" ? { ...q, status: "exhausted" as const } : q)),
+  });
+  assert.equal(exhaustedUnconfigured.find((s) => s.provider === "brave")?.status, "not_configured");
+
+  const paused = buildSearchProviderStates({
+    keys: [makeSearchKeyPublic("tavily", false)],
+    quotas,
+  });
+  assert.equal(paused.find((s) => s.provider === "tavily")?.status, "paused");
+  assert.equal(isSearchProviderSelectable("paused"), false);
+
+  const active = buildSearchProviderStates({
+    keys: [makeSearchKeyPublic("pagespeed", true)],
+    quotas,
+  });
+  assert.equal(active.find((s) => s.provider === "pagespeed")?.status, "active");
+
+  const spent = buildSearchProviderStates({
+    keys: [makeSearchKeyPublic("exa", true)],
+    quotas: quotas.map((q) => (q.provider === "exa" ? { ...q, status: "exhausted" as const, usedCount: 1000 } : q)),
+  });
+  assert.equal(spent.find((s) => s.provider === "exa")?.status, "exhausted");
+
+  // Status precedence: key presence > pause > health > quota.
+  assert.equal(
+    computeSearchProviderStatus({ hasKey: false, enabled: true, quotaStatus: "exhausted" }),
+    "not_configured",
+  );
+  assert.equal(
+    computeSearchProviderStatus({ hasKey: true, enabled: false, quotaStatus: "exhausted" }),
+    "paused",
+  );
+  assert.equal(
+    computeSearchProviderStatus({ hasKey: true, enabled: true, healthStatus: "invalid" }),
+    "invalid",
+  );
+});
+
+test("router excludes allam/audio/safety models, skips paused keys, and caps failover hops at 6", async () => {
+  assert.equal(isChatCapableModelId("allam-2-7b"), false);
+  assert.equal(isChatCapableModelId("whisper-large-v3"), false);
+  assert.equal(isChatCapableModelId("llama-guard-3-8b"), false);
+  assert.equal(isChatCapableModelId("playai-tts"), false);
+  assert.equal(isChatCapableModelId("openai/gpt-oss-120b"), true);
+
+  const groqKey = makeSampleAdminKey("adm_groq_special", "groq", "gsk_special", {
+    models: [
+      {
+        id: "allam-2-7b",
+        displayName: "Allam 2 7B",
+        enabled: true,
+        seats: ["fast", "balanced"],
+        capabilities: { json: true, tools: true, vision: false, reasoning: false },
+      },
+      {
+        id: "openai/gpt-oss-20b",
+        displayName: "GPT-OSS 20B",
+        enabled: true,
+        seats: ["fast", "balanced"],
+        capabilities: { json: true, tools: true, vision: false, reasoning: false },
+      },
+    ],
+  });
+  const ranked = rankPoolCandidates({
+    keys: [groqKey],
+    settings: makeSampleAdminSettings(),
+    taskType: "fast",
+    feature: "compose_review",
+  });
+  assert.deepEqual(ranked.map((c) => c.model.id), ["openai/gpt-oss-20b"]);
+
+  const pausedRanked = rankPoolCandidates({
+    keys: [{ ...groqKey, enabled: false }],
+    settings: makeSampleAdminSettings(),
+    taskType: "balanced",
+  });
+  assert.equal(pausedRanked.length, 0);
+
+  // Real upstream attempts are capped, so a request can never log 38 hops.
+  const prevFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = (async () => {
+    calls += 1;
+    return new Response(JSON.stringify({ error: { message: "rate limit exceeded, slow down" } }), {
+      status: 429,
+      headers: { "Content-Type": "application/json" },
+    });
+  }) as typeof fetch;
+
+  try {
+    resetGatewayCachesForTests();
+    clearRouterStateForTests();
+    const denseModels = ["m1", "m2", "m3"].map((id) => ({
+      id,
+      displayName: id,
+      enabled: true,
+      seats: ["balanced" as const],
+      capabilities: { json: true, tools: true, vision: false, reasoning: false },
+    }));
+    const owner = "owner-hop-cap";
+    seedGatewayCachesForTests({
+      adminSettings: makeSampleAdminSettings(),
+      adminKeys: [
+        makeSampleAdminKey("adm_hop_nvidia", "nvidia", "nvapi-hop-a", { models: denseModels }),
+        makeSampleAdminKey("adm_hop_openai", "openai", "sk-hop-b", { models: denseModels }),
+        makeSampleAdminKey("adm_hop_cerebras", "cerebras", "csk-hop-c", { models: denseModels }),
+      ],
+      userSettings: {
+        [owner]: {
+          ownerId: owner,
+          mode: "system_auto",
+          activeKeyId: null,
+          activeProvider: null,
+          activeModel: null,
+          fallbackToSystemAuto: false,
+          updatedAt: new Date().toISOString(),
+        },
+      },
+      userKeys: { [owner]: [] },
+    });
+
+    await assert.rejects(
+      LLMGateway.complete({
+        ownerId: owner,
+        taskType: "balanced",
+        feature: "compose_review",
+        messages: [{ role: "user", content: "Draft an outreach email." }],
+      }),
+      (err: unknown) => err instanceof LLMGatewayError,
+    );
+    assert.ok(calls > 0);
+    assert.equal(calls, MAX_AUTO_ATTEMPTS, "a request must stop at the hard attempt cap");
+    assert.ok(MAX_AUTO_ATTEMPTS <= 6);
+  } finally {
+    globalThis.fetch = prevFetch;
+    resetGatewayCachesForTests();
+    clearRouterStateForTests();
+  }
+});
+
+test("key analytics aggregates real receipts per key (calls, success rate, latency, p95, hops, top features)", () => {
+  const now = Date.now();
+  const at = (msAgo: number) => new Date(now - msAgo).toISOString();
+  const day = 24 * 60 * 60_000;
+  const base = {
+    ownerId: "o",
+    requestedMode: "system_auto" as const,
+    requestedModel: null,
+    grounded: false,
+  };
+  const logs: AiExecutionLogRecord[] = [
+    { id: "l1", ...base, taskType: "balanced", feature: "compose_initial", actualProvider: "google",
+      actualKeyId: "k1", actualModel: "gemini-2.5-flash", fallbackHops: 0, fallbackUsed: false,
+      latencyMs: 1000, status: "success", errorSummary: null, createdAt: at(60_000) },
+    { id: "l2", ...base, taskType: "balanced", feature: "compose_initial", actualProvider: "google",
+      actualKeyId: "k1", actualModel: "gemini-2.5-flash", fallbackHops: 1, fallbackUsed: true,
+      latencyMs: 3000, status: "success", errorSummary: null, createdAt: at(2 * day) },
+    { id: "l3", ...base, taskType: "fast", feature: "operator_chat", actualProvider: "google",
+      actualKeyId: "k1", actualModel: "gemini-2.5-flash", fallbackHops: 2, fallbackUsed: true,
+      latencyMs: 5000, status: "failed", errorSummary: "429: rate limit", createdAt: at(3 * 60_000) },
+    { id: "l4", ...base, taskType: "balanced", feature: "compose_initial", actualProvider: "groq",
+      actualKeyId: "k2", actualModel: "openai/gpt-oss-20b", fallbackHops: 0, fallbackUsed: false,
+      latencyMs: 200, status: "success", errorSummary: null, createdAt: at(90_000) },
+  ];
+
+  const stats = summarizeKeyAnalytics({ logs, keyId: "k1", now });
+  assert.equal(stats.totalCalls, 3);
+  assert.equal(stats.calls24h, 2);
+  assert.equal(stats.calls7d, 3);
+  assert.equal(stats.successCount, 2);
+  assert.equal(stats.failedCount, 1);
+  assert.equal(stats.successRate, 66.7);
+  assert.equal(stats.avgLatencyMs, 2000);
+  assert.equal(stats.p95LatencyMs, 3000);
+  assert.equal(stats.avgFallbackHops, 0.5);
+  assert.deepEqual(stats.topFeatures[0], { feature: "compose_initial", count: 2 });
+  assert.equal(stats.recentLogs.every((l) => l.actualKeyId === "k1"), true);
+
+  const byProvider = summarizeKeyAnalytics({ logs, provider: "groq", now });
+  assert.equal(byProvider.totalCalls, 1);
+  assert.equal(byProvider.avgLatencyMs, 200);
+});
