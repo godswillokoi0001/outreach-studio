@@ -154,6 +154,11 @@ async function runPooledAutoFailover<T>(input: {
   let lastErr: unknown = null;
   const maxTry = Math.min(MAX_AUTO_ATTEMPTS, ranked.length);
   const triedKeys = new Set<string>();
+  // Failure count per key: one key with several unusable models must not eat
+  // every attempt while other healthy keys go untried.
+  const keyFailures = new Map<string, number>();
+  const hasMultipleKeys = new Set(ranked.map((c) => c.key.id)).size > 1;
+  const MAX_FAILURES_PER_KEY = 2;
 
   for (let i = 0; i < maxTry; i++) {
     const elapsed = Date.now() - input.startedAt;
@@ -162,6 +167,9 @@ async function runPooledAutoFailover<T>(input: {
     }
 
     const candidate = ranked[i];
+    if (hasMultipleKeys && (keyFailures.get(candidate.key.id) ?? 0) >= MAX_FAILURES_PER_KEY) {
+      continue;
+    }
     const trySig = `${candidate.key.id}:${candidate.model.id}`;
     if (triedKeys.has(trySig)) continue;
     triedKeys.add(trySig);
@@ -242,9 +250,22 @@ async function runPooledAutoFailover<T>(input: {
               retryable: true,
             });
       recordCandidateFailure(candidate.key, candidate.model.id, gErr);
+      keyFailures.set(candidate.key.id, (keyFailures.get(candidate.key.id) ?? 0) + 1);
 
-      if (!gErr.retryable && gErr.status >= 400 && gErr.status < 500 && !gErr.authFailed && !gErr.modelNotFound) {
-        // Malformed prompt / client request error -> do not waste pool hops
+      // A model that refuses this request shape (tools, multi-turn, vision) is a
+      // per-model limitation: bench it and let the next healthy key answer.
+      if (gErr.modelUnsupported) continue;
+
+      // Only a genuinely model-independent client error stops the loop.
+      if (
+        !gErr.retryable &&
+        gErr.status === 400 &&
+        !gErr.authFailed &&
+        !gErr.modelNotFound &&
+        /invalid (?:argument|request|prompt)|request too large|context length|contents are required/i.test(
+          gErr.message,
+        )
+      ) {
         break;
       }
     }
@@ -298,8 +319,13 @@ async function executeGatewayCore<T>(
 
     const provider = chosenKey?.provider ?? userSettings.activeProvider ?? null;
     const meta = provider ? getProviderMeta(provider) : null;
+    // The saved model may belong to a previously selected key/provider. Never
+    // call this key with a model it does not own.
+    const preferredModel = (userSettings.activeModel ?? "").trim();
     const model =
-      (userSettings.activeModel ?? "").trim() ||
+      (preferredModel && chosenKey?.models.some((m) => m.id === preferredModel)
+        ? preferredModel
+        : "") ||
       chosenKey?.models.find((m) => m.enabled)?.id ||
       meta?.defaultModels[0]?.id ||
       "";
@@ -400,11 +426,14 @@ async function executeGatewayCore<T>(
       };
       void appendAiExecutionLog(failReceipt).catch(() => {});
 
+      const unsupported = err instanceof GatewayProviderError && err.modelUnsupported;
       throw new LLMGatewayError(
-        `Your selected ${meta?.label ?? provider} (${model}) key failed: ${errMsg}`,
+        unsupported
+          ? `Your ${meta?.label ?? provider} model "${model}" cannot handle this request (${errMsg}). Pick a different model in Settings → AI Engine, or switch to Managed Auto.`
+          : `Your selected ${meta?.label ?? provider} (${model}) key failed: ${errMsg}`,
         {
           status: err instanceof GatewayProviderError ? err.status : 502,
-          code: "BYOK_CALL_FAILED",
+          code: unsupported ? "BYOK_MODEL_UNSUPPORTED" : "BYOK_CALL_FAILED",
           receipt: failReceipt,
           canFallbackToSystemAuto: true,
         },

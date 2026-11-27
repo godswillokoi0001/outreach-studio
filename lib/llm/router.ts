@@ -141,8 +141,9 @@ export function recordCandidateFailure(
     return { healthStatus: "invalid", cooldownMs: 0 };
   }
 
-  // Model missing on this provider -> cooldown this pair for 1 hour (don't disable whole key)
-  if (err.modelNotFound) {
+  // Model missing OR unable to serve this request shape (e.g. no function calling)
+  // -> bench this (key, model) pair for an hour, but keep the key in the pool.
+  if (err.modelNotFound || err.modelUnsupported) {
     const ms = 60 * 60_000;
     keyModelCooldowns.set(`${key.id}:${modelId}`, {
       untilMs: now + ms,
@@ -200,6 +201,18 @@ export interface RankedPoolCandidate {
   score: number;
 }
 
+/**
+ * Catalog endpoints list media and specialist models next to chat models. They
+ * are saved as "enabled" but reject tools/multi-turn chat, so routing an agent
+ * request to them wastes a failover hop (and used to abort the whole pool).
+ */
+const NON_CHAT_MODEL_PATTERN =
+  /(?:^|[-/])(?:image|imagen|nano-banana|tts|transcribe|embedding|robotics|computer-use|deep-research|antigravity)(?:[-/]|$)/i;
+
+export function isChatCapableModelId(modelId: string): boolean {
+  return !NON_CHAT_MODEL_PATTERN.test(modelId.trim());
+}
+
 const FAST_PROVIDERS = new Set(["groq", "cerebras", "cloudflare", "google"]);
 const SMART_PROVIDERS = new Set(["google", "nvidia", "anthropic", "openai", "openrouter", "zai"]);
 
@@ -223,6 +236,7 @@ export function rankPoolCandidates(input: {
     for (const model of key.models) {
       if (!model.enabled) continue;
       if (input.requiresTools && !model.capabilities.tools) continue;
+      if (input.requiresTools && !isChatCapableModelId(model.id)) continue;
       if (input.requiresVision && !model.capabilities.vision) continue;
       if (isCandidateCoolingDown(key, model.id, now)) continue;
 

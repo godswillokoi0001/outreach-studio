@@ -111,7 +111,15 @@ export async function POST(req: NextRequest) {
           ? {
               activeKeyId: fallbackKey.id,
               activeProvider: fallbackKey.provider,
-              activeModel: cur.activeModel || fallbackKey.models[0]?.id || null,
+              // Keep the remembered model only when the chosen key actually owns it.
+              activeModel:
+                (cur.activeModel &&
+                fallbackKey.models.some((m) => m.id === cur.activeModel)
+                  ? cur.activeModel
+                  : null) ||
+                fallbackKey.models[0]?.id ||
+                getProviderMeta(fallbackKey.provider).defaultModels[0]?.id ||
+                null,
             }
           : {}),
       });

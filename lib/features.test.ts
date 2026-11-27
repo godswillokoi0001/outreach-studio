@@ -25,6 +25,7 @@ import { LLMGateway, LLMGatewayError } from "./llm/gateway";
 import {
   clearRouterStateForTests,
   evaluateKeyHeadroom,
+  isChatCapableModelId,
   rankPoolCandidates,
   recordCandidateFailure,
   recordKeyUsageHit,
@@ -1513,6 +1514,204 @@ test("regular non-admin owner on system_auto runs on the pooled admin key withou
     resetGatewayCachesForTests();
     clearRouterStateForTests();
   }
+});
+
+test("pool fails over when a model refuses the request shape (function calling not enabled)", async () => {
+  const prevFetch = globalThis.fetch;
+  const hits: string[] = [];
+
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = typeof input === "string" ? input : input.toString();
+    if (url.includes("generativelanguage.googleapis.com")) {
+      hits.push("google");
+      return new Response(
+        JSON.stringify({
+          error: {
+            message: "Function calling is not enabled for models/antigravity-preview-05-2026",
+            code: 400,
+          },
+        }),
+        { status: 400, headers: { "Content-Type": "application/json" } },
+      );
+    }
+    hits.push("backup");
+    return new Response(
+      JSON.stringify({ choices: [{ message: { content: "Answered by the backup key" } }] }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    );
+  }) as typeof fetch;
+
+  try {
+    resetGatewayCachesForTests();
+    clearRouterStateForTests();
+
+    const owner = "owner-auto-failover";
+    seedGatewayCachesForTests({
+      adminSettings: makeSampleAdminSettings(),
+      adminKeys: [
+        makeSampleAdminKey("adm_google_bad", "google", "AIzaBadFunctionCallingKey"),
+        makeSampleAdminKey("adm_nvidia_good", "nvidia", "nvapi-GoodBackupKey"),
+      ],
+      userSettings: {
+        [owner]: {
+          ownerId: owner,
+          mode: "system_auto",
+          activeKeyId: null,
+          activeProvider: null,
+          activeModel: null,
+          fallbackToSystemAuto: false,
+          updatedAt: new Date().toISOString(),
+        },
+      },
+      userKeys: { [owner]: [] },
+    });
+
+    const result = await LLMGateway.complete({
+      ownerId: owner,
+      taskType: "balanced",
+      feature: "operator_chat",
+      messages: [{ role: "user", content: "Hello" }],
+    });
+
+    assert.equal(result.text, "Answered by the backup key");
+    assert.equal(result.receipt.status, "success");
+    assert.equal(hits.includes("google"), true);
+    assert.equal(hits.at(-1), "backup");
+    // The rejected (key, model) pair must not be attempted again in this process.
+    const again = await LLMGateway.complete({
+      ownerId: owner,
+      taskType: "balanced",
+      feature: "operator_chat",
+      messages: [{ role: "user", content: "Hello again" }],
+    });
+    assert.equal(again.receipt.status, "success");
+    assert.equal(hits.filter((h) => h === "google").length, 1);
+  } finally {
+    globalThis.fetch = prevFetch;
+    resetGatewayCachesForTests();
+    clearRouterStateForTests();
+  }
+});
+
+test("BYOK never calls a saved key with a model it does not own", async () => {
+  const prevFetch = globalThis.fetch;
+  const sentModels: string[] = [];
+
+  globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+    const body = init?.body ? (JSON.parse(String(init.body)) as { model?: string }) : {};
+    sentModels.push(String(body.model ?? ""));
+    return new Response(
+      JSON.stringify({ choices: [{ message: { content: "owned model answered" } }] }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    );
+  }) as typeof fetch;
+
+  try {
+    resetGatewayCachesForTests();
+    clearRouterStateForTests();
+
+    const owner = "owner-byok-model-mismatch";
+    const key = encryptGatewayKey("sk-or-v1-TestOpenRouterKeyValue");
+    const now = new Date().toISOString();
+    seedGatewayCachesForTests({
+      adminSettings: makeSampleAdminSettings(),
+      adminKeys: [],
+      userSettings: {
+        [owner]: {
+          ownerId: owner,
+          mode: "byok",
+          activeKeyId: "ukey_openrouter",
+          activeProvider: "openrouter",
+          // Left over from another provider: this key does not own it.
+          activeModel: "nvidia/nemotron-3-ultra-550b-a55b:free",
+          fallbackToSystemAuto: false,
+          updatedAt: now,
+        },
+      },
+      userKeys: {
+        [owner]: [
+          {
+            id: "ukey_openrouter",
+            ownerId: owner,
+            provider: "openrouter",
+            label: "OpenRouter",
+            encryptedKey: key.encryptedKey,
+            maskedKey: key.maskedKey,
+            models: [
+              {
+                id: "google/gemma-4-31b-it:free",
+                displayName: "Gemma",
+                enabled: true,
+                seats: ["smart", "balanced", "fast"],
+                capabilities: { json: true, tools: true, vision: false, reasoning: false },
+              },
+            ],
+            createdAt: now,
+            updatedAt: now,
+          },
+        ],
+      },
+    });
+
+    const result = await LLMGateway.complete({
+      ownerId: owner,
+      taskType: "balanced",
+      feature: "operator_chat",
+      messages: [{ role: "user", content: "Hi" }],
+    });
+
+    assert.equal(result.text, "owned model answered");
+    assert.equal(sentModels[0], "google/gemma-4-31b-it:free");
+  } finally {
+    globalThis.fetch = prevFetch;
+    resetGatewayCachesForTests();
+    clearRouterStateForTests();
+  }
+});
+
+test("tool-using routing skips image, transcribe, robotics and antigravity catalog entries", () => {
+  for (const id of [
+    "gemini-3.5-flash",
+    "gemini-2.5-pro",
+    "nvidia/nemotron-3-ultra-550b-a55b:free",
+    "openai/gpt-4o-mini",
+  ]) {
+    assert.equal(isChatCapableModelId(id), true, id);
+  }
+  for (const id of [
+    "gemini-2.5-flash-image",
+    "nano-banana-pro-preview",
+    "gemini-3.5-transcribe",
+    "gemini-robotics-er-2-preview",
+    "gemini-2.5-computer-use-preview-10-2025",
+    "deep-research-max-preview-04-2026",
+    "antigravity-preview-05-2026",
+  ]) {
+    assert.equal(isChatCapableModelId(id), false, id);
+  }
+
+  // With tools required, the dead-weight entries never become candidates.
+  const ranked = rankPoolCandidates({
+    keys: [
+      makeSampleAdminKey("adm_media", "google", "AIzaMediaModelsKey", {
+        models: [
+          {
+            id: "gemini-2.5-flash-image",
+            displayName: "Image",
+            enabled: true,
+            seats: ["balanced"],
+            capabilities: { json: true, tools: true, vision: true, reasoning: false, grounding: true },
+          },
+        ],
+      }),
+      makeSampleAdminKey("adm_chat", "google", "AIzaChatModelsKey"),
+    ],
+    settings: makeSampleAdminSettings(),
+    taskType: "balanced",
+    requiresTools: true,
+  });
+  assert.equal(ranked.some((c) => c.key.id === "adm_media"), false);
+  assert.equal(ranked.some((c) => c.key.id === "adm_chat"), true);
 });
 
 test("getUserAiSettings resolves a default for a new account without hanging", async () => {

@@ -19,6 +19,8 @@ export class GatewayProviderError extends Error {
   dailyQuotaExhausted: boolean;
   creditsExhausted: boolean;
   modelNotFound: boolean;
+  /** The model exists but cannot serve this request shape (tools, multi-turn, vision). */
+  modelUnsupported: boolean;
   retryAfterMs?: number;
 
   constructor(
@@ -31,6 +33,7 @@ export class GatewayProviderError extends Error {
       dailyQuotaExhausted?: boolean;
       creditsExhausted?: boolean;
       modelNotFound?: boolean;
+      modelUnsupported?: boolean;
       retryAfterMs?: number;
     } = {},
   ) {
@@ -43,6 +46,7 @@ export class GatewayProviderError extends Error {
     this.dailyQuotaExhausted = opts.dailyQuotaExhausted ?? false;
     this.creditsExhausted = opts.creditsExhausted ?? this.status === 402;
     this.modelNotFound = opts.modelNotFound ?? this.status === 404;
+    this.modelUnsupported = opts.modelUnsupported ?? false;
     this.retryAfterMs = opts.retryAfterMs;
   }
 }
@@ -123,6 +127,14 @@ function classifyHttpFailure(
     res.status === 402 || /insufficient.*credit|billing|quota.*balance|top.?up/i.test(detail);
   const rateLimited = res.status === 429;
   const modelNotFound = res.status === 404 || /model.*not found|does not exist/i.test(detail);
+  // Some models are listed but refuse tools, multi-turn chat or other request
+  // shapes. That is a per-model limitation, never a reason to abandon the pool.
+  const modelUnsupported =
+    !modelNotFound &&
+    res.status < 500 &&
+    /not enabled|not supported|does not support|unsupported|not available for|invalid argument|only supports single/i.test(
+      detail,
+    );
 
   return new GatewayProviderError(detail, {
     status: res.status,
@@ -138,6 +150,7 @@ function classifyHttpFailure(
     dailyQuotaExhausted: dailySignal,
     creditsExhausted,
     modelNotFound,
+    modelUnsupported,
     retryAfterMs,
   });
 }
