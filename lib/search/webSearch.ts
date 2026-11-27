@@ -571,6 +571,21 @@ export async function verifySearchKey(input: {
     return { ok: true, count: 1, ms: Date.now() - started, sampleTitle: "Hunter.io Account" };
   }
 
+  if (input.provider === "cufinder") {
+    const { res, text } = await fetchWithTimeout(
+      "https://api.cufinder.io/api/v2/dte",
+      {
+        method: "POST",
+        headers: { "x-api-key": key, "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ company_name: "Stripe", country: "US" }).toString(),
+      },
+      6_000,
+      20_000,
+    );
+    if (!res.ok) throw new Error(`CUFinder HTTP ${res.status}: ${text.slice(0, 120)}`);
+    return { ok: true, count: 1, ms: Date.now() - started, sampleTitle: "CUFinder API" };
+  }
+
   let results: WebSearchResult[] = [];
   if (input.provider === "exa") results = await searchExa("B2B SaaS websites", key, 3);
   else if (input.provider === "tavily") results = await searchTavily("test", key, 3);
@@ -662,7 +677,10 @@ export const WebSearchService = {
       parsedLoc && parsedLoc.location
         ? (providersTried.push("osm"),
           searchOpenStreetMapBusinesses(parsedLoc.niche, parsedLoc.location, maxResults)
-            .then((rows) => addResults(rows, "osm"))
+            .then(async (rows) => {
+              await recordSearchProviderUsage("osm", 1);
+              addResults(rows, "osm");
+            })
             .catch((err) => {
               errors.push(`osm: ${err instanceof Error ? err.message : String(err)}`);
             }))

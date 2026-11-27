@@ -123,6 +123,7 @@ The campaign minimum score is ${minScore}. Always return an honest score; never 
     systemPrompt: orchestrated.system,
     messages: [{ role: "user", content: user }],
     schema: SCHEMA,
+    maxTokens: 1500,
   });
 
   const killSwitch = Boolean(raw.kill_switch_triggered || raw.category === "not_qualified");

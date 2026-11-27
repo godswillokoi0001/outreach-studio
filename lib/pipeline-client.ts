@@ -547,9 +547,13 @@ export async function runSendBatch(
   }
 
   const sentPerCampaign = new Map<string, number>();
+  const sentLeadSteps = new Set<string>();
   for (const m of messages) {
-    if (m.status === "sent" && m.campaign_id) {
-      sentPerCampaign.set(m.campaign_id, (sentPerCampaign.get(m.campaign_id) ?? 0) + 1);
+    if (m.status === "sent") {
+      sentLeadSteps.add(`${m.lead_id}:${m.kind}:${m.step}`);
+      if (m.campaign_id) {
+        sentPerCampaign.set(m.campaign_id, (sentPerCampaign.get(m.campaign_id) ?? 0) + 1);
+      }
     }
   }
 
@@ -564,6 +568,14 @@ export async function runSendBatch(
     if (!lead?.email) {
       await markMessageFailed(uid, msg.id, "Prospect has no email address.");
       errors.push(`${lead?.business ?? msg.lead_id}: missing email address.`);
+      continue;
+    }
+    const dupStepKey = `${lead.id}:${msg.kind}:${msg.step}`;
+    if (sentLeadSteps.has(dupStepKey)) {
+      await updateMessageStatus(uid, msg.id, "cancelled", {
+        error: `Duplicate-send blocked: ${msg.kind} step ${msg.step} already sent to this prospect.`,
+      });
+      errors.push(`${lead.business ?? lead.email}: already sent (${msg.kind} step ${msg.step}).`);
       continue;
     }
     const camp = msg.campaign_id ? campaignMap.get(msg.campaign_id) ?? null : null;
@@ -625,6 +637,7 @@ export async function runSendBatch(
         { requireWorkspace: true },
       );
       await recordSendSuccess(uid, msg, lead, sent.id, sent.threadId);
+      sentLeadSteps.add(dupStepKey);
       if (msg.campaign_id) {
         sentPerCampaign.set(msg.campaign_id, (sentPerCampaign.get(msg.campaign_id) ?? 0) + 1);
       }
@@ -675,6 +688,12 @@ export async function sendMessageNow(
 
   const lead = leads.find((l) => l.id === msg.lead_id);
   if (!lead?.email) throw new Error("This prospect has no email address.");
+  const duplicateSent = messages.some(
+    (m) => m.id !== msg.id && m.lead_id === lead.id && m.status === "sent" && m.kind === msg.kind && m.step === msg.step,
+  );
+  if (duplicateSent) {
+    throw new Error(`Duplicate-send blocked: ${msg.kind} step ${msg.step} was already sent to this prospect.`);
+  }
 
   let sendCamp: Campaign | null = null;
   if (msg.campaign_id) {

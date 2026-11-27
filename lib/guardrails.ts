@@ -1,4 +1,5 @@
 import type { SendingTier } from "./global-knowledge/types";
+import { isPlaceholderOrSyntheticEmail } from "./search/contactGate";
 import type { Campaign, Lead, LeadStatus, Message } from "./types";
 
 export const DEFAULT_CAMPAIGN_MIN_SCORE = 65;
@@ -65,6 +66,7 @@ export interface SendEligibilityResult {
   code:
     | "OK"
     | "MISSING_EMAIL"
+    | "PLACEHOLDER_EMAIL"
     | "SUPPRESSED"
     | "SELF_SEND"
     | "KILL_SWITCH"
@@ -85,8 +87,16 @@ export function evaluateLeadSendEligibility(input: {
   suppressedEmails?: Iterable<string>;
 }): SendEligibilityResult {
   const recipient = String(input.lead.email_norm || input.lead.email || "").trim().toLowerCase();
-  if (!recipient || !recipient.includes("@")) {
-    return { eligible: false, code: "MISSING_EMAIL", reason: "Prospect has no valid email address." };
+  if (!recipient || !/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(recipient)) {
+    return { eligible: false, code: "MISSING_EMAIL", reason: "Needs Contact Verification: prospect has no valid email address." };
+  }
+
+  if (isPlaceholderOrSyntheticEmail(recipient)) {
+    return {
+      eligible: false,
+      code: "PLACEHOLDER_EMAIL",
+      reason: `Needs Contact Verification: synthetic/placeholder email (${recipient}) is blocked from sending.`,
+    };
   }
 
   if (input.suppressedEmails) {

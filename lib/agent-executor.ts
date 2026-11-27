@@ -556,6 +556,39 @@ export async function executeAgentTool(
                 .join("\n"),
               source: "web_discovery",
               campaignId,
+              research: {
+                business_name_confirmed: true,
+                industry: c.industry || industry,
+                summary: c.why || "Verified during live discovery.",
+                website_status: c.website ? "reachable" : "no_site_known",
+                website_facts: (c.issues ?? []).map((i) => `${i.area}: ${i.evidence || i.problem}`).filter(Boolean),
+                verified_facts: (c.contact?.sources ?? []).map((s) => ({
+                  fact: `${s.field} (${s.verification_status || "Verified"})`,
+                  source: s.url,
+                })),
+                findings: (c.issues ?? []).map((i) => ({
+                  area: i.area || "Website",
+                  observation: i.problem,
+                  severity: i.severity,
+                  evidence: i.evidence,
+                })),
+                inferences: [],
+                opportunities: [],
+                recommended_angle: c.why || "",
+                confidence: 80,
+                insufficient_data: false,
+                notes: c.research_notes || "",
+                checked_at: new Date().toISOString(),
+                socials: c.contact?.socials ?? [],
+                contact_source_urls: (c.contact?.sources ?? []).map((s) => ({
+                  channel: s.field,
+                  value: s.field,
+                  sourceUrl: s.url,
+                })),
+                verified_site_issues: (c.issues ?? []).map((i) => `${i.area}: ${i.problem}`).slice(0, 5),
+                mx_verified: c.contact?.email_status === "Verified",
+                contact_verification_status: "Verified",
+              },
             });
             if (created.duplicate) {
               duplicateCount += 1;

@@ -15,6 +15,30 @@ import type {
 // ID & String Sanitization (stable ids for every row)
 // ---------------------------------------------------------------------------
 
+const UNRESOLVED_BRACE_TAG_RE = /\{\{\s*[^{}\r\n]{1,100}\s*\}\}/g;
+const UNRESOLVED_BRACKET_TAG_RE =
+  /\[\s*(?:(?:PROSPECT|USER|YOUR|INSERT|COMPANY|OPTIONAL)_[A-Z0-9_ ]{1,60}|(?:First|Last|Full|Prospect|Contact|Your|Company|Business)?\s*Name|(?:Company|Business|Website|City|Location|Role|Title|Industry|Date|Day|Time|Phone|Email)\s*(?:Name|Title|URL|Link)?)\s*\]/gi;
+
+export function findUnresolvedPlaceholders(text: string): string[] {
+  const braces = text.match(UNRESOLVED_BRACE_TAG_RE) ?? [];
+  const brackets = text.match(UNRESOLVED_BRACKET_TAG_RE) ?? [];
+  return Array.from(new Set([...braces, ...brackets]));
+}
+
+/**
+ * Post-generation safety sanitizer: removes any accidental unresolved `{{...}}`
+ * or bracketed `[First Name]` skeleton tags so raw placeholders never reach output.
+ */
+export function stripUnresolvedPlaceholders(text: string): string {
+  return text
+    .replace(UNRESOLVED_BRACE_TAG_RE, "")
+    .replace(UNRESOLVED_BRACKET_TAG_RE, "")
+    .replace(/[ \t]{2,}/g, " ")
+    .replace(/ +([,.;:!?])/g, "$1")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
 export function sanitizeId(raw: string, prefix = "doc"): string {
   const cleaned = raw
     .trim()

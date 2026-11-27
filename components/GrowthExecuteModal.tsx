@@ -387,7 +387,14 @@ export function GrowthExecuteModal({
                           </div>
                         </label>
 
-                        <div className="row" style={{ gap: 6, flexShrink: 0, alignItems: "center" }}>
+                        <div className="row" style={{ gap: 6, flexShrink: 0, alignItems: "center", flexWrap: "wrap" }}>
+                          {prospect.email && (
+                            <Badge tone={prospect.mxVerified ? "ok" : "warn"}>
+                              {prospect.emailType === "direct" ? "Direct" : "Role"}
+                              {prospect.mxVerified ? " · MX OK" : ""}
+                            </Badge>
+                          )}
+                          {prospect.phone && <Badge tone="info">{prospect.phone}</Badge>}
                           <Badge
                             tone={
                               prospect.buyingIntentLevel === "high"
@@ -476,9 +483,20 @@ export function GrowthExecuteModal({
                         className="row"
                         style={{ justifyContent: "space-between", flexWrap: "wrap", gap: 8, marginTop: 8 }}
                       >
-                        <div className="row tiny muted" style={{ gap: 6 }}>
+                        <div className="row tiny muted" style={{ gap: 6, flexWrap: "wrap" }}>
                           <UserCheck size={12} />
                           <span>{prospect.complianceNote}</span>
+                          {prospect.socials?.slice(0, 3).map((soc, idx) => (
+                            <a
+                              key={idx}
+                              href={soc.url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              style={{ color: "var(--teal-deep)", textDecoration: "underline" }}
+                            >
+                              {soc.platform}
+                            </a>
+                          ))}
                         </div>
                         {prospect.sourceUrl && (
                           <a

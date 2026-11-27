@@ -36,6 +36,7 @@ import {
   findFollowupCandidatesFromData,
   getLocalSendParts,
   sanitizeId,
+  stripUnresolvedPlaceholders,
 } from "./outreach-utils";
 import { authedPost } from "./client";
 import {
@@ -726,6 +727,7 @@ export async function createLead(
     notes?: string;
     source?: string;
     campaignId?: string | null;
+    research?: ResearchResult | null;
   },
 ): Promise<{ id: string; duplicate: boolean }> {
   const email = normalizeEmail(input.email ?? "");
@@ -759,9 +761,9 @@ export async function createLead(
       score: null,
       priority: null,
       score_reason: null,
-      research: null,
-      research_at: null,
-      research_ok: false,
+      research: input.research ?? null,
+      research_at: input.research?.checked_at ?? null,
+      research_ok: Boolean(input.research && !input.research.insufficient_data),
       manual_research: null,
       last_contacted_at: null,
       createdAt: serverTimestamp(),
@@ -2355,6 +2357,13 @@ export async function commitExecutedCampaign(
         insufficient_data: false,
         notes: `Sourced via Growth Advisor (${prospect.complianceNote})`,
         checked_at: nowIso,
+        socials: prospect.socials ?? [],
+        contact_source_urls: prospect.contactSourceUrls ?? [],
+        verified_site_issues: prospect.verifiedSiteIssues ?? [],
+        email_type: prospect.emailType,
+        mx_verified: prospect.mxVerified,
+        first_line: prospect.firstLine ? stripUnresolvedPlaceholders(prospect.firstLine) : undefined,
+        contact_verification_status: "Verified",
       },
       research_at: nowIso,
       research_ok: true,
@@ -2370,12 +2379,16 @@ export async function commitExecutedCampaign(
     leadsCreated += 1;
 
     if (emailNorm) {
-      const subject = (prospect.draftSubject || blueprint.subjectLine || "Quick question for {{company}}")
-        .replace(/\{\{company\}\}/gi, prospect.business)
-        .replace(/\{\{first_name\}\}/gi, firstName);
-      const body = (prospect.draftBody || blueprint.sampleEmailBody || "")
-        .replace(/\{\{company\}\}/gi, prospect.business)
-        .replace(/\{\{first_name\}\}/gi, firstName);
+      const subject = stripUnresolvedPlaceholders(
+        (prospect.draftSubject || blueprint.subjectLine || "Quick question")
+          .replace(/\{\{company\}\}/gi, prospect.business)
+          .replace(/\{\{first_name\}\}/gi, firstName),
+      );
+      const body = stripUnresolvedPlaceholders(
+        (prospect.draftBody || blueprint.sampleEmailBody || "")
+          .replace(/\{\{company\}\}/gi, prospect.business)
+          .replace(/\{\{first_name\}\}/gi, firstName),
+      );
       if (body.trim()) {
         await createMessage(uid, {
           lead_id: leadId,

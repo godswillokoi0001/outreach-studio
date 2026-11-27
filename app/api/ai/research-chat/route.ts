@@ -58,7 +58,7 @@ GROUNDING RULES (STRICT):
 4. When explaining qualification verdicts or decisions, quote the specific criteria (met, not met, unknown), weaknesses, and risks recorded in the review.
 5. Be candid, neutral, and precise.`;
 
-    const prospectSummary = JSON.stringify(body.prospect, null, 2);
+    const prospectSummary = JSON.stringify(body.prospect, null, 2).slice(0, 4_500);
 
     const historyBlock = body.history && body.history.length > 0
       ? `\nCONVERSATION HISTORY:\n${body.history.map((h) => `${h.role.toUpperCase()}: ${h.content}`).join("\n")}\n`
@@ -78,6 +78,7 @@ Answer based ONLY on the research data above.`;
       systemPrompt: system,
       messages: [{ role: "user", content: user }],
       schema: RESPONSE_SCHEMA,
+      maxTokens: 1400,
     });
 
     return NextResponse.json(result);

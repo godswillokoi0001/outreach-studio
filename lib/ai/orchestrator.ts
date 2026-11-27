@@ -1,7 +1,10 @@
 import { getGlobalKnowledgeModules } from "../global-knowledge/service";
 import type { GlobalKnowledgeModuleKey, UserBusinessVariables } from "../global-knowledge/types";
 import { loadUserContextServer, resolveUserBusinessVariables, type LoadedUserContext } from "../global-knowledge/user-context";
+import { findUnresolvedPlaceholders, stripUnresolvedPlaceholders } from "../outreach-utils";
 import type { CampaignConfig, Settings } from "../types";
+
+export { findUnresolvedPlaceholders, stripUnresolvedPlaceholders };
 
 export type OrchestratorWorkflow =
   | "research_and_qualify"
@@ -43,27 +46,14 @@ export const PRECEDENCE_HEADER = `INSTRUCTION PRECEDENCE (STRICT):
 2. Active User's Business Profile, Offer, Exclusions, Tone & Custom Knowledge Base (overrides global defaults for brand/scope choices).
 3. Global Sales, Copywriting, Routing & Reply Frameworks (Modules 1-4 above).`;
 
-const UNRESOLVED_BRACE_TAG_RE = /\{\{\s*[^{}\r\n]{1,100}\s*\}\}/g;
-const UNRESOLVED_BRACKET_TAG_RE = /\[\s*(?:PROSPECT|USER|YOUR|INSERT|COMPANY|OPTIONAL)_[A-Z0-9_ ]{1,60}\s*\]/g;
+const MAX_STATIC_PREFIX_CHARS = 14_000;
 
-export function findUnresolvedPlaceholders(text: string): string[] {
-  const braces = text.match(UNRESOLVED_BRACE_TAG_RE) ?? [];
-  const brackets = text.match(UNRESOLVED_BRACKET_TAG_RE) ?? [];
-  return Array.from(new Set([...braces, ...brackets]));
-}
-
-/**
- * Post-generation safety sanitizer: removes any accidental unresolved `{{...}}`
- * template tags or template skeleton placeholders so raw tags never reach output.
- */
-export function stripUnresolvedPlaceholders(text: string): string {
-  return text
-    .replace(UNRESOLVED_BRACE_TAG_RE, "")
-    .replace(UNRESOLVED_BRACKET_TAG_RE, "")
-    .replace(/[ \t]{2,}/g, " ")
-    .replace(/ +([,.;:!?])/g, "$1")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
+function compactModuleContent(content: string, maxChars: number): string {
+  const clean = content.trim();
+  if (clean.length <= maxChars) return clean;
+  const slice = clean.slice(0, maxChars);
+  const lastBreak = slice.lastIndexOf("\n");
+  return (lastBreak > maxChars * 0.6 ? slice.slice(0, lastBreak) : slice).trim();
 }
 
 export function renderUserBusinessContextBlock(vars: UserBusinessVariables): string {
@@ -112,9 +102,11 @@ export async function buildOrchestratedSystemPrompt(input: {
   const moduleKeys = WORKFLOW_MODULES[input.workflow];
   const moduleMap = await getGlobalKnowledgeModules();
 
-  // 1. Byte-for-byte identical static Global Knowledge prefix first!
+  // 1. Byte-for-byte identical static Global Knowledge prefix first (budgeted for <=8k TPM free tiers)!
+  const perModuleCap =
+    moduleKeys.length > 0 ? Math.floor(MAX_STATIC_PREFIX_CHARS / moduleKeys.length) : MAX_STATIC_PREFIX_CHARS;
   const staticPrefix = moduleKeys
-    .map((key) => moduleMap.get(key)?.content ?? "")
+    .map((key) => compactModuleContent(moduleMap.get(key)?.content ?? "", perModuleCap))
     .filter(Boolean)
     .join("\n\n---\n\n");
 

@@ -8,6 +8,7 @@ import { useAuth } from "@/components/AuthProvider";
 import { Badge, Banner, Card, Empty, Field, Modal, Pager } from "@/components/ui";
 import { confirmDialog } from "@/components/Feedback";
 import { errorMessage } from "@/lib/client";
+import { isLeadMissingVerifiedContact } from "@/lib/search/contactGate";
 import { NarratorControl } from "@/components/NarratorControl";
 import { AskAiResearchModal } from "@/components/AskAiResearchModal";
 import {
@@ -41,6 +42,7 @@ export default function LeadsPage() {
   const [hasEmailFilter, setHasEmailFilter] = useState(false);
   const [hasPhoneFilter, setHasPhoneFilter] = useState(false);
   const [hasSocialFilter, setHasSocialFilter] = useState(false);
+  const [needsVerificationFilter, setNeedsVerificationFilter] = useState(false);
   const [dateAddedFilter, setDateAddedFilter] = useState<"all" | "today" | "7d" | "30d">("all");
   const [scoreFilter, setScoreFilter] = useState<"all" | "high" | "medium" | "low">("all");
   const [sortOption, setSortOption] = useState<"newest" | "oldest" | "score_desc" | "score_asc" | "az" | "za">("newest");
@@ -102,6 +104,11 @@ export default function LeadsPage() {
       active = false;
     };
   }, [user.uid]);
+
+  const unverifiedLeads = useMemo(
+    () => allLeads.filter((l) => isLeadMissingVerifiedContact(l).needsVerification),
+    [allLeads],
+  );
 
   const campaignNames = useMemo(() => {
     const map: Record<string, string> = {};
@@ -194,6 +201,9 @@ export default function LeadsPage() {
         const hasSocialInResearch = Boolean((l.research as unknown as { socials?: unknown[] })?.socials?.length);
         if (!hasSocialInNotes && !hasSocialInResearch) return false;
       }
+      if (needsVerificationFilter && !isLeadMissingVerifiedContact(l).needsVerification) {
+        return false;
+      }
 
       // 7. Date added filter
       if (dateAddedFilter === "today") {
@@ -256,6 +266,7 @@ export default function LeadsPage() {
     hasEmailFilter,
     hasPhoneFilter,
     hasSocialFilter,
+    needsVerificationFilter,
     dateAddedFilter,
     scoreFilter,
     query,
@@ -273,6 +284,7 @@ export default function LeadsPage() {
     setHasEmailFilter(false);
     setHasPhoneFilter(false);
     setHasSocialFilter(false);
+    setNeedsVerificationFilter(false);
     setDateAddedFilter("all");
     setScoreFilter("all");
     setSearch("");
@@ -292,6 +304,7 @@ export default function LeadsPage() {
     hasEmailFilter ||
     hasPhoneFilter ||
     hasSocialFilter ||
+    needsVerificationFilter ||
     dateAddedFilter !== "all" ||
     scoreFilter !== "all" ||
     query,
@@ -505,6 +518,56 @@ export default function LeadsPage() {
                 <SlidersHorizontal size={13} aria-hidden="true" />
                 Filters
               </button>
+
+              {unverifiedLeads.length > 0 && (
+                <>
+                  <button
+                    type="button"
+                    className={`btn btn-sm ${needsVerificationFilter ? "btn-primary" : "btn-ghost"}`}
+                    onClick={() => {
+                      setNeedsVerificationFilter((prev) => !prev);
+                      setPage(1);
+                    }}
+                    title="Filter legacy or placeholder leads missing verified contacts"
+                  >
+                    Needs Contact Verification ({unverifiedLeads.length})
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-sm btn-danger"
+                    disabled={busy !== null}
+                    onClick={async () => {
+                      const ok = await confirmDialog({
+                        title: `Clean ${unverifiedLeads.length} unverified / placeholder lead${unverifiedLeads.length === 1 ? "" : "s"}?`,
+                        message:
+                          "Removes leads with missing or synthetic placeholder contact details so they never clutter your pipeline. Validated prospects are untouched.",
+                        confirmLabel: "Delete unverified leads",
+                        tone: "bad",
+                      });
+                      if (!ok) return;
+                      setBusy("clean_unverified");
+                      setNotice(null);
+                      try {
+                        let removed = 0;
+                        for (const item of unverifiedLeads) {
+                          await deleteLeadCascade(user.uid, item.id);
+                          removed += 1;
+                        }
+                        setNeedsVerificationFilter(false);
+                        setChecked([]);
+                        await load();
+                        setNotice(`Cleaned ${removed} unverified / placeholder lead${removed === 1 ? "" : "s"}.`);
+                      } catch (err) {
+                        setNotice(errorMessage(err));
+                      } finally {
+                        setBusy(null);
+                      }
+                    }}
+                  >
+                    {busy === "clean_unverified" ? "Cleaning…" : "Clean unverified junk"}
+                  </button>
+                </>
+              )}
             </div>
 
             {/* Advanced Filters Drawer */}
@@ -991,9 +1054,34 @@ export default function LeadsPage() {
                       </td>
                       <td>
                         <div className="strong">{lead.business ?? "—"}</div>
-                        <div className="tiny">
-                          {lead.email ?? "no email"} {lead.location ? `· ${lead.location}` : ""}
+                        <div className="row" style={{ gap: 4, flexWrap: "wrap", marginTop: 3 }}>
+                          {isLeadMissingVerifiedContact(lead).needsVerification ? (
+                            <Badge tone="warn">Needs Contact Verification</Badge>
+                          ) : (
+                            <>
+                              {lead.email && (
+                                <Badge tone={lead.research?.mx_verified ? "ok" : "info"}>
+                                  {lead.email}
+                                  {lead.research?.email_type ? ` (${lead.research.email_type === "direct" ? "Direct" : "Role"})` : ""}
+                                  {lead.research?.mx_verified ? " · MX" : ""}
+                                </Badge>
+                              )}
+                              {lead.phone && <Badge>{lead.phone}</Badge>}
+                              {(lead.research?.socials ?? []).slice(0, 2).map((s, sIdx) => (
+                                <Badge key={sIdx} tone="info">
+                                  {s.platform}
+                                </Badge>
+                              ))}
+                            </>
+                          )}
                         </div>
+                        {lead.location && <div className="tiny muted" style={{ marginTop: 2 }}>{lead.location}</div>}
+                        {lead.research?.first_line && (
+                          <div className="tiny" style={{ marginTop: 2, color: "var(--ink-2)" }}>
+                            Hook: {lead.research.first_line.slice(0, 95)}
+                            {lead.research.first_line.length > 95 ? "…" : ""}
+                          </div>
+                        )}
                       </td>
                       <td>
                         {lead.contact_name ?? "—"}
@@ -1184,11 +1272,48 @@ function LeadDetail({
 
       <dl className="kv" style={{ marginBottom: 16 }}>
         <dt>Email</dt>
-        <dd>{lead.email ?? "—"}</dd>
+        <dd className="row" style={{ gap: 6, flexWrap: "wrap" }}>
+          <span>{lead.email ?? "—"}</span>
+          {lead.research?.email_type && (
+            <Badge tone={lead.research.email_type === "direct" ? "ok" : "info"}>
+              {lead.research.email_type === "direct" ? "Direct inbox" : "Role inbox"}
+            </Badge>
+          )}
+          {lead.research?.mx_verified && <Badge tone="ok">MX verified</Badge>}
+          {isLeadMissingVerifiedContact(lead).needsVerification && (
+            <Badge tone="warn">Needs Contact Verification</Badge>
+          )}
+        </dd>
+        <dt>Phone</dt>
+        <dd>{lead.phone ? <a href={`tel:${lead.phone}`}>{lead.phone}</a> : "—"}</dd>
         <dt>Contact</dt>
         <dd>
           {lead.contact_name ?? "—"} {lead.role ? `· ${lead.role}` : ""}
         </dd>
+        {(lead.research?.socials?.length ?? 0) > 0 && (
+          <>
+            <dt>Socials</dt>
+            <dd className="row" style={{ gap: 8, flexWrap: "wrap" }}>
+              {lead.research!.socials!.map((soc, idx) => (
+                <a key={idx} href={soc.url} target="_blank" rel="noreferrer" className="tiny">
+                  {soc.platform}
+                </a>
+              ))}
+            </dd>
+          </>
+        )}
+        {(lead.research?.contact_source_urls?.length ?? 0) > 0 && (
+          <>
+            <dt>Contact proof</dt>
+            <dd className="stack" style={{ gap: 2 }}>
+              {lead.research!.contact_source_urls!.slice(0, 4).map((src, idx) => (
+                <a key={idx} href={src.sourceUrl} target="_blank" rel="noreferrer" className="tiny">
+                  [{src.channel}] {src.sourceUrl}
+                </a>
+              ))}
+            </dd>
+          </>
+        )}
         <dt>Website</dt>
         <dd>
           {lead.website ? (

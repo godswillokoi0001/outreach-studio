@@ -54,12 +54,13 @@ export async function POST(req: NextRequest) {
       taskType: "balanced",
       feature: "refine",
       systemPrompt: orchestrated.system,
-      messages: [{ role: "user", content: `HOW TO CHANGE IT\n${instruction}\n\nMESSAGE TO REWRITE\n${text}` }],
+      messages: [{ role: "user", content: `HOW TO CHANGE IT\n${instruction}\n\nMESSAGE TO REWRITE\n${text.slice(0, 6_000)}` }],
       schema: {
         type: Type.OBJECT,
         properties: { text: { type: Type.STRING } },
         required: ["text"],
       },
+      maxTokens: 1400,
     });
 
     const refined = typeof result.text === "string" ? stripUnresolvedPlaceholders(result.text.trim()) : "";

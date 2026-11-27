@@ -53,8 +53,16 @@ export default function IntegrationsPage() {
             cache: "no-store",
           });
           if (res.ok && active) {
-            const payload = (await res.json()) as { settings: UserAiSettings; keys: UserAiKeyPublic[] };
-            setAiGatewayState(payload);
+            const text = await res.text();
+            try {
+              const payload = (text ? JSON.parse(text) : null) as {
+                settings: UserAiSettings;
+                keys: UserAiKeyPublic[];
+              } | null;
+              if (payload) setAiGatewayState(payload);
+            } catch {
+              /* ignore non-JSON fallback */
+            }
           }
         }
       } catch {

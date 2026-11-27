@@ -49,6 +49,13 @@ export interface ResearchResult {
   awareness_level?: string;
   recommended_template_id?: string;
   personalized_hook_candidates?: string[];
+  socials?: { platform: string; url: string; verification_status?: string }[];
+  contact_source_urls?: { channel: string; value: string; sourceUrl: string }[];
+  verified_site_issues?: string[];
+  email_type?: "direct" | "role_inbox" | "invalid";
+  mx_verified?: boolean;
+  first_line?: string;
+  contact_verification_status?: "Verified" | "Needs Contact Verification";
 }
 
 export interface QualificationResult {
@@ -68,6 +75,13 @@ export interface QualificationResult {
   awareness_level?: string;
   recommended_template_id?: string;
   personalized_hook_candidates?: string[];
+  socials?: { platform: string; url: string; verification_status?: string }[];
+  contact_source_urls?: { channel: string; value: string; sourceUrl: string }[];
+  verified_site_issues?: string[];
+  email_type?: "direct" | "role_inbox" | "invalid";
+  mx_verified?: boolean;
+  first_line?: string;
+  contact_verification_status?: "Verified" | "Needs Contact Verification";
 }
 
 export interface Lead {

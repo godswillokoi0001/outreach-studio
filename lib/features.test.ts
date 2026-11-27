@@ -2929,3 +2929,158 @@ test("router enforces pre-flight context window safety, tool-calling exclusions,
   clearAllInMemoryModelCooldowns();
   assert.equal(isCandidateCoolingDown(groqKey, "openai/gpt-oss-120b"), false);
 });
+
+test("Phase 2 sitemap discovery extracts contacts & proof URLs from /robots.txt + /sitemap.xml /staff and /connect", async () => {
+  const prevFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: string | URL | Request) => {
+    const u = String(input);
+    if (u === "https://gracechurchaustin.org" || u === "https://gracechurchaustin.org/") {
+      return new Response(
+        `<html><head><title>Grace Community Austin</title></head><body><h1>Welcome Home</h1><p>Sundays at 10am in Austin, TX.</p></body></html>`,
+        { status: 200, headers: { "content-type": "text/html" } },
+      );
+    }
+    if (u === "https://gracechurchaustin.org/robots.txt") {
+      return new Response("User-agent: *\nSitemap: https://gracechurchaustin.org/custom-sitemap.xml\n", { status: 200 });
+    }
+    if (u === "https://gracechurchaustin.org/custom-sitemap.xml") {
+      return new Response(
+        `<?xml version="1.0" encoding="UTF-8"?><urlset><url><loc>https://gracechurchaustin.org/sermons</loc></url><url><loc>https://gracechurchaustin.org/staff</loc></url><url><loc>https://gracechurchaustin.org/connect</loc></url></urlset>`,
+        { status: 200, headers: { "content-type": "application/xml" } },
+      );
+    }
+    if (u === "https://gracechurchaustin.org/staff") {
+      return new Response(
+        `<html><body><h2>Leadership Team</h2><p>Pastor David Miller, Lead Pastor</p><a href="mailto:david.miller@gracechurchaustin.org">Email Pastor David</a></body></html>`,
+        { status: 200, headers: { "content-type": "text/html" } },
+      );
+    }
+    if (u === "https://gracechurchaustin.org/connect") {
+      return new Response(
+        `<html><body><a href="tel:+15125550888">Call Office</a><a href="https://instagram.com/gracechurchatx">Instagram</a></body></html>`,
+        { status: 200, headers: { "content-type": "text/html" } },
+      );
+    }
+    return new Response("Not found", { status: 404 });
+  }) as typeof fetch;
+
+  try {
+    const profile = await findDeepContactsForProspect({
+      business: "Grace Community Austin",
+      website: "https://gracechurchaustin.org",
+      allowTargetedSearch: false,
+      timeoutMs: 3_000,
+    });
+    assert.ok(profile.emails.includes("david.miller@gracechurchaustin.org"));
+    assert.ok(profile.phones.includes("+15125550888"));
+    assert.equal(profile.decisionMakers[0]?.name, "Pastor David Miller");
+    assert.ok(profile.socials.some((s) => s.platform === "Instagram"));
+    assert.ok(profile.contactSourceUrls.some((ev) => ev.sourceUrl.endsWith("/staff") && ev.channel === "email"));
+    assert.ok(profile.contactSourceUrls.some((ev) => ev.sourceUrl.endsWith("/connect") && ev.channel === "phone"));
+  } finally {
+    globalThis.fetch = prevFetch;
+  }
+});
+
+test("Phase 3 prompt token budgets stay <8000 tokens across all workflows & strip unresolved placeholders", async () => {
+  const { buildOrchestratedSystemPrompt, findUnresolvedPlaceholders, stripUnresolvedPlaceholders } = await import(
+    "./ai/orchestrator"
+  );
+
+  const workflows = [
+    "research_and_qualify",
+    "draft_outreach",
+    "handle_reply",
+    "plan_campaign",
+    "growth_advisor",
+    "assistant_chat",
+  ] as const;
+
+  for (const wf of workflows) {
+    const built = await buildOrchestratedSystemPrompt({
+      workflow: wf,
+      settings: { sender_name: "Sam", sender_email: "sam@example.io" },
+      knowledgeDigest: "X".repeat(12_000),
+      taskInstructions: "Execute task concisely.",
+    });
+    const estTokens = Math.ceil(built.system.length / 4);
+    assert.ok(estTokens < 6_000, `${wf} exceeded budget: ${estTokens} tokens`);
+  }
+
+  const rawDraft = "Hi [First Name],\n\nLoved seeing {{company}} grow [Your Name].";
+  assert.ok(findUnresolvedPlaceholders(rawDraft).length >= 2);
+  const cleaned = stripUnresolvedPlaceholders(rawDraft);
+  assert.equal(findUnresolvedPlaceholders(cleaned).length, 0);
+  assert.ok(!cleaned.includes("[First Name]"));
+  assert.ok(!cleaned.includes("{{company}}"));
+});
+
+test("Phase 3 campaign gate & router hardening block placeholder emails, flag junk leads, and isolate HTTP 400", async () => {
+  const { evaluateLeadSendEligibility } = await import("./guardrails");
+  const { isLeadMissingVerifiedContact } = await import("./search/contactGate");
+
+  const flagged = isLeadMissingVerifiedContact({
+    business: "Ghost Clinic",
+    email: "placeholder@example.com",
+    phone: "",
+    website: "https://ghostclinic.example.com",
+  });
+  assert.equal(flagged.needsVerification, true);
+
+  const blockedPlaceholder = evaluateLeadSendEligibility({
+    lead: {
+      id: "l_bad",
+      email: "placeholder@example.com",
+      email_norm: "placeholder@example.com",
+      score: 92,
+      status: "qualified",
+    },
+    senderEmail: "founder@myagency.io",
+  });
+  assert.equal(blockedPlaceholder.eligible, false);
+  assert.equal(blockedPlaceholder.code, "PLACEHOLDER_EMAIL");
+
+  // HTTP 400 never bends key healthStatus; research feature excludes Cloudflare
+  clearRouterStateForTests();
+  clearAllInMemoryModelCooldowns();
+  const settings = makeSampleAdminSettings({ masterMode: "auto", strategy: "balanced" });
+  const cfKey = makeSampleAdminKey("k_cf_r", "cloudflare", "cf_tok", {
+    models: [
+      {
+        id: "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+        displayName: "CF 70B",
+        enabled: true,
+        seats: ["fast", "balanced", "smart"],
+        capabilities: { json: true, tools: false, vision: false, reasoning: false },
+      },
+    ],
+  });
+  const groqKey = makeSampleAdminKey("k_groq_r", "groq", "groq_tok", {
+    models: [
+      {
+        id: "llama-3.3-70b-versatile",
+        displayName: "Llama 3.3 70B",
+        enabled: true,
+        seats: ["fast", "balanced", "smart"],
+        capabilities: { json: true, tools: true, vision: false, reasoning: false },
+      },
+    ],
+  });
+
+  const researchPool = rankPoolCandidates({
+    keys: [cfKey, groqKey],
+    settings,
+    taskType: "balanced",
+    feature: "research",
+  });
+  assert.ok(researchPool.every((c) => c.key.provider !== "cloudflare"));
+
+  recordCandidateFailure(
+    groqKey,
+    "llama-3.3-70b-versatile",
+    new GatewayProviderError("Unsupported parameter", { status: 400, modelUnsupported: true, retryable: true }),
+  );
+  assert.equal(groqKey.healthStatus, "healthy");
+  assert.equal(isCandidateCoolingDown(groqKey, "llama-3.3-70b-versatile"), true);
+  clearAllInMemoryModelCooldowns();
+});

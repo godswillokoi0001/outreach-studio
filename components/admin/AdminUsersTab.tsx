@@ -191,9 +191,22 @@ export function AdminUsersTab({
         credentials: "same-origin",
         cache: "no-store",
       });
-      if (!res.ok) throw new Error("Export failed.");
-      const data = await res.json();
-      const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+      const rawText = await res.text();
+      let parsed: unknown = null;
+      try {
+        parsed = rawText ? JSON.parse(rawText) : null;
+      } catch {
+        parsed = null;
+      }
+      if (!res.ok) {
+        const msg =
+          parsed && typeof parsed === "object" && "error" in parsed
+            ? String((parsed as { error?: unknown }).error ?? "Export failed.")
+            : `Export failed (HTTP ${res.status}).`;
+        throw new Error(msg);
+      }
+      if (!parsed) throw new Error("Server returned an empty export.");
+      const blob = new Blob([JSON.stringify(parsed, null, 2)], { type: "application/json" });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;

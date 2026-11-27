@@ -170,7 +170,7 @@ export async function POST(req: NextRequest) {
 
     if (body.action === "add_search_key") {
       if (!isSearchProviderId(body.provider)) {
-        return NextResponse.json({ error: "Select Exa, Tavily, Firecrawl, Serper, Brave, Jina, PageSpeed, or Hunter." }, { status: 400 });
+        return NextResponse.json({ error: "Select Exa, Tavily, Firecrawl, Serper, Brave, Jina, PageSpeed, Hunter, or CUFinder." }, { status: 400 });
       }
       const check = validateApiKeyInput(body.apiKey);
       if (!check.ok) {

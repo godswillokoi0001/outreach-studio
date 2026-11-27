@@ -166,6 +166,8 @@ export interface ExecutedProspect {
   recommendedTemplateId?: string;
   mxVerified?: boolean;
   emailType?: "direct" | "role_inbox" | "invalid";
+  contactSourceUrls?: { channel: string; value: string; sourceUrl: string }[];
+  verifiedSiteIssues?: string[];
 }
 
 export type GrowthExecuteStage = "strategy" | "discover" | "inspect" | "score_and_build";
@@ -202,6 +204,8 @@ export interface GrowthRunInspectedSite {
   socialLinks: { platform: string; url: string }[];
   decisionMakers?: { name: string; role: string }[];
   location?: string;
+  contactSourceUrls?: { channel: string; value: string; sourceUrl: string }[];
+  verifiedSiteIssues?: string[];
   snippet: string;
   textSummary: string;
   sourceUrl: string;

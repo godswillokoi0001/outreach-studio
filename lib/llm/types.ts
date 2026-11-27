@@ -18,7 +18,8 @@ export type SearchProviderId =
   | "jina"
   | "pagespeed"
   | "brave"
-  | "hunter";
+  | "hunter"
+  | "cufinder";
 
 export type SearchResetCycle = "monthly" | "daily" | "one_time" | "keyless";
 
@@ -132,6 +133,18 @@ export const SEARCH_PROVIDER_CATALOG: SearchProviderMeta[] = [
     resetCycle: "monthly",
     kind: "enrichment",
   },
+  {
+    id: "cufinder",
+    label: "CUFinder (Optional Contact Hook)",
+    blurb: "Optional domain email & company contact enricher (50 free credits); $0 sitemap crawler runs first.",
+    docsUrl: "https://dashboard.cufinder.io/",
+    keyPrefixes: [],
+    defaultRpmLimit: 15,
+    defaultRpdLimit: 50,
+    defaultQuotaLimit: 50,
+    resetCycle: "monthly",
+    kind: "enrichment",
+  },
 ];
 
 export const ALL_SEARCH_PROVIDER_IDS: SearchProviderId[] = [
@@ -143,6 +156,7 @@ export const ALL_SEARCH_PROVIDER_IDS: SearchProviderId[] = [
   "jina",
   "pagespeed",
   "hunter",
+  "cufinder",
 ];
 
 export function isSearchProviderId(raw: unknown): raw is SearchProviderId {

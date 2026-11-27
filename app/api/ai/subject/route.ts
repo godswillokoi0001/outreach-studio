@@ -70,7 +70,7 @@ export async function POST(req: NextRequest) {
       taskType: "fast",
       feature: "subject",
       systemPrompt: orchestrated.system,
-      messages: [{ role: "user", content: `MESSAGE\n${text}` }],
+      messages: [{ role: "user", content: `MESSAGE\n${text.slice(0, 4_000)}` }],
       schema: {
         type: Type.OBJECT,
         properties: {
@@ -78,6 +78,7 @@ export async function POST(req: NextRequest) {
         },
         required: ["subjects"],
       },
+      maxTokens: 500,
     });
 
     const seen = new Set<string>();

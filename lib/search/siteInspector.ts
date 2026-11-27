@@ -39,7 +39,7 @@ const BROWSER_UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
 
 export const DIRECTORY_HOST_PATTERN =
-  /(?:^|\.)(yelp\.com|yellowpages\.com|bbb\.org|mapquest\.com|foursquare\.com|tripadvisor\.|angieslist\.com|angi\.com|thumbtack\.com|bark\.com|expertise\.com|clutch\.co|g2\.com|capterra\.com|wikipedia\.org|wikidata\.org|openstreetmap\.org|facebook\.com|instagram\.com|linkedin\.com|tiktok\.com|youtube\.com|x\.com|twitter\.com|reddit\.com)$/i;
+  /(?:^|\.)(yelp\.com|yellowpages\.com|bbb\.org|mapquest\.com|foursquare\.com|tripadvisor\.|angieslist\.com|angi\.com|thumbtack\.com|bark\.com|expertise\.com|clutch\.co|g2\.com|capterra\.com|wikipedia\.org|wikidata\.org|openstreetmap\.org|exa\.ai|zocdoc\.com|healthgrades\.com|webmd\.com|vitals\.com|opencare\.com|facebook\.com|instagram\.com|linkedin\.com|tiktok\.com|youtube\.com|x\.com|twitter\.com|reddit\.com)$/i;
 
 const EMAIL_BLOCKLIST_PATTERN =
   /(?:^example@|@example\.|@sentry\.|@wixpress\.com|@squarespace\.com|@wordpress\.org|noreply@|no-reply@|donotreply@|\.(?:png|jpg|jpeg|gif|svg|webp|css|js)$)/i;

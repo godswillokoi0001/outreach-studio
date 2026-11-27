@@ -672,6 +672,8 @@ export async function executeGrowthStageInspect(input: {
       socialLinks: deep.socials,
       decisionMakers: deep.decisionMakers,
       location: deep.location || c.address || targetLocation,
+      contactSourceUrls: deep.contactSourceUrls,
+      verifiedSiteIssues: deep.verifiedSiteIssues,
       snippet: c.snippet,
       textSummary: site?.textSummary?.slice(0, 1200) || c.snippet.slice(0, 800),
       sourceUrl: c.sourceUrl,
@@ -907,6 +909,8 @@ Score, prioritize highest buying intent first, and draft non-hallucinated outrea
         recommendedTemplateId: cleanStr(raw.recommendedTemplateId, 10) || (siteRef?.emailType === "role_inbox" ? "T10" : "T1"),
         mxVerified: siteRef?.mxVerified ?? false,
         emailType: siteRef?.emailType ?? "invalid",
+        contactSourceUrls: siteRef?.contactSourceUrls ?? [],
+        verifiedSiteIssues: siteRef?.verifiedSiteIssues ?? [],
         draftSubject: stripUnresolvedPlaceholders(cleanStr(raw.draftSubject, 180)) || strat.subjectLine,
         draftBody: stripUnresolvedPlaceholders(cleanStr(raw.draftBody, 3000)),
       };
@@ -958,11 +962,12 @@ Score, prioritize highest buying intent first, and draft non-hallucinated outrea
   };
 
   await saveRunState(nextState);
+  const skippedCount = Math.max(0, sites.length - prospects.length);
   return {
     runId: input.runId,
     state: nextState,
     blueprint,
-    summary: `Scored & prioritized ${prospects.length} verified buyers (${prospects.filter((p) => p.buyingIntentLevel === "high").length} high intent)`,
+    summary: `Found ${sites.length} candidates -> Skipped ${skippedCount} without verified contacts -> Prioritized ${prospects.length} contactable buyers (${prospects.filter((p) => p.buyingIntentLevel === "high").length} high intent)`,
   };
 }
 

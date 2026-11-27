@@ -274,14 +274,25 @@ export function rankPoolCandidates(input: {
 }): RankedPoolCandidate[] {
   const now = input.now ?? Date.now();
   const candidates: RankedPoolCandidate[] = [];
+  const isStructuredWorkflow =
+    Boolean(input.requiresTools) ||
+    input.feature === "operator_chat" ||
+    Boolean(input.feature?.startsWith("growth_")) ||
+    input.feature === "research" ||
+    input.feature === "research_chat" ||
+    input.feature === "qualify" ||
+    Boolean(input.feature?.startsWith("compose"));
   const isGrowthOrOperator =
     Boolean(input.requiresTools) ||
     input.feature === "operator_chat" ||
-    Boolean(input.feature?.startsWith("growth_"));
+    Boolean(input.feature?.startsWith("growth_")) ||
+    input.feature === "research" ||
+    input.feature === "research_chat" ||
+    input.feature === "qualify";
 
   for (const key of input.keys) {
     if (!key.enabled || key.healthStatus === "invalid") continue;
-    // Hard-exclude Cloudflare from tool-calling, operator_chat, and Growth Advisor
+    // Hard-exclude Cloudflare from tool-calling, operator_chat, Growth Advisor, research, and qualify
     if ((input.requiresTools || isGrowthOrOperator) && TOOL_UNSAFE_PROVIDERS.has(key.provider)) {
       continue;
     }
@@ -292,9 +303,9 @@ export function rankPoolCandidates(input: {
       if (!model.enabled) continue;
       if (input.requiresTools && !model.capabilities.tools) continue;
       if (input.requiresTools && !isChatCapableModelId(model.id)) continue;
-      // Hard-exclude tiny <= 8B models from tool-calling, operator_chat, and Growth Advisor smart/balanced seats
+      // Hard-exclude tiny <= 8B models from tool-calling, operator_chat, research, and Growth Advisor smart/balanced seats
       if (
-        (input.requiresTools || (isGrowthOrOperator && input.taskType !== "fast")) &&
+        (input.requiresTools || (isStructuredWorkflow && input.taskType !== "fast")) &&
         isTinyModelId(model.id)
       ) {
         continue;

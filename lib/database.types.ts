@@ -54,6 +54,7 @@ export type Database = {
       knowledge: LooseTable;
       knowledge_sources: LooseTable;
       email_opens: LooseTable;
+      operator_conversations: LooseTable;
       global_knowledge_modules: LooseTable;
       user_business_profiles: LooseTable;
       background_jobs: LooseTable;

@@ -127,6 +127,7 @@ Run Workflow C (handle_reply) and return JSON with reply_class, sequence_action,
     systemPrompt: orchestrated.system,
     messages: [{ role: "user", content: user }],
     schema: REPLY_SCHEMA,
+    maxTokens: 1500,
   });
 
   const validClass: ReplyClassCode =
@@ -267,6 +268,7 @@ Recent campaigns: ${context.recentCampaigns.map((c) => `${c.name} (${c.status})`
     systemPrompt: orchestrated.system,
     messages: [{ role: "user", content: user }],
     schema: PLAN_SCHEMA,
+    maxTokens: 1600,
   });
   return data;
 }
@@ -319,8 +321,9 @@ Rules:
     taskType: "smart",
     feature: "analytics",
     systemPrompt: system,
-    messages: [{ role: "user", content: `METRICS\n${JSON.stringify(metrics, null, 2).slice(0, 12000)}` }],
+    messages: [{ role: "user", content: `METRICS\n${JSON.stringify(metrics, null, 2).slice(0, 10000)}` }],
     schema: INSIGHT_SCHEMA,
+    maxTokens: 1500,
   });
   return data;
 }
@@ -572,6 +575,14 @@ Return ONLY valid JSON with a "candidates" array and short "notes".`;
             platform: s.platform,
             url: s.url,
             verification_status: "Verified",
+          }));
+        }
+        if (candidate.contact.sources.length === 0 && dc.contactSourceUrls.length > 0) {
+          candidate.contact.sources = dc.contactSourceUrls.slice(0, 8).map((ev) => ({
+            field: ev.channel,
+            url: ev.sourceUrl,
+            confidence: "high" as const,
+            verification_status: "Verified" as const,
           }));
         }
       }

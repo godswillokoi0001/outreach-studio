@@ -1,6 +1,6 @@
 import { Type, type Schema } from "@google/genai";
 import { getActiveOwnerAiContext } from "./ai/context";
-import { buildOrchestratedSystemPrompt, stripUnresolvedPlaceholders } from "./ai/orchestrator";
+import { buildOrchestratedSystemPrompt, findUnresolvedPlaceholders, stripUnresolvedPlaceholders } from "./ai/orchestrator";
 import { checkSendingTierDeliverability } from "./guardrails";
 import { LLMGateway } from "./llm/gateway";
 import { cleanEmailText } from "./outreach-utils";
@@ -46,7 +46,7 @@ const CHECK_SCHEMA: Schema = {
  */
 function checklist(campaign: CampaignConfig, knowledge: string, draft: ComposedEmail, sendingTier: string): string {
   return `USER KNOWLEDGE BASE (source of truth)
-${knowledge || "(empty)"}
+${knowledge ? knowledge.slice(0, 2_500) : "(empty)"}
 
 OWNER INSTRUCTION FOR THIS CAMPAIGN
 Objective: ${campaign.objective}
@@ -93,6 +93,7 @@ async function reviewDraft(
         "You are a strict Module 2 Direct-Response Quality Gate reviewer. Judge the draft against the 8-point gate, user knowledge base, and campaign instructions. Report failures concisely; never rewrite.",
       messages: [{ role: "user", content: checklist(campaign, knowledge, draft, sendingTier) }],
       schema: CHECK_SCHEMA,
+      maxTokens: 1200,
     });
     return {
       passed: result.passed === true,
@@ -106,6 +107,9 @@ async function reviewDraft(
   }
 }
 
+const BANNED_SLOP_RE =
+  /\b(?:hope this (?:email|message) finds you well|i came across your website|i was browsing your site|game[- ]changer|synergy|delve into|unlock your potential|revolutionize your)\b/i;
+
 async function withKnowledgeCheck(
   draft: ComposedEmail,
   campaign: CampaignConfig,
@@ -114,8 +118,21 @@ async function withKnowledgeCheck(
   regenerate: (issues: string[]) => Promise<ComposedEmail>,
   ownerId: string,
 ): Promise<ComposedEmail> {
+  const localIssues: string[] = [];
+  if (BANNED_SLOP_RE.test(draft.body)) {
+    localIssues.push("Remove banned AI cliché phrasing and open with a concrete verified observation.");
+  }
+  const unresolved = [
+    ...findUnresolvedPlaceholders(draft.subject),
+    ...findUnresolvedPlaceholders(draft.body),
+  ];
+  if (unresolved.length > 0) {
+    localIssues.push(`Remove unresolved template placeholder(s): ${unresolved.join(", ")}`);
+  }
+
   const first = await reviewDraft(campaign, knowledge, draft, sendingTier, ownerId);
-  if (first.passed) {
+  const combinedIssues = Array.from(new Set([...localIssues, ...first.issues]));
+  if (first.passed && localIssues.length === 0) {
     return {
       ...draft,
       rationale: withKbLine(draft.rationale, first.kb_items_used),
@@ -125,17 +142,21 @@ async function withKnowledgeCheck(
 
   let second: ComposedEmail;
   try {
-    second = await regenerate(first.issues);
+    second = await regenerate(combinedIssues);
   } catch {
     return {
       ...draft,
+      subject: stripUnresolvedPlaceholders(draft.subject),
+      body: stripUnresolvedPlaceholders(draft.body),
       rationale: withKbLine(draft.rationale, first.kb_items_used),
-      check: { ...first, regenerated: false },
+      check: { ...first, passed: localIssues.length === 0 && first.passed, issues: combinedIssues, regenerated: false },
     };
   }
   const recheck = await reviewDraft(campaign, knowledge, second, sendingTier, ownerId);
   return {
     ...second,
+    subject: stripUnresolvedPlaceholders(second.subject),
+    body: stripUnresolvedPlaceholders(second.body),
     rationale: withKbLine(second.rationale, recheck.kb_items_used.length ? recheck.kb_items_used : first.kb_items_used),
     check: { ...recheck, regenerated: true },
   };
@@ -272,6 +293,7 @@ Select the optimal Module 3 template (T1-T12) and write the Touch 1 email passin
     systemPrompt: orchestrated.system,
     messages: [{ role: "user", content: user }],
     schema: SCHEMA,
+    maxTokens: 1600,
   });
   const cleaned = sanitizeComposedDraft(draft, true, sendingTier);
 
@@ -295,6 +317,7 @@ Select the optimal Module 3 template (T1-T12) and write the Touch 1 email passin
           },
         ],
         schema: SCHEMA,
+        maxTokens: 1600,
       });
       return sanitizeComposedDraft(revised, true, sendingTier);
     },
@@ -355,6 +378,7 @@ This is Touch #${step} in the Module 3 Follow-Up Matrix. Write a shorter same-th
     systemPrompt: orchestrated.system,
     messages: [{ role: "user", content: user }],
     schema: SCHEMA,
+    maxTokens: 1600,
   });
   const cleaned = sanitizeComposedDraft(draft, false, sendingTier);
 
@@ -378,6 +402,7 @@ This is Touch #${step} in the Module 3 Follow-Up Matrix. Write a shorter same-th
           },
         ],
         schema: SCHEMA,
+        maxTokens: 1600,
       });
       return sanitizeComposedDraft(revised, false, sendingTier);
     },

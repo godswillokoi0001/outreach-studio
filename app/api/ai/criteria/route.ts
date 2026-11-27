@@ -62,7 +62,7 @@ export async function POST(req: NextRequest) {
     };
 
     const instruction = String(body.instruction ?? "").trim().slice(0, 2000);
-    const knowledge = String(body.knowledge ?? "").trim().slice(0, 8000);
+    const knowledge = String(body.knowledge ?? "").trim().slice(0, 3_000);
     const current = { ...DEFAULT_CRITERIA, ...(body.current ?? {}) };
 
     if (body.mode === "instruction" && !instruction) {
@@ -97,6 +97,7 @@ Fill the brief for exactly this request.`
       systemPrompt: system,
       messages: [{ role: "user", content: userPrompt }],
       schema: CRITERIA_SCHEMA,
+      maxTokens: 1000,
     });
 
     const criteria = sanitizeCriteria(

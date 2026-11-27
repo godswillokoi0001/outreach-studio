@@ -141,3 +141,53 @@ export function validateOperatorAddLead(
 
   return { allowed: true };
 }
+
+/**
+ * Audits existing persisted leads so legacy test/unverified/placeholder rows
+ * are flagged cleanly as "Needs Contact Verification" and can be filtered or removed in 1 click.
+ */
+export function isLeadMissingVerifiedContact(lead: {
+  business?: string | null;
+  email?: string | null;
+  phone?: string | null;
+  website?: string | null;
+  location?: string | null;
+  notes?: string | null;
+  research?: {
+    socials?: unknown[];
+    contact_verification_status?: string;
+    mx_verified?: boolean;
+  } | null;
+}): { needsVerification: boolean; reasons: string[] } {
+  const reasons: string[] = [];
+  const email = String(lead.email ?? "").trim().toLowerCase();
+  const phone = String(lead.phone ?? "").trim();
+  const hasValidEmailSyntax = Boolean(email && /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email));
+  const isPlaceholder = Boolean(email && isPlaceholderOrSyntheticEmail(email));
+  const hasPhone = phone.replace(/\D/g, "").length >= 7;
+  const hasResearchSocial = Boolean(
+    Array.isArray(lead.research?.socials) && lead.research!.socials.length > 0,
+  );
+  const notesLower = String(lead.notes ?? "").toLowerCase();
+  const hasNoteSocial = /https?:\/\/(?:www\.)?(?:linkedin|facebook|instagram|twitter|x)\.com\//i.test(notesLower);
+
+  if (isPlaceholder) {
+    reasons.push(`Placeholder email (${email})`);
+  } else if (email && !hasValidEmailSyntax) {
+    reasons.push(`Invalid email format (${email})`);
+  }
+  if (!hasValidEmailSyntax && !hasPhone && !hasResearchSocial && !hasNoteSocial) {
+    reasons.push("Missing verified email, phone, or social link");
+  }
+  if (!String(lead.business ?? "").trim()) {
+    reasons.push("Missing business name");
+  }
+  if (!String(lead.website ?? "").trim() && !String(lead.location ?? "").trim()) {
+    reasons.push("Missing website and location");
+  }
+
+  return {
+    needsVerification: reasons.length > 0,
+    reasons,
+  };
+}

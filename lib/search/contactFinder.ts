@@ -27,6 +27,12 @@ export interface SocialProfileLink {
   handle?: string;
 }
 
+export interface ContactSourceEvidence {
+  channel: "email" | "phone" | "social" | "decision_maker";
+  value: string;
+  sourceUrl: string;
+}
+
 export interface DeepContactProfile {
   business: string;
   website: string;
@@ -41,6 +47,8 @@ export interface DeepContactProfile {
   socials: SocialProfileLink[];
   decisionMakers: DecisionMakerLead[];
   contactPagesChecked: string[];
+  contactSourceUrls: ContactSourceEvidence[];
+  verifiedSiteIssues: string[];
   inspectedSite: InspectedWebsite | null;
   hasVerifiedContact: boolean;
 }
@@ -422,23 +430,120 @@ function discoverSubpageLinks(html: string, baseUrl: string): string[] {
   return Array.from(links).slice(0, 3);
 }
 
-async function fetchHtmlQuick(url: string, timeoutMs = 4_000): Promise<string> {
+const SITEMAP_LEAD_PATH_RE =
+  /\/(?:contact|about|team|our-team|staff|leader|leadership|pastor|our-pastors|doctor|doctors|meet-the-team|founder|connect|directory|im-new|get-in-touch)/i;
+
+async function fetchTextQuick(url: string, timeoutMs = 3_000, maxBytes = 200_000): Promise<string> {
   try {
     const { res, text } = await fetchWithTimeout(
       url,
       {
         method: "GET",
         redirect: "follow",
-        headers: { "User-Agent": BROWSER_UA, Accept: "text/html,application/xhtml+xml" },
+        headers: { "User-Agent": BROWSER_UA, Accept: "text/html,application/xhtml+xml,application/xml,text/plain" },
       },
       timeoutMs,
-      200_000,
+      maxBytes,
     );
     if (!res.ok) return "";
     return text;
   } catch {
     return "";
   }
+}
+
+async function fetchHtmlQuick(url: string, timeoutMs = 4_000): Promise<string> {
+  return fetchTextQuick(url, timeoutMs, 200_000);
+}
+
+/**
+ * Discovers /staff, /leadership, /pastor, /doctors, /connect, /im-new etc. from
+ * robots.txt & /sitemap.xml under a tight 3s total cap ($0).
+ */
+export async function discoverSitemapLinks(
+  baseUrl: string,
+  excludeUrls: Set<string>,
+  timeoutMs = 3_000,
+): Promise<string[]> {
+  let baseOrigin = "";
+  try {
+    baseOrigin = new URL(baseUrl).origin;
+  } catch {
+    return [];
+  }
+
+  const deadline = Date.now() + Math.min(3_000, timeoutMs);
+  const candidates = new Set<string>();
+  const sitemapUrls = new Set<string>([`${baseOrigin}/sitemap.xml`]);
+
+  // 1. Check robots.txt quickly for explicit Sitemap directives
+  const robotsTxt = await fetchTextQuick(`${baseOrigin}/robots.txt`, Math.min(1_200, timeoutMs), 40_000);
+  if (robotsTxt) {
+    for (const line of robotsTxt.split(/\r?\n/)) {
+      const m = line.match(/^\s*Sitemap:\s*(https?:\/\/\S+)/i);
+      if (m?.[1] && isFetchableUrl(m[1])) {
+        sitemapUrls.add(m[1].trim());
+        break;
+      }
+    }
+  }
+
+  const parseLocs = (xml: string): string[] => {
+    const locs: string[] = [];
+    const locRe = /<loc>\s*([^<\s]+)\s*<\/loc>/gi;
+    let m: RegExpExecArray | null;
+    while ((m = locRe.exec(xml)) !== null) {
+      const u = decodeHtmlEntities((m[1] ?? "").trim());
+      if (u && isFetchableUrl(u)) locs.push(u);
+      if (locs.length >= 250) break;
+    }
+    return locs;
+  };
+
+  for (const smUrl of Array.from(sitemapUrls).slice(0, 2)) {
+    const remaining = deadline - Date.now();
+    if (remaining < 400) break;
+    const xml = await fetchTextQuick(smUrl, Math.min(remaining, 2_000), 250_000);
+    if (!xml || !xml.includes("<loc>")) continue;
+    const locs = parseLocs(xml);
+
+    // If sitemap_index, inspect at most 1 child page sitemap quickly
+    const childSitemaps = locs.filter((u) => /\.xml(?:\?|$)/i.test(u) && !u.includes("image")).slice(0, 1);
+    for (const u of locs) {
+      try {
+        const parsed = new URL(u);
+        if (parsed.origin === baseOrigin && SITEMAP_LEAD_PATH_RE.test(parsed.pathname) && !excludeUrls.has(u.toLowerCase())) {
+          candidates.add(u);
+          if (candidates.size >= 2) return Array.from(candidates);
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+
+    for (const childSm of childSitemaps) {
+      const rem2 = deadline - Date.now();
+      if (rem2 < 400) break;
+      const childXml = await fetchTextQuick(childSm, Math.min(rem2, 1_500), 250_000);
+      for (const u of parseLocs(childXml)) {
+        try {
+          const parsed = new URL(u);
+          if (
+            parsed.origin === baseOrigin &&
+            SITEMAP_LEAD_PATH_RE.test(parsed.pathname) &&
+            !excludeUrls.has(u.toLowerCase())
+          ) {
+            candidates.add(u);
+            if (candidates.size >= 2) return Array.from(candidates);
+          }
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+  }
+
+  return Array.from(candidates).slice(0, 2);
 }
 
 async function lookupHunterDomainEmails(domain: string): Promise<string[]> {
@@ -466,6 +571,48 @@ async function lookupHunterDomainEmails(domain: string): Promise<string[]> {
     return (parsed.data?.emails ?? [])
       .map((e) => (e.value ?? "").trim().toLowerCase())
       .filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+async function lookupCufinderDomainEmails(domain: string): Promise<string[]> {
+  if (!domain) return [];
+  const keys = await listAdminSearchKeys();
+  const cuKey = keys.find((k) => k.provider === "cufinder")?.apiKey;
+  if (!cuKey) return [];
+  if (!(await isSearchProviderAvailable("cufinder"))) return [];
+
+  try {
+    const { res, text } = await fetchWithTimeout(
+      "https://api.cufinder.io/api/v2/dte",
+      {
+        method: "POST",
+        headers: { "x-api-key": cuKey, "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ company_website: `https://${domain}` }).toString(),
+      },
+      5_000,
+      60_000,
+    );
+    if (res.status === 402 || res.status === 429) {
+      await markSearchProviderExhausted("cufinder");
+      return [];
+    }
+    if (!res.ok) return [];
+    await recordSearchProviderUsage("cufinder", 1);
+
+    const parsed = JSON.parse(text) as { data?: { emails?: unknown[] } | { email?: string }[] };
+    const found: string[] = [];
+    if (Array.isArray(parsed.data)) {
+      for (const item of parsed.data) {
+        if (typeof item?.email === "string") found.push(item.email.trim().toLowerCase());
+      }
+    } else if (parsed.data && Array.isArray(parsed.data.emails)) {
+      for (const em of parsed.data.emails) {
+        if (typeof em === "string") found.push(em.trim().toLowerCase());
+      }
+    }
+    return found.filter(Boolean);
   } catch {
     return [];
   }
@@ -513,54 +660,114 @@ export async function findDeepContactsForProspect(input: {
 
   let inspectedSite: InspectedWebsite | null = null;
   const checkedPages: string[] = [];
+  const sourceEvidence: ContactSourceEvidence[] = [];
+  const seenSourceKeys = new Set<string>();
+  const recordSource = (
+    channel: ContactSourceEvidence["channel"],
+    value: string,
+    sourceUrl: string,
+  ) => {
+    const v = value.trim();
+    const u = sourceUrl.trim();
+    if (!v || !u) return;
+    const k = `${channel}|${v.toLowerCase()}|${u.toLowerCase()}`;
+    if (seenSourceKeys.has(k)) return;
+    seenSourceKeys.add(k);
+    sourceEvidence.push({ channel, value: v, sourceUrl: u });
+  };
+
+  const ingestHtmlPage = (pageUrl: string, html: string) => {
+    const text = stripHtmlToText(html);
+    for (const em of extractEmailsDeep(html, text)) {
+      emailSet.add(em);
+      recordSource("email", em, pageUrl);
+    }
+    for (const ph of extractPhonesDeep(html, text)) {
+      phoneSet.add(ph);
+      recordSource("phone", ph, pageUrl);
+    }
+    for (const soc of extractSocialsDeep(html)) {
+      socialMap.set(soc.url.toLowerCase(), soc);
+      recordSource("social", soc.url, pageUrl);
+    }
+    for (const dm of extractVisibleDecisionMakers(text)) {
+      dmMap.set(dm.name.toLowerCase(), dm);
+      recordSource("decision_maker", `${dm.name} (${dm.role})`, pageUrl);
+    }
+    const ld = extractJsonLdContacts(html);
+    for (const em of ld.emails) {
+      emailSet.add(em);
+      recordSource("email", em, pageUrl);
+    }
+    for (const ph of ld.phones) {
+      phoneSet.add(ph);
+      recordSource("phone", ph, pageUrl);
+    }
+    for (const soc of ld.socials) {
+      socialMap.set(soc.url.toLowerCase(), soc);
+      recordSource("social", soc.url, pageUrl);
+    }
+    for (const dm of ld.decisionMakers) {
+      dmMap.set(dm.name.toLowerCase(), dm);
+      recordSource("decision_maker", `${dm.name} (${dm.role})`, pageUrl);
+    }
+    if (!resolvedLocation && ld.addresses[0]) resolvedLocation = ld.addresses[0];
+  };
 
   if (normSite && isFetchableUrl(normSite)) {
     const rawHomeHtml = await fetchHtmlQuick(normSite, timeoutMs);
     inspectedSite = await inspectProspectWebsite(normSite, { timeoutMs });
+    const homeUrl = inspectedSite?.finalUrl || normSite;
 
     if (inspectedSite) {
-      checkedPages.push(inspectedSite.finalUrl || normSite);
-      for (const em of inspectedSite.emails) emailSet.add(em.toLowerCase());
-      for (const ph of inspectedSite.phones) phoneSet.add(ph);
+      checkedPages.push(homeUrl);
+      for (const em of inspectedSite.emails) {
+        const clean = em.toLowerCase();
+        emailSet.add(clean);
+        recordSource("email", clean, homeUrl);
+      }
+      for (const ph of inspectedSite.phones) {
+        phoneSet.add(ph);
+        recordSource("phone", ph, homeUrl);
+      }
       for (const soc of inspectedSite.socialLinks) {
         socialMap.set(soc.url.toLowerCase(), soc);
+        recordSource("social", soc.url, homeUrl);
       }
       for (const dm of extractVisibleDecisionMakers(inspectedSite.textSummary)) {
         dmMap.set(dm.name.toLowerCase(), dm);
+        recordSource("decision_maker", `${dm.name} (${dm.role})`, homeUrl);
       }
     }
 
     if (rawHomeHtml) {
-      for (const em of extractEmailsDeep(rawHomeHtml, stripHtmlToText(rawHomeHtml))) emailSet.add(em);
-      for (const ph of extractPhonesDeep(rawHomeHtml, stripHtmlToText(rawHomeHtml))) phoneSet.add(ph);
-      for (const soc of extractSocialsDeep(rawHomeHtml)) socialMap.set(soc.url.toLowerCase(), soc);
-      const jsonLd = extractJsonLdContacts(rawHomeHtml);
-      for (const em of jsonLd.emails) emailSet.add(em);
-      for (const ph of jsonLd.phones) phoneSet.add(ph);
-      for (const soc of jsonLd.socials) socialMap.set(soc.url.toLowerCase(), soc);
-      for (const dm of jsonLd.decisionMakers) dmMap.set(dm.name.toLowerCase(), dm);
-      if (!resolvedLocation && jsonLd.addresses[0]) resolvedLocation = jsonLd.addresses[0];
+      ingestHtmlPage(homeUrl, rawHomeHtml);
 
-      // Crawl up to 3 high-value contact/about/team subpages in parallel (0 credits)
+      // Step B1: Crawl up to 3 high-value contact/about/team subpages in parallel ($0)
       const subLinks = discoverSubpageLinks(rawHomeHtml, normSite);
       const subPages = await Promise.allSettled(
         subLinks.map(async (u) => ({ url: u, html: await fetchHtmlQuick(u, timeoutMs) })),
       );
       for (const res of subPages) {
         if (res.status !== "fulfilled" || !res.value.html) continue;
-        const { url, html } = res.value;
-        checkedPages.push(url);
-        const text = stripHtmlToText(html);
-        for (const em of extractEmailsDeep(html, text)) emailSet.add(em);
-        for (const ph of extractPhonesDeep(html, text)) phoneSet.add(ph);
-        for (const soc of extractSocialsDeep(html)) socialMap.set(soc.url.toLowerCase(), soc);
-        for (const dm of extractVisibleDecisionMakers(text)) dmMap.set(dm.name.toLowerCase(), dm);
-        const ld = extractJsonLdContacts(html);
-        for (const em of ld.emails) emailSet.add(em);
-        for (const ph of ld.phones) phoneSet.add(ph);
-        for (const soc of ld.socials) socialMap.set(soc.url.toLowerCase(), soc);
-        for (const dm of ld.decisionMakers) dmMap.set(dm.name.toLowerCase(), dm);
-        if (!resolvedLocation && ld.addresses[0]) resolvedLocation = ld.addresses[0];
+        checkedPages.push(res.value.url);
+        ingestHtmlPage(res.value.url, res.value.html);
+      }
+    }
+
+    // Step B2: Fast /robots.txt + /sitemap.xml discovery (3s cap) for hidden /staff, /leadership, /pastors, /doctors, /connect pages
+    if (emailSet.size === 0 || dmMap.size === 0) {
+      const visitedSet = new Set(checkedPages.map((u) => u.toLowerCase()));
+      const sitemapLinks = await discoverSitemapLinks(homeUrl, visitedSet, Math.min(3_000, timeoutMs));
+      if (sitemapLinks.length > 0) {
+        const smPages = await Promise.allSettled(
+          sitemapLinks.map(async (u) => ({ url: u, html: await fetchHtmlQuick(u, Math.min(3_000, timeoutMs)) })),
+        );
+        for (const res of smPages) {
+          if (res.status !== "fulfilled" || !res.value.html) continue;
+          checkedPages.push(res.value.url);
+          ingestHtmlPage(res.value.url, res.value.html);
+        }
       }
     }
   }
@@ -571,18 +778,34 @@ export async function findDeepContactsForProspect(input: {
     const query = `"${input.business.trim()}"${city ? ` "${city}"` : ""} ("@" OR email OR LinkedIn OR founder OR owner OR director)`;
     const enriched = await WebSearchService.search(query, { maxResults: 5 }).catch(() => null);
     for (const r of enriched?.results ?? []) {
-      for (const em of extractEmailsDeep("", `${r.title} ${r.snippet}`)) emailSet.add(em);
+      for (const em of extractEmailsDeep("", `${r.title} ${r.snippet}`)) {
+        emailSet.add(em);
+        recordSource("email", em, r.url);
+      }
       const soc = classifySocialPlatform(r.url);
-      if (soc) socialMap.set(soc.url.toLowerCase(), soc);
+      if (soc) {
+        socialMap.set(soc.url.toLowerCase(), soc);
+        recordSource("social", soc.url, r.url);
+      }
       for (const dm of extractVisibleDecisionMakers(`${r.title} ${r.snippet}`)) {
         dmMap.set(dm.name.toLowerCase(), dm);
+        recordSource("decision_maker", `${dm.name} (${dm.role})`, r.url);
       }
     }
   }
 
-  // Step D: Optional Hunter.io enrichment hook if key exists & still no email
+  // Step D: Optional Hunter.io & CUFinder enrichment hooks if admin configured keys & still no email
   if (emailSet.size === 0 && domain) {
-    for (const em of await lookupHunterDomainEmails(domain)) emailSet.add(em);
+    for (const em of await lookupHunterDomainEmails(domain)) {
+      emailSet.add(em);
+      recordSource("email", em, `https://hunter.io/search/${domain}`);
+    }
+  }
+  if (emailSet.size === 0 && domain) {
+    for (const em of await lookupCufinderDomainEmails(domain)) {
+      emailSet.add(em);
+      recordSource("email", em, `https://dashboard.cufinder.io/company/${domain}`);
+    }
   }
 
   // Step E: MX Verification & direct-vs-role ranking
@@ -612,6 +835,10 @@ export async function findDeepContactsForProspect(input: {
   const decisionMakers = Array.from(dmMap.values()).slice(0, 4);
   const hasVerifiedContact = verifiedEmails.length > 0 || phones.length > 0 || socials.length > 0;
 
+  const verifiedSiteIssues: string[] = (inspectedSite?.statusHints ?? []).filter(
+    (h) => !/^has\s/i.test(h) && !/^uses\s/i.test(h),
+  );
+
   return {
     business: input.business.trim(),
     website: inspectedSite?.finalUrl || normSite || "",
@@ -626,6 +853,8 @@ export async function findDeepContactsForProspect(input: {
     socials,
     decisionMakers,
     contactPagesChecked: checkedPages,
+    contactSourceUrls: sourceEvidence.slice(0, 12),
+    verifiedSiteIssues: verifiedSiteIssues.slice(0, 6),
     inspectedSite,
     hasVerifiedContact,
   };
