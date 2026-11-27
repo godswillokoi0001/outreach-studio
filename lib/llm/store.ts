@@ -21,6 +21,10 @@ const DOC_ADMIN_SETTINGS = "system_llm_admin_settings";
 const DOC_ADMIN_KEYS = "system_llm_admin_keys";
 const DOC_EXEC_LOGS = "system_llm_exec_logs";
 const DOC_ADMIN_DELETED_KEYS = "system_llm_admin_deleted_keys";
+const DOC_ADMIN_KEYS_INITIALIZED = "system_llm_admin_keys_initialized";
+
+const BOOTSTRAP_KEY_ID_PREFIXES = ["admkey_env_", "admkey_legacy_"];
+const deletedAdminKeyIdsMemory = new Set<string>();
 
 const CACHE_TTL_MS = 15_000;
 
@@ -237,7 +241,29 @@ async function readDeletedAdminKeyIds(): Promise<Set<string>> {
     DOC_ADMIN_DELETED_KEYS,
   );
   const ids = Array.isArray(stored) ? stored : Array.isArray(stored?.ids) ? stored.ids : [];
-  return new Set(ids.filter((x): x is string => typeof x === "string" && Boolean(x)));
+  const result = new Set(deletedAdminKeyIdsMemory);
+  for (const x of ids) {
+    if (typeof x === "string" && x) result.add(x);
+  }
+  return result;
+}
+
+async function isAdminKeysInitialized(): Promise<boolean> {
+  const doc = await readKnowledgeDoc<{ initialized?: boolean }>(
+    PLATFORM_LLM_OWNER,
+    DOC_ADMIN_KEYS_INITIALIZED,
+  );
+  return Boolean(doc?.initialized);
+}
+
+async function markAdminKeysInitialized(): Promise<void> {
+  await writeKnowledgeDoc(
+    PLATFORM_LLM_OWNER,
+    DOC_ADMIN_KEYS_INITIALIZED,
+    "system_llm_gateway",
+    "Admin AI Gateway Pool Initialized",
+    { initialized: true },
+  );
 }
 
 async function rememberDeletedAdminKeyId(id: string): Promise<void> {
@@ -375,12 +401,32 @@ export async function listAdminAiKeys(): Promise<AdminAiKeyRecord[]> {
     list = (await readKnowledgeDoc<AdminAiKeyRecord[]>(PLATFORM_LLM_OWNER, DOC_ADMIN_KEYS)) ?? [];
   }
 
-  if (list.length === 0) {
-    // Legacy/env auto-bootstrap must never resurrect a key the admin deleted.
+  // Deleting an auto-generated key must stick even if an older deployment or a
+  // concurrent request re-inserted it from the legacy/env bootstrap.
+  if (list.some((k) => BOOTSTRAP_KEY_ID_PREFIXES.some((p) => k.id.startsWith(p)))) {
     const deletedIds = await readDeletedAdminKeyIds();
-    list = (await readLegacyPlatformKeys()).filter((k) => !deletedIds.has(k.id));
-    for (const k of list) {
-      await upsertAdminAiKeyRaw(k, !error);
+    if (deletedIds.size > 0) {
+      const resurrected = list.filter((k) => deletedIds.has(k.id));
+      list = list.filter((k) => !deletedIds.has(k.id));
+      if (resurrected.length > 0 && !error) {
+        await supabaseServer
+          .from("admin_ai_keys")
+          .delete()
+          .in("id", resurrected.map((k) => k.id));
+      }
+    }
+  }
+
+  if (list.length === 0) {
+    const deletedIds = await readDeletedAdminKeyIds();
+    // One-time bootstrap only: once the pool has been initialized, an empty
+    // pool means the admin removed every key, so nothing is re-imported.
+    if (!(await isAdminKeysInitialized())) {
+      list = (await readLegacyPlatformKeys()).filter((k) => !deletedIds.has(k.id));
+      for (const k of list) {
+        await upsertAdminAiKeyRaw(k, !error);
+      }
+      await markAdminKeysInitialized();
     }
   }
 
@@ -438,6 +484,8 @@ export async function saveAdminAiKey(rec: AdminAiKeyRecord): Promise<AdminAiKeyR
 }
 
 export async function deleteAdminAiKey(id: string): Promise<void> {
+  deletedAdminKeyIdsMemory.add(id);
+  await markAdminKeysInitialized();
   await rememberDeletedAdminKeyId(id);
 
   const existing = (await readKnowledgeDoc<AdminAiKeyRecord[]>(PLATFORM_LLM_OWNER, DOC_ADMIN_KEYS)) ?? [];
