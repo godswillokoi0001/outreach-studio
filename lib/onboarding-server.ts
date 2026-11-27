@@ -200,6 +200,7 @@ ${input.answer}`,
 
 export async function generateKnowledgeBaseServer(input: {
   answers: OnboardingAnswers;
+  extraContext?: string;
   model?: string;
 }): Promise<{ sections: KnowledgeSection[]; missingGaps: string[] }> {
   const KB_SCHEMA: Schema = {
@@ -243,7 +244,9 @@ ${KB_SECTION_TEMPLATES.map((t) => `- key: "${t.key}", title: "${t.title}"`).join
     overallMissingGaps: string[];
   }>({
     system,
-    user: `Today: ${today}\nOnboarding Answers JSON:\n${JSON.stringify(input.answers, null, 2)}`,
+    user: `Today: ${today}\nOnboarding Answers JSON:\n${JSON.stringify(input.answers, null, 2)}${
+      input.extraContext ? `\n\nSupporting Website / Document Context (use strictly if consistent with user's answers):\n${input.extraContext.slice(0, 5000)}` : ""
+    }`,
     schema: KB_SCHEMA,
     model: input.model,
   });

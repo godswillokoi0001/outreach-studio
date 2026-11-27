@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { BookOpenCheck, Brain, History, RefreshCw, RotateCcw, Save } from "lucide-react";
 import { BrandLoader } from "@/components/BrandLoader";
 import { Badge, Banner, Card } from "@/components/ui";
-import { adminFetch } from "./admin-client";
+import { adminFetch, AdminClientError } from "./admin-client";
 import type { GlobalKnowledgeModule, GlobalKnowledgeModuleKey } from "@/lib/global-knowledge/types";
 import type { AdminRole } from "@/lib/platform/types";
 
@@ -109,6 +109,10 @@ export function AdminGlobalKnowledgeTab({
       setNotice(`Published v${res.module.version} for ${selectedKey} and invalidated server RAM cache.`);
       await load();
     } catch (err) {
+      if (err instanceof AdminClientError && err.code === "ADMIN_REAUTH_REQUIRED") {
+        onNeedReauth("Publish new Global Brain module version", (t) => publishVersion(t));
+        return;
+      }
       setError(err instanceof Error ? err.message : "Failed to publish module version.");
     } finally {
       setSaving(false);
@@ -136,6 +140,10 @@ export function AdminGlobalKnowledgeTab({
       setNotice(`Rolled back to v${res.module.version} and invalidated server RAM cache.`);
       await load();
     } catch (err) {
+      if (err instanceof AdminClientError && err.code === "ADMIN_REAUTH_REQUIRED") {
+        onNeedReauth(`Rollback ${selectedKey} to v${version}`, (t) => rollbackVersion(version, t));
+        return;
+      }
       setError(err instanceof Error ? err.message : "Rollback failed.");
     } finally {
       setSaving(false);

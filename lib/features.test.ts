@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { clearAllAccountClientData, syncActiveOwnerSessionMarker } from "./client-cleanup";
+import { NextRequest } from "next/server";
 import { sanitizeAgentContents } from "./agent-meta";
+import { computeJobProgressAndEta, type BackgroundJobStep } from "./background-jobs";
 import {
   DEFAULT_CRITERIA,
   INDUSTRY_OPTIONS,
@@ -10,6 +13,17 @@ import {
   sanitizeCriteria,
 } from "./criteria";
 import { GEO_COUNTRIES, citiesIn, geoLabel, geoSummary, statesIn } from "./geo";
+import {
+  computeProfileFingerprint,
+  EMPTY_GROWTH_PROFILE,
+  evaluateProfileCompleteness,
+  hydrateGrowthProfileFromOnboarding,
+} from "./growth-advisor";
+import { generateTotpAt, generateTotpSecret, verifyTotpCode } from "./key-vault";
+import { DEFAULT_ONBOARDING_ANSWERS } from "./onboarding";
+import { requireAdmin } from "./platform/admin-auth";
+import { hashAdminPassword, verifyAdminPassword } from "./platform/admin-credentials";
+import { signAdminCookieToken, verifyAdminCookieToken } from "./platform/admin-session";
 
 test("sanitizeCriteria keeps only allowed options and clamps numbers", () => {
   const result = sanitizeCriteria(
@@ -712,4 +726,177 @@ test("Phase 7 (4 & 5): Hard qualification/self-send/sending-tier guardrails, rep
   const sanitized = cleanEmailText(stripUnresolvedPlaceholders(leaked));
   assert.equal(findUnresolvedPlaceholders(sanitized).length, 0);
   assert.ok(!sanitized.includes("{{"));
+});
+
+test("isolated admin authentication: scrypt hashing, TOTP 2FA, separate cookies, and zero user-token escalation", async () => {
+  const secretPw = "TestAdmin#2026!Secure";
+  const hash = hashAdminPassword(secretPw);
+  assert.ok(hash.startsWith("scrypt:v1:"));
+  assert.equal(verifyAdminPassword(secretPw, hash), true);
+  assert.equal(verifyAdminPassword("wrong-password", hash), false);
+
+  const totpSecret = generateTotpSecret();
+  const currentStep = Math.floor(Date.now() / 1000 / 30);
+  const validCode = generateTotpAt(totpSecret, currentStep);
+  assert.equal(verifyTotpCode(totpSecret, validCode), true);
+  assert.equal(verifyTotpCode(totpSecret, "000000"), validCode === "000000");
+
+  const sessionTok = signAdminCookieToken({
+    kind: "session",
+    adminId: "adm_1",
+    email: "admin@example.com",
+    role: "super_admin",
+    ttlSeconds: 1800,
+  });
+  assert.equal(verifyAdminCookieToken(sessionTok.token, "session")?.adminId, "adm_1");
+  // Token kind mismatch must be rejected
+  assert.equal(verifyAdminCookieToken(sessionTok.token, "reauth"), null);
+  assert.equal(verifyAdminCookieToken(`${sessionTok.token}tamper`, "session"), null);
+
+  // Regular user Bearer header MUST NOT unlock admin routes
+  const reqWithUserBearerOnly = new NextRequest("http://localhost:3000/api/admin/overview", {
+    headers: { Authorization: "Bearer regular-google-user-token" },
+  });
+  await assert.rejects(
+    () => requireAdmin(reqWithUserBearerOnly, "support"),
+    (err: unknown) => (err as { status?: number; code?: string }).status === 401,
+  );
+});
+
+test("background jobs progress & ETA track stages deterministically", () => {
+  const startedAt = new Date(Date.now() - 6000).toISOString();
+  const stepOneDone: BackgroundJobStep[] = [
+    { key: "s1", label: "Saving profile", status: "done", weightSec: 3 },
+    { key: "s2", label: "Scanning site", status: "in_progress", weightSec: 6 },
+    { key: "s3", label: "Drafting KB", status: "pending", weightSec: 12 },
+  ];
+  const mid = computeJobProgressAndEta(stepOneDone, startedAt, "running");
+  assert.ok(mid.progressPct > 10 && mid.progressPct < 99);
+  assert.ok(mid.estimatedSecondsRemaining > 0);
+  assert.equal(mid.currentStep, "Scanning site");
+
+  const finished = computeJobProgressAndEta(
+    stepOneDone.map((s) => ({ ...s, status: "done" })),
+    startedAt,
+    "succeeded",
+  );
+  assert.equal(finished.progressPct, 100);
+  assert.equal(finished.estimatedSecondsRemaining, 0);
+
+  const failed = computeJobProgressAndEta(
+    [
+      { key: "s1", label: "Saving profile", status: "done", weightSec: 3 },
+      { key: "s2", label: "Scanning site", status: "failed", weightSec: 6 },
+    ],
+    startedAt,
+    "failed",
+  );
+  assert.equal(failed.estimatedSecondsRemaining, 0);
+  assert.equal(failed.currentStep, "Scanning site");
+});
+
+test("Growth Advisor profile hydrates from Onboarding and updates fingerprint cleanly", () => {
+  const hydrated = hydrateGrowthProfileFromOnboarding(
+    EMPTY_GROWTH_PROFILE,
+    {
+      ...DEFAULT_ONBOARDING_ANSWERS,
+      businessName: "Northstar Labs",
+      industry: "B2B SaaS",
+      businessDescription: "Workflow automation for finance teams",
+      priceRange: "$3,000/mo",
+      currentMarkets: "Austin, TX",
+      icpRoles: ["CFO", "VP Finance"],
+      marketReach: ["national"],
+    },
+    {
+      sender_company: "Northstar Labs",
+      sender_name: "Alex",
+      sender_role: "Founder",
+      physical_address: "Austin, TX",
+    },
+  );
+
+  assert.equal(hydrated.whoYouAre, "Northstar Labs");
+  assert.equal(hydrated.industry, "B2B SaaS");
+  assert.deepEqual(hydrated.targetRoles, ["CFO", "VP Finance"]);
+  assert.deepEqual(hydrated.marketScope, ["national"]);
+
+  const comp = evaluateProfileCompleteness(hydrated, "", {
+    sender_company: "Northstar Labs",
+    sender_name: "Alex",
+    sender_role: "Founder",
+  });
+  assert.equal(comp.complete, true);
+  assert.ok(comp.score >= 70);
+
+  const fp1 = computeProfileFingerprint({
+    profile: hydrated,
+    knowledgeDigest: "",
+    settings: { sender_company: "Northstar Labs", sender_name: "Alex", sender_role: "Founder", physical_address: "Austin" },
+    metricsSummary: { leads: 0, campaigns: 0, sent: 0, replies: 0, positive: 0 },
+  });
+  const fp2 = computeProfileFingerprint({
+    profile: { ...hydrated, averageDealValue: 15000 },
+    knowledgeDigest: "",
+    settings: { sender_company: "Northstar Labs", sender_name: "Alex", sender_role: "Founder", physical_address: "Austin" },
+    metricsSummary: { leads: 0, campaigns: 0, sent: 0, replies: 0, positive: 0 },
+  });
+  assert.notEqual(fp1, fp2);
+});
+
+test("cross-user browser storage cleanup clears account data on account switch while keeping theme", () => {
+  const localMap = new Map<string, string>([
+    ["knowrevo:theme", "dark"],
+    ["os:chat:v1:userA", "{\"messages\":[1]}"],
+    ["outreach-batch-job:userA", "{\"running\":true}"],
+    ["reply_drafts", "{\"stale\":true}"],
+  ]);
+  const sessionMap = new Map<string, string>([
+    ["os:announcements", "[{\"id\":\"a1\"}]"],
+    ["os:active-owner-id", "userA"],
+  ]);
+
+  const makeStorage = (map: Map<string, string>) => ({
+    get length() {
+      return map.size;
+    },
+    key(i: number) {
+      return Array.from(map.keys())[i] ?? null;
+    },
+    getItem(k: string) {
+      return map.get(k) ?? null;
+    },
+    setItem(k: string, v: string) {
+      map.set(k, v);
+    },
+    removeItem(k: string) {
+      map.delete(k);
+    },
+    clear() {
+      map.clear();
+    },
+  });
+
+  const prevWindow = (globalThis as { window?: unknown }).window;
+  (globalThis as { window?: unknown }).window = {
+    localStorage: makeStorage(localMap),
+    sessionStorage: makeStorage(sessionMap),
+    dispatchEvent: () => true,
+  };
+
+  try {
+    const res = syncActiveOwnerSessionMarker("userB");
+    assert.equal(res.switched, true);
+    assert.equal(localMap.get("knowrevo:theme"), "dark");
+    assert.equal(localMap.has("os:chat:v1:userA"), false);
+    assert.equal(localMap.has("outreach-batch-job:userA"), false);
+    assert.equal(localMap.has("reply_drafts"), false);
+    assert.equal(sessionMap.get("os:active-owner-id"), "userB");
+    assert.equal(sessionMap.has("os:announcements"), false);
+
+    clearAllAccountClientData();
+    assert.equal(localMap.get("knowrevo:theme"), "dark");
+  } finally {
+    (globalThis as { window?: unknown }).window = prevWindow;
+  }
 });

@@ -57,8 +57,14 @@ const TIMESTAMP_COLUMNS = new Set([
 type Row = Record<string, unknown>;
 
 function resolveTable(name: string | null): string {
-  if (name === "global_knowledge_modules" || name === "user_business_profiles") {
-    throw new AuthError("Access to restricted global intelligence or system profile tables is denied.", 403);
+  if (
+    name === "global_knowledge_modules" ||
+    name === "user_business_profiles" ||
+    name === "background_jobs" ||
+    name === "admin_accounts" ||
+    name === "admin_login_attempts"
+  ) {
+    throw new AuthError("Access to restricted global intelligence or system tables is denied.", 403);
   }
   if (!name || !COLUMNS[name]) {
     throw new AuthError(`Unknown data table: ${name ?? "(none)"}.`, 400);
@@ -113,7 +119,10 @@ function assertSafeClientRecordId(id: string): void {
   if (
     id.startsWith("system_user_meta_") ||
     id.startsWith("system_user_byok_") ||
+    id.startsWith("system_user_settings_") ||
     id.startsWith("system_platform") ||
+    id.startsWith("system_admin_") ||
+    id.startsWith("system_job_") ||
     id.startsWith("adm_log_")
   ) {
     throw new AuthError("Access to protected system security records is denied.", 403);
@@ -189,13 +198,16 @@ export async function GET(req: NextRequest) {
       return (
         !rowId.startsWith("system_user_meta_") &&
         !rowId.startsWith("system_user_byok_") &&
+        !rowId.startsWith("system_user_settings_") &&
         !rowId.startsWith("system_platform") &&
+        !rowId.startsWith("system_admin_") &&
+        !rowId.startsWith("system_job_") &&
         !rowId.startsWith("adm_log_")
       );
     });
     return NextResponse.json(
       id ? { row: rows[0] ?? null } : { rows },
-      { headers: { "Cache-Control": "no-store" } },
+      { headers: { "Cache-Control": "private, no-store, max-age=0" } },
     );
   } catch (err) {
     return handleApiError(err);

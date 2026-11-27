@@ -200,6 +200,72 @@ export async function authedPost<T>(
   throw new Error("Request failed after retrying. Please try again.");
 }
 
+export async function authedGet<T>(path: string): Promise<T> {
+  const sessionToken = await getAccessToken();
+  if (!sessionToken) {
+    throw new Error("Sign in with Google to continue.");
+  }
+  const res = await fetch(path, {
+    method: "GET",
+    headers: { Accept: "application/json", Authorization: `Bearer ${sessionToken}` },
+    cache: "no-store",
+    credentials: "same-origin",
+  });
+  const text = await res.text();
+  let data: unknown = null;
+  try {
+    data = text ? JSON.parse(text) : null;
+  } catch {
+    data = null;
+  }
+  if (!res.ok) {
+    const message =
+      describeError(
+        data && typeof data === "object" && "error" in data ? (data as { error: unknown }).error : null,
+      ) ?? `Request failed (HTTP ${res.status}).`;
+    throw new Error(message);
+  }
+  return data as T;
+}
+
+export async function authedPut<T>(
+  path: string,
+  body?: unknown,
+  options?: { keepalive?: boolean },
+): Promise<T> {
+  const sessionToken = await getAccessToken();
+  if (!sessionToken) {
+    throw new Error("Sign in with Google to continue.");
+  }
+  const res = await fetch(path, {
+    method: "PUT",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json",
+      Authorization: `Bearer ${sessionToken}`,
+    },
+    body: body === undefined ? undefined : JSON.stringify(body),
+    cache: "no-store",
+    credentials: "same-origin",
+    keepalive: options?.keepalive,
+  });
+  const text = await res.text();
+  let data: unknown = null;
+  try {
+    data = text ? JSON.parse(text) : null;
+  } catch {
+    data = null;
+  }
+  if (!res.ok) {
+    const message =
+      describeError(
+        data && typeof data === "object" && "error" in data ? (data as { error: unknown }).error : null,
+      ) ?? `Save failed (HTTP ${res.status}).`;
+    throw new Error(message);
+  }
+  return data as T;
+}
+
 export async function authedUpload<T>(path: string, form: FormData): Promise<T> {
   const sessionToken = await getAccessToken();
   if (!sessionToken) throw new Error("Sign in with Google to continue.");

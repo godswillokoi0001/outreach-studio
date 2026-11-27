@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { Suspense, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import {
@@ -8,7 +7,6 @@ import {
   ChevronUp,
   ExternalLink,
   Globe,
-  Loader2,
   Play,
   RefreshCw,
   RotateCcw,
@@ -16,14 +14,15 @@ import {
   TrendingUp,
 } from "lucide-react";
 import { useAuth } from "@/components/AuthProvider";
+import { formatApproxEta } from "@/components/BackgroundJobsBar";
 import { BrandLoader } from "@/components/BrandLoader";
-import { Badge, Banner, Card, Empty, Field } from "@/components/ui";
+import { GrowthProfileForm } from "@/components/GrowthProfileForm";
+import { Badge, Banner, Card, Empty } from "@/components/ui";
 import { GrowthExecuteModal } from "@/components/GrowthExecuteModal";
 import { NarratorControl } from "@/components/NarratorControl";
 import { useToast } from "@/components/Feedback";
 import {
   CATEGORY_LABELS,
-  type GrowthProfile,
   type GrowthRecommendation,
   type RecommendationCategory,
 } from "@/lib/growth-advisor";
@@ -43,6 +42,8 @@ function GrowthAdvisorContent() {
     knowledgeDigest,
     existingEmails,
     report,
+    researchJob,
+    syncSourceNote,
     completeness,
     loading,
     researching,
@@ -62,15 +63,11 @@ function GrowthAdvisorContent() {
     e.preventDefault();
     try {
       await updateProfile(profile, true);
-      toast.success("Business profile saved", "Growth Advisor is refreshing live internet research for your business.");
+      toast.success("Business profile saved", "Growth Advisor started a background internet research run.");
       setProfileExpanded(false);
     } catch {
       // error already exposed via hook
     }
-  };
-
-  const setField = <K extends keyof GrowthProfile>(key: K, value: GrowthProfile[K]) => {
-    setProfile((prev) => ({ ...prev, [key]: value }));
   };
 
   const openExecute = (rec: GrowthRecommendation | null) => {
@@ -167,109 +164,105 @@ function GrowthAdvisorContent() {
           )}
 
           {profileExpanded && (
-            <form onSubmit={handleSaveProfile} className="stack" style={{ gap: 12 }}>
-              {!completeness.complete && (
-                <Banner tone="info">
-                  Fill out what you sell, your industry, offer, price range, and target location. You can also enrich
-                  your long-form offer docs in <Link href="/knowledge">Knowledge base</Link> and sender settings in{" "}
-                  <Link href="/settings">Settings</Link>.
-                </Banner>
-              )}
-
-              <div className="grid grid-2" style={{ gap: 12 }}>
-                <Field label="Who you are / Company name" hint="Your brand, agency, or founder identity">
-                  <input
-                    value={profile.whoYouAre}
-                    onChange={(e) => setField("whoYouAre", e.target.value)}
-                    placeholder="e.g. Brightline Digital Studio"
-                  />
-                </Field>
-                <Field label="Industry / Category" hint="What space do you operate in?">
-                  <input
-                    value={profile.industry}
-                    onChange={(e) => setField("industry", e.target.value)}
-                    placeholder="e.g. B2B Web Design, SaaS Consulting, HVAC Services"
-                  />
-                </Field>
-              </div>
-
-              <div className="grid grid-2" style={{ gap: 12 }}>
-                <Field label="What you sell or do" hint="Core service or product">
-                  <input
-                    value={profile.whatYouSell}
-                    onChange={(e) => setField("whatYouSell", e.target.value)}
-                    placeholder="e.g. Custom high-converting websites and local SEO for dental clinics"
-                  />
-                </Field>
-                <Field label="Core offer / Hook" hint="Specific outcome or deliverable">
-                  <input
-                    value={profile.offer}
-                    onChange={(e) => setField("offer", e.target.value)}
-                    placeholder="e.g. 14-day patient-booking website rebuild with conversion guarantee"
-                  />
-                </Field>
-              </div>
-
-              <div className="grid grid-3" style={{ gap: 12 }}>
-                <Field label="Price range" hint="Helps match buyers who can afford you">
-                  <input
-                    value={profile.priceRange}
-                    onChange={(e) => setField("priceRange", e.target.value)}
-                    placeholder="e.g. $2,500 - $6,000 / project"
-                  />
-                </Field>
-                <Field label="Target or base location" hint="Cities, states, or countries">
-                  <input
-                    value={profile.location}
-                    onChange={(e) => setField("location", e.target.value)}
-                    placeholder="e.g. Austin TX, Dallas, or United Kingdom"
-                  />
-                </Field>
-                <Field label="Ideal customer" hint="Decision maker & company size">
-                  <input
-                    value={profile.idealCustomer}
-                    onChange={(e) => setField("idealCustomer", e.target.value)}
-                    placeholder="e.g. Independent clinic owners with 3-20 staff"
-                  />
-                </Field>
-              </div>
-
-              <div className="row" style={{ justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
-                <span className="tiny muted">
-                  Also synced with {knowledgeDigest ? "Knowledge base" : "Settings"}{" "}
-                  {settings.sender_company ? `(${settings.sender_company})` : ""}.
-                </span>
-                <div className="row" style={{ gap: 8 }}>
-                  <button
-                    type="button"
-                    className="btn btn-ghost btn-sm"
-                    onClick={() => setProfileExpanded(false)}
-                  >
-                    Cancel
-                  </button>
-                  <button type="submit" className="btn btn-primary" disabled={savingProfile}>
-                    {savingProfile ? "Saving & researching…" : "Save profile & run research"}
-                  </button>
-                </div>
-              </div>
-            </form>
+            <GrowthProfileForm
+              profile={profile}
+              onChange={setProfile}
+              onSave={handleSaveProfile}
+              onCancel={() => setProfileExpanded(false)}
+              saving={savingProfile}
+              completenessScore={completeness.score}
+              missingFields={completeness.missingFields}
+              syncSourceNote={syncSourceNote}
+            />
           )}
         </Card>
 
-        {/* Live Research Status & Errors */}
+        {/* Live Background Research Progress & Errors */}
         {researching && (
-          <Banner tone="info">
-            <div className="row" style={{ gap: 10 }}>
-              <Loader2 size={16} className="spin" />
-              <div>
-                <strong>Running background internet research…</strong>
-                <div className="tiny">
-                  Searching live market trends, high-demand locations, winning hooks, and buyer benchmarks for your
-                  business.
+          <Card
+            title="Live Market Research in Progress"
+            sub={
+              researchJob
+                ? `${researchJob.progressPct}% complete · ${formatApproxEta(researchJob.estimatedSecondsRemaining)}`
+                : "Starting background research…"
+            }
+          >
+            <div className="stack" style={{ gap: 12 }}>
+              <div className="row" style={{ gap: 12, alignItems: "center" }}>
+                <BrandLoader size={40} />
+                <div style={{ flex: 1 }}>
+                  <div className="strong tiny">
+                    {researchJob?.currentStep || "Searching for businesses like yours"}
+                  </div>
+                  <div className="tiny muted">
+                    You can continue working on other pages — this runs safely in the background and saves to your account.
+                  </div>
                 </div>
               </div>
+
+              <div
+                role="progressbar"
+                aria-valuenow={researchJob?.progressPct ?? 12}
+                aria-valuemin={0}
+                aria-valuemax={100}
+                style={{
+                  height: 7,
+                  borderRadius: 999,
+                  background: "var(--surface-2)",
+                  border: "1px solid var(--line-soft)",
+                  overflow: "hidden",
+                }}
+              >
+                <div
+                  style={{
+                    height: "100%",
+                    width: `${researchJob?.progressPct ?? 12}%`,
+                    background: "var(--teal-deep, #0f766e)",
+                    transition: "width 0.35s ease",
+                  }}
+                />
+              </div>
+
+              {researchJob && researchJob.steps.length > 0 && (
+                <div className="grid grid-2" style={{ gap: 8 }}>
+                  {researchJob.steps.map((st) => (
+                    <div
+                      key={st.key}
+                      className="row"
+                      style={{
+                        justifyContent: "space-between",
+                        padding: "6px 10px",
+                        borderRadius: 8,
+                        border: "1px solid var(--line-soft)",
+                        background: "var(--surface-2)",
+                      }}
+                    >
+                      <span className="tiny">{st.label}</span>
+                      <Badge
+                        tone={
+                          st.status === "done"
+                            ? "ok"
+                            : st.status === "in_progress"
+                              ? "info"
+                              : st.status === "failed"
+                                ? "bad"
+                                : undefined
+                        }
+                      >
+                        {st.status === "in_progress"
+                          ? "Working"
+                          : st.status === "done"
+                            ? "Done"
+                            : st.status === "failed"
+                              ? "Failed"
+                              : "Queued"}
+                      </Badge>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
-          </Banner>
+          </Card>
         )}
 
         {error && (

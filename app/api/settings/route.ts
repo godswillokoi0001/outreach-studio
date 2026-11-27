@@ -105,7 +105,7 @@ function sanitizeSettingsForClient(settings: Settings | null): Settings | null {
 
 export async function GET(req: NextRequest) {
   try {
-    await verifyRequest(req);
+    const user = await verifyRequest(req);
 
     if (!supabaseConfigured()) {
       return NextResponse.json(
@@ -114,8 +114,11 @@ export async function GET(req: NextRequest) {
       );
     }
 
-    const settings = sanitizeSettingsForClient(await getSupabaseSettingsServer());
-    return NextResponse.json({ settings }, { headers: { "Cache-Control": "no-store" } });
+    const settings = sanitizeSettingsForClient(await getSupabaseSettingsServer(user.ownerId));
+    return NextResponse.json(
+      { settings },
+      { headers: { "Cache-Control": "private, no-store, max-age=0" } },
+    );
   } catch (err) {
     return handleApiError(err);
   }
@@ -123,7 +126,7 @@ export async function GET(req: NextRequest) {
 
 export async function PUT(req: NextRequest) {
   try {
-    await verifyRequest(req);
+    const user = await verifyRequest(req);
 
     if (!supabaseConfigured()) {
       return NextResponse.json(
@@ -137,14 +140,17 @@ export async function PUT(req: NextRequest) {
       return NextResponse.json({ error: "Empty settings payload." }, { status: 400 });
     }
 
-    const ok = await saveSupabaseSettingsServer(body);
+    const ok = await saveSupabaseSettingsServer(user.ownerId, body);
     if (!ok) {
       return NextResponse.json({ error: "Supabase request failed." }, { status: 500 });
     }
 
     // Return masked/safe document so keys never travel to the browser.
-    const settings = sanitizeSettingsForClient(await getSupabaseSettingsServer());
-    return NextResponse.json({ ok: true, settings }, { headers: { "Cache-Control": "no-store" } });
+    const settings = sanitizeSettingsForClient(await getSupabaseSettingsServer(user.ownerId));
+    return NextResponse.json(
+      { ok: true, settings },
+      { headers: { "Cache-Control": "private, no-store, max-age=0" } },
+    );
   } catch (err) {
     return handleApiError(err);
   }

@@ -76,6 +76,7 @@ import { useAuth } from "./AuthProvider";
 import { Menu, MenuItem, MenuSeparator } from "./Menu";
 import { useAgentPresence } from "./AgentPresence";
 import { useConfirm } from "./Feedback";
+import { ACCOUNT_SWITCHED_EVENT } from "@/lib/client-cleanup";
 import {
   OPERATOR_MEMORY_CLEARED,
   clearOperatorMemory,
@@ -195,6 +196,10 @@ const CONV_KEY = "agent-operator-conversations";
 const ACTIVE_KEY = "agent-operator-active";
 const RECENT_LIMIT = 40;
 const DEVELOPER_MODE_KEY = "os:developer-mode";
+
+function userScopedKey(base: string, uid: string): string {
+  return `${base}:${uid || "anon"}`;
+}
 
 interface RecentAction {
   id: string;
@@ -340,7 +345,7 @@ export function DashboardChat({
   // want a pause before external/irreversible actions can switch it back on.
   const [confirmRisky, setConfirmRisky] = useState(() => {
     if (typeof window === "undefined") return false;
-    return readStored<boolean>(CONFIRM_KEY) === true;
+    return readStored<boolean>(userScopedKey(CONFIRM_KEY, user.uid)) === true;
   });
   const confirmRiskyRef = useRef(confirmRisky);
 
@@ -349,7 +354,7 @@ export function DashboardChat({
     confirmRiskyRef.current = next;
     setConfirmRisky(next);
     try {
-      window.localStorage.setItem(CONFIRM_KEY, JSON.stringify(next));
+      window.localStorage.setItem(userScopedKey(CONFIRM_KEY, user.uid), JSON.stringify(next));
     } catch {
       /* storage unavailable */
     }
@@ -380,12 +385,12 @@ export function DashboardChat({
   );
   const [recent, setRecent] = useState<RecentAction[]>(() => {
     if (typeof window === "undefined") return [];
-    const stored = readStored<RecentAction[]>(RECENT_KEY);
+    const stored = readStored<RecentAction[]>(userScopedKey(RECENT_KEY, user.uid));
     return Array.isArray(stored) ? stored.slice(0, RECENT_LIMIT) : [];
   });
   const [dockPos, setDockPos] = useState<{ x: number; y: number } | null>(() => {
     if (typeof window === "undefined") return null;
-    const stored = readStored<{ x: number; y: number }>(DOCK_KEY);
+    const stored = readStored<{ x: number; y: number }>(userScopedKey(DOCK_KEY, user.uid));
     return stored && Number.isFinite(stored.x) && Number.isFinite(stored.y) ? stored : null;
   });
   const [dragging, setDragging] = useState(false);
@@ -459,7 +464,7 @@ export function DashboardChat({
   // Operator modes: chat answers only, agent operates the app, developer
   // diagnoses and proposes patches.
   const [mode, setMode] = useState<OperatorMode>(() => {
-    const stored = typeof window === "undefined" ? null : readStored<OperatorMode>(MODE_KEY);
+    const stored = typeof window === "undefined" ? null : readStored<OperatorMode>(userScopedKey(MODE_KEY, user.uid));
     return stored === "chat" || stored === "agent" || stored === "developer" ? stored : "agent";
   });
   // Developer mode is switched on from Settings, never from the operator menu.
@@ -492,7 +497,7 @@ export function DashboardChat({
     };
   }, []);
   const [dockMode, setDockMode] = useState<DockMode>(() => {
-    const stored = typeof window === "undefined" ? null : readStored<DockMode>(DOCK_MODE_KEY);
+    const stored = typeof window === "undefined" ? null : readStored<DockMode>(userScopedKey(DOCK_MODE_KEY, user.uid));
     return stored === "docked" ? "docked" : "floating";
   });
 
@@ -536,12 +541,12 @@ export function DashboardChat({
   }, [dockMode, dockPos, user.uid]);
   const [conversations, setConversations] = useState<Conversation[]>(() => {
     if (typeof window === "undefined") return [];
-    const stored = readStored<Conversation[]>(CONV_KEY);
+    const stored = readStored<Conversation[]>(userScopedKey(CONV_KEY, user.uid));
     return Array.isArray(stored) ? stored : [];
   });
   const [activeId, setActiveId] = useState<string | null>(() => {
     if (typeof window === "undefined") return null;
-    return readStored<string>(ACTIVE_KEY);
+    return readStored<string>(userScopedKey(ACTIVE_KEY, user.uid));
   });
   const [search, setSearch] = useState("");
   const [renaming, setRenaming] = useState<{ id: string; value: string } | null>(null);
@@ -589,37 +594,37 @@ export function DashboardChat({
       cancelledRef.current = false;
     };
     window.addEventListener(OPERATOR_MEMORY_CLEARED, onCleared);
-    return () => window.removeEventListener(OPERATOR_MEMORY_CLEARED, onCleared);
+    window.addEventListener(ACCOUNT_SWITCHED_EVENT, onCleared);
+    return () => {
+      window.removeEventListener(OPERATOR_MEMORY_CLEARED, onCleared);
+      window.removeEventListener(ACCOUNT_SWITCHED_EVENT, onCleared);
+    };
   }, []);
 
-  // Memory lives in the database, not this browser. Load it before anything is
-  // written back, restore the open thread, and upload any history that was
-  // saved locally before memory moved to Supabase.
+  // Memory lives in the database strictly scoped to user.uid. Never merge or
+  // re-upload local browser entries from another account into Supabase.
   useEffect(() => {
     let active = true;
     memoryReadyRef.current = false;
     void loadOperatorMemory(user.uid)
       .then((records) => {
         if (!active) return;
-        const remote = records.map(conversationFromMemory);
-        const localOnly = conversationsRef.current.filter(
-          (conversation) => !remote.some((saved) => saved.id === conversation.id),
-        );
-        const merged = [...remote, ...localOnly]
+        const remote = records
+          .map(conversationFromMemory)
           .sort((a, b) => b.updatedAt - a.updatedAt)
           .slice(0, 40);
-        setConversations(merged);
-        conversationsRef.current = merged;
-        if (localOnly.length > 0) {
-          void Promise.all(localOnly.map((conversation) => saveOperatorMemory(user.uid, conversation))).catch(
-            () => undefined,
-          );
-        }
-        const restore = merged.find((conversation) => conversation.id === activeIdRef.current);
+        setConversations(remote);
+        conversationsRef.current = remote;
+        const restore = remote.find((conversation) => conversation.id === activeIdRef.current) ?? null;
         if (restore) {
           historyRef.current = restore.contents ?? [];
           setMessages(restore.messages ?? []);
           setMode(restore.mode);
+        } else {
+          historyRef.current = [];
+          activeIdRef.current = null;
+          setActiveId(null);
+          setMessages([]);
         }
       })
       .catch(() => undefined)
@@ -631,8 +636,6 @@ export function DashboardChat({
     };
   }, [user.uid]);
 
-  // Keep the request config and the per-chat provider marker in sync with the
-  // selected model (an external system, so this belongs in an effect).
   useEffect(() => {
     providerInfoRef.current = { id: providerId, model: activeSavedProvider?.model ?? "" };
     if (activeSavedProvider) setActiveAiConfig(toAiConfig(activeSavedProvider));
@@ -640,52 +643,51 @@ export function DashboardChat({
 
   useEffect(() => {
     try {
-      window.localStorage.setItem(RECENT_KEY, JSON.stringify(recent));
+      window.localStorage.setItem(userScopedKey(RECENT_KEY, user.uid), JSON.stringify(recent));
     } catch {
       /* storage unavailable */
     }
-  }, [recent]);
+  }, [recent, user.uid]);
 
   useEffect(() => {
     modeRef.current = mode;
     try {
-      window.localStorage.setItem(MODE_KEY, JSON.stringify(mode));
+      window.localStorage.setItem(userScopedKey(MODE_KEY, user.uid), JSON.stringify(mode));
     } catch {
       /* storage unavailable */
     }
-  }, [mode]);
+  }, [mode, user.uid]);
 
   useEffect(() => {
     try {
-      window.localStorage.setItem(DOCK_MODE_KEY, JSON.stringify(dockMode));
+      window.localStorage.setItem(userScopedKey(DOCK_MODE_KEY, user.uid), JSON.stringify(dockMode));
     } catch {
       /* storage unavailable */
     }
-    // Only reserve the side space while the docked panel is actually open;
-    // otherwise a refresh with the panel closed leaves an empty column.
     document.body.dataset.operatorDock = dockMode === "docked" && open ? "true" : "false";
     return () => {
       delete document.body.dataset.operatorDock;
     };
-  }, [dockMode, open]);
+  }, [dockMode, open, user.uid]);
 
   useEffect(() => {
     activeIdRef.current = activeId;
     try {
-      if (activeId) window.localStorage.setItem(ACTIVE_KEY, JSON.stringify(activeId));
-      else window.localStorage.removeItem(ACTIVE_KEY);
+      const k = userScopedKey(ACTIVE_KEY, user.uid);
+      if (activeId) window.localStorage.setItem(k, JSON.stringify(activeId));
+      else window.localStorage.removeItem(k);
     } catch {
       /* storage unavailable */
     }
-  }, [activeId]);
+  }, [activeId, user.uid]);
 
   useEffect(() => {
     try {
-      window.localStorage.setItem(CONV_KEY, JSON.stringify(conversations.slice(0, 40)));
+      window.localStorage.setItem(userScopedKey(CONV_KEY, user.uid), JSON.stringify(conversations.slice(0, 40)));
     } catch {
       /* storage unavailable */
     }
-  }, [conversations]);
+  }, [conversations, user.uid]);
 
   // Persist the open conversation — transcript, action log and model context —
   // on every change, lightly debounced so a streaming reply is not one write
@@ -847,8 +849,9 @@ export function DashboardChat({
     dockPosRef.current = next;
     setDockPos(next);
     try {
-      if (next) window.localStorage.setItem(DOCK_KEY, JSON.stringify(next));
-      else window.localStorage.removeItem(DOCK_KEY);
+      const k = userScopedKey(DOCK_KEY, user.uid);
+      if (next) window.localStorage.setItem(k, JSON.stringify(next));
+      else window.localStorage.removeItem(k);
     } catch {
       /* storage unavailable */
     }

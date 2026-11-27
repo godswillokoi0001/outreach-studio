@@ -3,16 +3,18 @@ import { supabaseServer } from "./supabase-server";
 
 export class AuthError extends Error {
   status: number;
-  constructor(message: string, status = 401) {
+  code?: string;
+  constructor(message: string, status = 401, code?: string) {
     super(message);
     this.status = status;
+    this.code = code;
   }
 }
 
 export interface AuthUser {
   /** Supabase Auth user id. */
   id: string;
-  /** Id that owns every row for this person (from account_links, else the user id). */
+  /** Id that owns every row for this person (strictly 1-to-1 per account). */
   ownerId: string;
   email: string;
   name: string;
@@ -20,10 +22,15 @@ export interface AuthUser {
 }
 
 /** Short-lived cache so one page view does not re-resolve the owner on every request. */
-const ownerCache = new Map<string, { ownerId: string; expires: number }>();
+const ownerCache = new Map<string, { ownerId: string; email: string; expires: number }>();
 const OWNER_TTL_MS = 5 * 60 * 1000;
 
-type AccountLinkRow = { legacy_owner_id?: string; supabase_user_id?: string | null };
+export function clearOwnerCache(supabaseUserId?: string): void {
+  if (supabaseUserId) ownerCache.delete(supabaseUserId);
+  else ownerCache.clear();
+}
+
+type AccountLinkRow = { email?: string; legacy_owner_id?: string; supabase_user_id?: string | null };
 
 function bearerToken(req: NextRequest): string {
   const header = req.headers.get("Authorization") ?? "";
@@ -32,11 +39,8 @@ function bearerToken(req: NextRequest): string {
 }
 
 /**
- * Verifies the Supabase access token on the request and resolves the data owner.
- *
- * Rows imported from the previous database keep their original owner id, so this maps the
- * Supabase account to that legacy id through `account_links` (by email on first
- * sign-in) and otherwise starts a fresh workspace keyed by the Supabase user id.
+ * Verifies the Supabase access token on the request and resolves the data owner
+ * strictly from the authenticated server session (never from client payloads).
  */
 export async function verifyRequest(req: NextRequest): Promise<AuthUser> {
   if (!supabaseServer) {
@@ -92,40 +96,72 @@ export async function verifyRequest(req: NextRequest): Promise<AuthUser> {
 export async function resolveOwnerId(supabaseUserId: string, email: string): Promise<string> {
   if (!supabaseServer) throw new AuthError("Supabase is not configured on this deployment.", 503);
 
+  const normEmail = email.trim().toLowerCase();
   const cached = ownerCache.get(supabaseUserId);
-  if (cached && cached.expires > Date.now()) return cached.ownerId;
+  if (cached && cached.email === normEmail && cached.expires > Date.now()) {
+    return cached.ownerId;
+  }
 
   let ownerId: string | null = null;
 
   const byId = await supabaseServer
     .from("account_links")
-    .select("legacy_owner_id")
+    .select("email, legacy_owner_id")
     .eq("supabase_user_id", supabaseUserId)
     .maybeSingle();
   const idRow = byId.data as AccountLinkRow | null;
-  if (idRow?.legacy_owner_id) ownerId = String(idRow.legacy_owner_id);
+  if (idRow?.legacy_owner_id) {
+    const claimedOwner = String(idRow.legacy_owner_id);
+    // Double-check 1-to-1 isolation: if a legacy collision attached multiple accounts
+    // to the same owner id, automatically split secondary accounts onto their own UUID.
+    const { data: shared } = await supabaseServer
+      .from("account_links")
+      .select("email, supabase_user_id, created_at")
+      .eq("legacy_owner_id", claimedOwner)
+      .order("created_at", { ascending: true });
+    const ownersList = (shared ?? []) as { email: string; supabase_user_id: string | null }[];
+    if (ownersList.length > 1 && ownersList[0]?.supabase_user_id !== supabaseUserId) {
+      ownerId = supabaseUserId;
+      await supabaseServer
+        .from("account_links")
+        .update({ legacy_owner_id: supabaseUserId, updated_at: new Date().toISOString() } as never)
+        .eq("supabase_user_id", supabaseUserId);
+    } else {
+      ownerId = claimedOwner;
+    }
+  }
 
   if (!ownerId) {
     const byEmail = await supabaseServer
       .from("account_links")
       .select("legacy_owner_id, supabase_user_id")
-      .ilike("email", email)
+      .ilike("email", normEmail)
       .maybeSingle();
     const emailRow = byEmail.data as AccountLinkRow | null;
 
-    if (emailRow) {
-      ownerId = String(emailRow.legacy_owner_id);
-      if (!emailRow.supabase_user_id) {
-        await supabaseServer
-          .from("account_links")
-          .update({ supabase_user_id: supabaseUserId, updated_at: new Date().toISOString() } as never)
-          .ilike("email", email);
-      }
+    if (emailRow && (!emailRow.supabase_user_id || emailRow.supabase_user_id === supabaseUserId)) {
+      const candidateOwner = String(emailRow.legacy_owner_id ?? supabaseUserId);
+      const { data: conflict } = await supabaseServer
+        .from("account_links")
+        .select("email")
+        .eq("legacy_owner_id", candidateOwner)
+        .neq("email", normEmail)
+        .limit(1);
+
+      ownerId = conflict && conflict.length > 0 ? supabaseUserId : candidateOwner;
+      await supabaseServer
+        .from("account_links")
+        .update({
+          supabase_user_id: supabaseUserId,
+          legacy_owner_id: ownerId,
+          updated_at: new Date().toISOString(),
+        } as never)
+        .ilike("email", normEmail);
     } else {
-      // Brand-new account: it owns a fresh workspace keyed by its Supabase id.
+      // Brand-new account (or unclaimed collision): allocate isolated workspace keyed by supabaseUserId.
       const inserted = await supabaseServer
         .from("account_links")
-        .insert({ email, legacy_owner_id: supabaseUserId, supabase_user_id: supabaseUserId } as never)
+        .insert({ email: normEmail, legacy_owner_id: supabaseUserId, supabase_user_id: supabaseUserId } as never)
         .select("legacy_owner_id")
         .maybeSingle();
       const insertedRow = inserted.data as AccountLinkRow | null;
@@ -133,6 +169,6 @@ export async function resolveOwnerId(supabaseUserId: string, email: string): Pro
     }
   }
 
-  ownerCache.set(supabaseUserId, { ownerId, expires: Date.now() + OWNER_TTL_MS });
+  ownerCache.set(supabaseUserId, { ownerId, email: normEmail, expires: Date.now() + OWNER_TTL_MS });
   return ownerId;
 }

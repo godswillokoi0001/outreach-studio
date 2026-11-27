@@ -1,10 +1,11 @@
 // Server-side Supabase client using the service role key.
 // Runs only on the server (Next.js routes); the service role key never reaches
-// the browser. The settings table has RLS enabled, so this is the only way in.
+// the browser. All tables have RLS enabled and revoke anon/authenticated access.
 
+import { createHash } from "node:crypto";
 import { createClient } from "@supabase/supabase-js";
 import type { Database } from "./database.types";
-import type { Settings } from "./types";
+import { DEFAULT_SETTINGS, type Settings } from "./types";
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL?.trim() || "";
 const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY?.trim() || "";
@@ -19,12 +20,6 @@ export const supabaseServer =
   supabaseUrl && supabaseServiceRoleKey
     ? createClient<Database>(supabaseUrl, supabaseServiceRoleKey)
     : null;
-
-/**
- * The settings table holds one row. Pinning the primary key means every save
- * updates that row instead of inserting another one.
- */
-export const SETTINGS_ROW_ID = "00000000-0000-0000-0000-000000000001";
 
 const STRING_FIELDS = [
   "sender_name",
@@ -56,119 +51,157 @@ const NUMBER_FIELDS = [
   "min_score",
 ] as const satisfies readonly (keyof Settings)[];
 
-/** Get the settings document from Supabase (server side). */
-export async function getSupabaseSettingsServer(): Promise<Settings | null> {
-  if (!supabaseServer) return null;
+function deterministicSettingsUuid(ownerId: string): string {
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(ownerId)) {
+    return ownerId.toLowerCase();
+  }
+  const hex = createHash("sha256").update(`knowrevo:settings:${ownerId}`).digest("hex").slice(0, 32);
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-8${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
+}
 
+function mirrorDocId(ownerId: string): string {
+  return `system_user_settings_${ownerId}`;
+}
+
+async function getMirrorSettings(ownerId: string): Promise<Settings | null> {
+  if (!supabaseServer || !ownerId) return null;
   try {
-    const { data, error } = await supabaseServer
-      .from("settings")
-      .select("*")
-      .order("updated_at", { ascending: false })
-      .limit(1)
+    const { data } = await supabaseServer
+      .from("knowledge")
+      .select("content")
+      .eq("id", mirrorDocId(ownerId))
+      .eq("owner_id", ownerId)
       .maybeSingle();
-
-    if (error) {
-      if ((error as { code?: string }).code === "PGRST_NOT_FOUND" || (error as { code?: string }).code === "PGRST116") return null;
-      console.warn("[supabase-server] getSettings notice:", error.message);
-      return null;
-    }
-
-    return (data as unknown as Settings) ?? null;
+    const raw = (data as { content?: string } | null)?.content;
+    return raw ? (JSON.parse(raw) as Settings) : null;
   } catch {
     return null;
   }
 }
 
-/** Save the settings document to Supabase (server side). */
+async function saveMirrorSettings(ownerId: string, partial: Partial<Settings>): Promise<boolean> {
+  if (!supabaseServer || !ownerId) return false;
+  try {
+    const current = (await getMirrorSettings(ownerId)) ?? { ...DEFAULT_SETTINGS };
+    const merged: Settings = { ...current, ...partial };
+    const { error } = await supabaseServer.from("knowledge").upsert(
+      {
+        id: mirrorDocId(ownerId),
+        owner_id: ownerId,
+        category: "system_user_settings",
+        title: "Account Settings",
+        content: JSON.stringify(merged),
+        sort: 997,
+        is_master: false,
+        updated_at: new Date().toISOString(),
+      } as never,
+      { onConflict: "id" },
+    );
+    return !error;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Get the settings document strictly scoped to `ownerId`.
+ * Never reads another account's settings or unowned shared rows.
+ */
+export async function getSupabaseSettingsServer(ownerId: string): Promise<Settings | null> {
+  if (!supabaseServer || !ownerId) return null;
+
+  try {
+    const { data, error } = await supabaseServer
+      .from("settings")
+      .select("*")
+      .eq("owner_id", ownerId)
+      .order("updated_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (error) {
+      if (/owner_id/i.test(error.message)) {
+        // Migration not applied yet -> read strictly owner-scoped knowledge mirror.
+        return await getMirrorSettings(ownerId);
+      }
+      if ((error as { code?: string }).code === "PGRST_NOT_FOUND" || (error as { code?: string }).code === "PGRST116") {
+        return await getMirrorSettings(ownerId);
+      }
+      console.warn("[supabase-server] getSettings notice:", error.message);
+      return await getMirrorSettings(ownerId);
+    }
+
+    if (data) return data as unknown as Settings;
+    return await getMirrorSettings(ownerId);
+  } catch {
+    return await getMirrorSettings(ownerId);
+  }
+}
+
+/**
+ * Save the settings document strictly for `ownerId`.
+ * Always keeps an isolated per-user row and never mutates any other account.
+ */
 export async function saveSupabaseSettingsServer(
+  ownerId: string,
   partial: Partial<Settings>,
 ): Promise<boolean> {
-  if (!supabaseServer) return false;
+  if (!supabaseServer || !ownerId) return false;
 
-  const payload: Record<string, unknown> = {
-    id: SETTINGS_ROW_ID,
-    updated_at: new Date().toISOString(),
+  const nowIso = new Date().toISOString();
+  const fields: Record<string, unknown> = {
+    owner_id: ownerId,
+    updated_at: nowIso,
   };
 
   for (const key of STRING_FIELDS) {
     const value = partial[key];
     if (typeof value !== "string") continue;
 
-    // ai_verified_at is a timestamptz column: never write an empty string.
     if (key === "ai_verified_at") {
-      if (value.trim() && !Number.isNaN(Date.parse(value))) payload[key] = value;
+      if (value.trim() && !Number.isNaN(Date.parse(value))) fields[key] = value;
       continue;
     }
 
-    // The provider vault is a JSON document, so it needs far more room than
-    // the single-line text fields.
-    payload[key] = value.slice(0, key === "ai_providers" ? 20_000 : 2000);
+    fields[key] = value.slice(0, key === "ai_providers" ? 20_000 : 2000);
   }
 
   for (const key of NUMBER_FIELDS) {
     const value = partial[key];
-    if (typeof value === "number" && Number.isFinite(value)) payload[key] = Math.round(value);
+    if (typeof value === "number" && Number.isFinite(value)) fields[key] = Math.round(value);
   }
 
-  // Nothing but the update timestamp changed.
-  if (Object.keys(payload).length === 2) return true;
+  if (Object.keys(fields).length <= 2) return true;
 
-  const { id: _rowId, ...fields } = payload;
-  void _rowId;
-
-  // Update in place when the single settings row exists. PostgREST's upsert
-  // attempts an INSERT first, which fails on the NOT NULL ai_api_key column and
-  // silently dropped every partial save (profile, model, limits).
-  if (await rowExists()) {
-    const { error } = await supabaseServer
+  try {
+    const { data: existing } = await supabaseServer
       .from("settings")
-      .update(fields as never)
-      .eq("id", SETTINGS_ROW_ID)
-      .select("id");
+      .select("id")
+      .eq("owner_id", ownerId)
+      .limit(1)
+      .maybeSingle();
 
-    if (error) {
-      // Before the ai_providers / ui_prefs migrations have been applied, keep
-      // saving every other setting instead of failing the whole document.
-      if (/ai_providers|ui_prefs/i.test(error.message)) {
-        const rest = { ...(fields as Record<string, unknown>) };
-        if (/ai_providers/i.test(error.message)) delete rest.ai_providers;
-        if (/ui_prefs/i.test(error.message)) delete rest.ui_prefs;
-        const retry = await supabaseServer
-          .from("settings")
-          .update(rest as never)
-          .eq("id", SETTINGS_ROW_ID)
-          .select("id");
-        if (!retry.error) return true;
-        console.error("[supabase-server] saveSettings retry error:", retry.error.message);
-        return false;
+    if (existing && (existing as { id?: string }).id) {
+      const targetId = String((existing as { id: string }).id);
+      const { error } = await supabaseServer
+        .from("settings")
+        .update(fields as never)
+        .eq("id", targetId)
+        .eq("owner_id", ownerId);
+      if (!error) return true;
+    } else {
+      const rowId = deterministicSettingsUuid(ownerId);
+      const { error } = await supabaseServer
+        .from("settings")
+        .upsert({ id: rowId, ai_api_key: "", ...fields } as never, { onConflict: "id" });
+      if (!error) return true;
+      if (!/owner_id/i.test(error.message)) {
+        console.error("[supabase-server] saveSettings error:", error.message);
       }
-      console.error("[supabase-server] saveSettings error:", error.message);
-      return false;
     }
-    return true;
+  } catch {
+    // Fall through to owner-scoped mirror below
   }
 
-  const { error } = await supabaseServer
-    .from("settings")
-    .insert({ id: SETTINGS_ROW_ID, ai_api_key: "", ...fields } as never)
-    .select("id");
-
-  if (error) {
-    console.error("[supabase-server] saveSettings error:", error.message);
-    return false;
-  }
-
-  return true;
-}
-
-async function rowExists(): Promise<boolean> {
-  if (!supabaseServer) return false;
-  const { data, error } = await supabaseServer
-    .from("settings")
-    .select("id")
-    .eq("id", SETTINGS_ROW_ID)
-    .maybeSingle();
-  if (error) return false;
-  return Boolean(data);
+  return await saveMirrorSettings(ownerId, partial);
 }

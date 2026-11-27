@@ -4,6 +4,7 @@
 
 type SettingsRow = {
   id: string;
+  owner_id?: string | null;
   sender_name: string;
   sender_role: string;
   sender_company: string;
@@ -55,6 +56,9 @@ export type Database = {
       email_opens: LooseTable;
       global_knowledge_modules: LooseTable;
       user_business_profiles: LooseTable;
+      background_jobs: LooseTable;
+      admin_accounts: LooseTable;
+      admin_login_attempts: LooseTable;
     };
     views: Record<string, unknown>;
     functions: Record<string, unknown>;

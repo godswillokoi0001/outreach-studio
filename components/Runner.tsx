@@ -17,8 +17,10 @@ import { confirmDialog } from "./Feedback";
 
 let activeRunner: string | null = null;
 
-/** A batch that loses the tab to a reload or crash is resumed from here. */
-const JOB_KEY = "outreach-batch-job";
+/** A batch that loses the tab to a reload or crash is resumed from a user-scoped key. */
+function jobStorageKey(uid: string): string {
+  return `os:outreach-batch-job:${uid || "anon"}`;
+}
 const MAX_STALLS = 24;
 const RESUME_WINDOW_MS = 45 * 60 * 1000;
 
@@ -29,19 +31,19 @@ interface StoredJob {
   startedAt: number;
 }
 
-function readStoredJob(): StoredJob | null {
+function readStoredJob(uid: string): StoredJob | null {
   try {
-    const raw = window.localStorage.getItem(JOB_KEY);
+    const raw = window.localStorage.getItem(jobStorageKey(uid));
     return raw ? (JSON.parse(raw) as StoredJob) : null;
   } catch {
     return null;
   }
 }
 
-function writeStoredJob(job: StoredJob | null): void {
+function writeStoredJob(uid: string, job: StoredJob | null): void {
   try {
-    if (job) window.localStorage.setItem(JOB_KEY, JSON.stringify(job));
-    else window.localStorage.removeItem(JOB_KEY);
+    if (job) window.localStorage.setItem(jobStorageKey(uid), JSON.stringify(job));
+    else window.localStorage.removeItem(jobStorageKey(uid));
   } catch {
     /* storage unavailable */
   }
@@ -136,11 +138,11 @@ export function BatchRunner({
       if (!proceed) return;
     }
 
-    activeRunner = `${type}:${campaignId ?? "all"}`;
+    activeRunner = `${user.uid}:${type}:${campaignId ?? "all"}`;
     stopRef.current = false;
     stallCount.current = 0;
     pausedRef.current = false;
-    writeStoredJob({ type, campaignId, limit, startedAt: Date.now() });
+    writeStoredJob(user.uid, { type, campaignId, limit, startedAt: Date.now() });
     setRunning(true);
     setError(null);
     setNote(null);
@@ -262,6 +264,7 @@ export function BatchRunner({
       activeRunner = null;
       // A paused run stays resumable; a finished or stopped one does not.
       writeStoredJob(
+        user.uid,
         pausedRef.current && !stopRef.current
           ? { type, campaignId, limit, startedAt: Date.now() }
           : null,
@@ -278,10 +281,10 @@ export function BatchRunner({
   // excluded: email always needs a deliberate confirmation press.
   useEffect(() => {
     if (type === "send") return undefined;
-    const job = readStoredJob();
+    const job = readStoredJob(user.uid);
     if (!job || job.type !== type || job.campaignId !== campaignId) return undefined;
     if (Date.now() - job.startedAt > RESUME_WINDOW_MS) {
-      writeStoredJob(null);
+      writeStoredJob(user.uid, null);
       return undefined;
     }
     const timer = window.setTimeout(() => {
@@ -290,7 +293,7 @@ export function BatchRunner({
       void runRef.current?.();
     }, 700);
     return () => window.clearTimeout(timer);
-  }, [type, campaignId]);
+  }, [user.uid, type, campaignId]);
 
   return (
     <span className="row" style={{ gap: 8 }}>

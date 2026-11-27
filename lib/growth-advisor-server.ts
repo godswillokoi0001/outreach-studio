@@ -113,13 +113,20 @@ Return ONLY valid JSON matching this exact structure (no markdown wrapper):
   });
 
   const user = `USER BUSINESS PROFILE:
-- Who they are: ${input.profile.whoYouAre || input.settings.sender_company || input.settings.sender_name || "Not specified"} (${input.settings.sender_role || "Founder/Operator"})
-- What they sell / do: ${input.profile.whatYouSell || "See knowledge base"}
+- Who they are: ${input.profile.whoYouAre || input.settings.sender_company || input.settings.sender_name || "Not specified"} (${input.profile.primaryRole || input.settings.sender_role || "Founder/Operator"})
+- Business stage & team: ${input.profile.businessStage || "Not specified"} · Team: ${input.profile.teamStructure || "Not specified"}
+- Business model & pricing: ${input.profile.businessModel || "Not specified"} · Pricing structure: ${input.profile.pricingStructure || "Not specified"} · Avg deal: ${input.profile.averageDealValue ? `$${input.profile.averageDealValue}` : input.profile.priceRange || "Not specified"}
+- What they sell / deliverables: ${input.profile.whatYouSell || "See knowledge base"} ${input.profile.deliverablesSummary ? `(${input.profile.deliverablesSummary})` : ""}
 - Industry: ${input.profile.industry || "Not specified"}
-- Core Offer: ${input.profile.offer || "Not specified"}
+- Core Offer & CTA style: ${input.profile.offer || "Not specified"} · Preferred CTA: ${input.profile.offerCtaStyle || "Not specified"}
 - Price Range: ${input.profile.priceRange || "Not specified"}
-- Base / Target Location: ${input.profile.location || input.settings.physical_address || "Not specified"}
-- Ideal Customer Profile: ${input.profile.idealCustomer || "Not specified"}
+- Market reach & locations: ${input.profile.marketScope?.join(", ") || "Not specified"} · Target/Base Location: ${input.profile.location || input.settings.physical_address || "Not specified"} · Languages: ${input.profile.outreachLanguages?.join(", ") || "English"}
+- Ideal Customer Profile: ${input.profile.idealCustomer || "Not specified"} · Target industries: ${input.profile.targetIndustries?.join(", ") || "Any"} · Decision-maker roles: ${input.profile.targetRoles?.join(", ") || "Decision makers"} · Company size: ${input.profile.targetCompanySize || "Any"}
+- Buying triggers: ${input.profile.buyingTriggers?.join(", ") || "None specified"}
+- Sales cycle & preferred channels: ${input.profile.salesCycleLength || "Not specified"} · Channels: ${input.profile.preferredChannels?.join(", ") || "Cold Email"}
+- Primary goal & capacity: ${input.profile.primaryGoal || "Qualified leads"} · Target leads/mo: ${input.profile.monthlyTargetLeads ?? "Flexible"} · Weekly outreach capacity: ${input.profile.weeklyOutreachCapacity ?? "Flexible"}
+- Proof assets & exclusions: ${input.profile.proofAssets?.join(", ") || "Standard"} · Exclusions (DO NOT target): ${input.profile.exclusions || "None"} · Voice: ${input.profile.tonePreference?.join(", ") || "Consultative"}
+${input.profile.allowComplianceSafeClaims !== false ? "- Compliance rule: Strictly avoid unverified ROI claims or hype." : ""}
 
 PAST CAMPAIGN & ANALYTICS METRICS:
 ${JSON.stringify(input.metricsSummary, null, 2).slice(0, 4000)}

@@ -19,6 +19,7 @@ import {
 } from "@/lib/workspace";
 import { clearWorkspaceToken, writeWorkspaceToken } from "@/lib/workspace-token";
 import { invalidateDataCache } from "@/lib/db-client";
+import { clearAllAccountClientData, syncActiveOwnerSessionMarker } from "@/lib/client-cleanup";
 import { BrandLoader } from "./BrandLoader";
 import { PreAuth } from "./PreAuth";
 import { Shell } from "./Shell";
@@ -112,6 +113,7 @@ function classifyWorkspaceError(err: unknown): WorkspaceIssue {
 export function AuthProvider({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const isPublicLegalPage = pathname === "/privacy-policy" || pathname === "/terms";
+  const isAdminRoute = pathname === "/admin" || pathname.startsWith("/admin/");
   const [user, setUser] = useState<AppUser | null>(null);
   const [workspaceReady, setWorkspaceReady] = useState(false);
   const [workspaceToken, setWorkspaceToken] = useState<string | null>(null);
@@ -138,7 +140,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (!active) return;
 
       if (!session?.access_token) {
-        clearWorkspaceToken();
+        clearAllAccountClientData();
+        syncActiveOwnerSessionMarker(null);
         setUser(null);
         setWorkspaceToken(null);
         setWorkspaceEmail(null);
@@ -152,10 +155,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         const current = await fetchCurrentUser();
         if (!active) return;
         if (!current) {
+          clearAllAccountClientData();
+          syncActiveOwnerSessionMarker(null);
           setUser(null);
           setLoading(false);
           return;
         }
+        // Purge all prior user caches/storage if a different account logs in
+        syncActiveOwnerSessionMarker(current.ownerId);
         // A fresh Google consent can hand back a Workspace token; keep it in memory only.
         if (session.provider_token) writeWorkspaceToken(session.provider_token, 3600);
         setUser(current);
@@ -250,8 +257,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const signOut = async () => {
     await signOutSupabase();
+    clearAllAccountClientData();
+    syncActiveOwnerSessionMarker(null);
     clearWorkspaceToken();
-    // Nothing from this account may survive into the next sign-in.
     invalidateDataCache();
     setUser(null);
     setWorkspaceToken(null);
@@ -259,7 +267,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setWorkspaceIssue(null);
   };
 
-  if (isPublicLegalPage) return <>{children}</>;
+  if (isPublicLegalPage || isAdminRoute) return <>{children}</>;
 
   if (loading) {
     return <BrandLoader fullScreen />;

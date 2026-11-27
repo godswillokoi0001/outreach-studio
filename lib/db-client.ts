@@ -255,10 +255,14 @@ function cacheKey(table: string, path: string, options?: ReadOptions): string {
 export function invalidateDataCache(table?: string): void {
   if (!table) {
     rowCache.clear();
+    pendingReads.clear();
     return;
   }
   for (const key of Array.from(rowCache.keys())) {
     if (key.split("|")[1] === table) rowCache.delete(key);
+  }
+  for (const key of Array.from(pendingReads.keys())) {
+    if (key.split("|")[1] === table) pendingReads.delete(key);
   }
 }
 

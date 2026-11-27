@@ -1,3 +1,4 @@
+import type { OnboardingAnswers } from "./onboarding";
 import type { Settings } from "./types";
 
 export type RecommendationCategory =
@@ -17,6 +18,52 @@ export interface GrowthProfile {
   priceRange: string;
   location: string;
   idealCustomer: string;
+
+  // Expanded structured option-driven profile
+  businessStage?: string;
+  businessStageOther?: string;
+  teamStructure?: string;
+  businessWebsite?: string;
+  primaryRole?: string;
+  primaryRoleOther?: string;
+
+  businessModel?: string;
+  businessModelOther?: string;
+  pricingStructure?: string;
+  pricingStructureOther?: string;
+  averageDealValue?: number;
+  deliverablesSummary?: string;
+
+  targetIndustries?: string[];
+  targetIndustriesOther?: string;
+  targetRoles?: string[];
+  targetRolesOther?: string;
+  targetCompanySize?: string;
+  buyingTriggers?: string[];
+  buyingTriggersOther?: string;
+
+  marketScope?: string[];
+  outreachLanguages?: string[];
+  outreachLanguagesOther?: string;
+
+  salesCycleLength?: string;
+  preferredChannels?: string[];
+  preferredChannelsOther?: string;
+  offerCtaStyle?: string;
+  offerCtaStyleOther?: string;
+
+  primaryGoal?: string;
+  primaryGoalOther?: string;
+  monthlyTargetLeads?: number;
+  weeklyOutreachCapacity?: number;
+  monthlyMarketingBudget?: string;
+
+  proofAssets?: string[];
+  proofAssetsOther?: string;
+  exclusions?: string;
+  tonePreference?: string[];
+  allowComplianceSafeClaims?: boolean;
+  skippedSections?: string[];
   updatedAt?: string;
 }
 
@@ -28,6 +75,19 @@ export const EMPTY_GROWTH_PROFILE: GrowthProfile = {
   priceRange: "",
   location: "",
   idealCustomer: "",
+  targetIndustries: [],
+  targetRoles: [],
+  buyingTriggers: [],
+  marketScope: [],
+  outreachLanguages: ["English"],
+  preferredChannels: [],
+  proofAssets: [],
+  tonePreference: [],
+  averageDealValue: 2500,
+  monthlyTargetLeads: 50,
+  weeklyOutreachCapacity: 150,
+  allowComplianceSafeClaims: true,
+  skippedSections: [],
 };
 
 export interface SuggestedActionPlan {
@@ -134,6 +194,62 @@ export const CATEGORY_LABELS: Record<RecommendationCategory, string> = {
   offer_strategy: "Offer & strategy",
 };
 
+/** Merges empty GrowthProfile fields from completed/in-progress Onboarding answers cleanly. */
+export function hydrateGrowthProfileFromOnboarding(
+  profile: GrowthProfile,
+  answers: OnboardingAnswers | null | undefined,
+  settings?: Pick<Settings, "sender_company" | "sender_name" | "sender_role" | "physical_address">,
+): GrowthProfile {
+  if (!answers) {
+    return {
+      ...EMPTY_GROWTH_PROFILE,
+      ...profile,
+      whoYouAre: profile.whoYouAre || settings?.sender_company || settings?.sender_name || "",
+      location: profile.location || settings?.physical_address || "",
+    };
+  }
+  return {
+    ...EMPTY_GROWTH_PROFILE,
+    ...profile,
+    whoYouAre: profile.whoYouAre || answers.businessName || settings?.sender_company || answers.fullName || settings?.sender_name || "",
+    whatYouSell: profile.whatYouSell || answers.businessDescription || answers.mainServices.join(", "),
+    industry: profile.industry || answers.industry || "",
+    offer: profile.offer || answers.differentiators || answers.mainProblemSolved || "",
+    priceRange: profile.priceRange || answers.priceRange || "",
+    location: profile.location || answers.currentMarkets || answers.businessLocation || settings?.physical_address || "",
+    idealCustomer: profile.idealCustomer || answers.idealCustomerSummary || answers.icpRoles.join(", "),
+    businessWebsite: profile.businessWebsite || answers.website || "",
+    primaryRole: profile.primaryRole || answers.roleTitle || settings?.sender_role || "",
+    teamStructure: profile.teamStructure || answers.workMode || "",
+    targetIndustries:
+      profile.targetIndustries && profile.targetIndustries.length > 0
+        ? profile.targetIndustries
+        : answers.icpIndustries ?? [],
+    targetRoles:
+      profile.targetRoles && profile.targetRoles.length > 0
+        ? profile.targetRoles
+        : answers.icpRoles ?? [],
+    targetCompanySize: profile.targetCompanySize || answers.icpCompanySize || "",
+    buyingTriggers:
+      profile.buyingTriggers && profile.buyingTriggers.length > 0
+        ? profile.buyingTriggers
+        : answers.icpBuyingTriggers ?? [],
+    marketScope:
+      profile.marketScope && profile.marketScope.length > 0
+        ? profile.marketScope
+        : answers.marketReach ?? [],
+    preferredChannels:
+      profile.preferredChannels && profile.preferredChannels.length > 0
+        ? profile.preferredChannels
+        : answers.channelsUsed ?? [],
+    exclusions: profile.exclusions || answers.icpExclusions || "",
+    tonePreference:
+      profile.tonePreference && profile.tonePreference.length > 0
+        ? profile.tonePreference
+        : answers.brandTones ?? [],
+  };
+}
+
 /** Computes a deterministic lightweight hash string for cache invalidation. */
 export function computeProfileFingerprint(input: {
   profile: GrowthProfile;
@@ -141,22 +257,40 @@ export function computeProfileFingerprint(input: {
   settings: Pick<Settings, "sender_company" | "sender_name" | "sender_role" | "physical_address">;
   metricsSummary: { leads: number; campaigns: number; sent: number; replies: number; positive: number };
 }): string {
+  const p = input.profile;
   const payload = JSON.stringify({
     p: {
-      whoYouAre: input.profile.whoYouAre.trim(),
-      whatYouSell: input.profile.whatYouSell.trim(),
-      industry: input.profile.industry.trim(),
-      offer: input.profile.offer.trim(),
-      priceRange: input.profile.priceRange.trim(),
-      location: input.profile.location.trim(),
-      idealCustomer: input.profile.idealCustomer.trim(),
+      whoYouAre: (p.whoYouAre ?? "").trim(),
+      whatYouSell: (p.whatYouSell ?? "").trim(),
+      industry: (p.industry ?? "").trim(),
+      offer: (p.offer ?? "").trim(),
+      priceRange: (p.priceRange ?? "").trim(),
+      location: (p.location ?? "").trim(),
+      idealCustomer: (p.idealCustomer ?? "").trim(),
+      businessStage: p.businessStage ?? "",
+      businessModel: p.businessModel ?? "",
+      pricingStructure: p.pricingStructure ?? "",
+      averageDealValue: p.averageDealValue ?? 0,
+      targetIndustries: p.targetIndustries ?? [],
+      targetRoles: p.targetRoles ?? [],
+      targetCompanySize: p.targetCompanySize ?? "",
+      buyingTriggers: p.buyingTriggers ?? [],
+      marketScope: p.marketScope ?? [],
+      salesCycleLength: p.salesCycleLength ?? "",
+      preferredChannels: p.preferredChannels ?? [],
+      offerCtaStyle: p.offerCtaStyle ?? "",
+      primaryGoal: p.primaryGoal ?? "",
+      monthlyTargetLeads: p.monthlyTargetLeads ?? 0,
+      weeklyOutreachCapacity: p.weeklyOutreachCapacity ?? 0,
+      proofAssets: p.proofAssets ?? [],
+      exclusions: p.exclusions ?? "",
+      tonePreference: p.tonePreference ?? [],
     },
     k: input.knowledgeDigest.slice(0, 1200).trim(),
     s: `${input.settings.sender_company}|${input.settings.sender_name}|${input.settings.physical_address}`,
     m: input.metricsSummary,
   });
 
-  // Deterministic FNV-1a 32-bit hash
   let hash = 2166136261;
   for (let i = 0; i < payload.length; i++) {
     hash ^= payload.charCodeAt(i);
@@ -184,23 +318,29 @@ export function evaluateProfileCompleteness(
   const hasWhatYouSell = Boolean(profile.whatYouSell.trim() || hasKnowledge);
   if (!hasWhatYouSell) missingFields.push("What you sell or do");
 
-  const hasIndustry = Boolean(profile.industry.trim());
+  const hasIndustry = Boolean(profile.industry.trim() || (profile.targetIndustries?.length ?? 0) > 0);
   if (!hasIndustry) missingFields.push("Industry");
 
   const hasOffer = Boolean(profile.offer.trim() || hasKnowledge);
   if (!hasOffer) missingFields.push("Core offer");
 
-  const hasPrice = Boolean(profile.priceRange.trim());
+  const hasPrice = Boolean(profile.priceRange.trim() || profile.pricingStructure || (profile.averageDealValue ?? 0) > 0);
   if (!hasPrice) missingFields.push("Price range");
 
-  const hasLocation = Boolean(profile.location.trim());
+  const hasLocation = Boolean(profile.location.trim() || (profile.marketScope?.length ?? 0) > 0);
   if (!hasLocation) missingFields.push("Target or base location");
 
-  const totalChecks = 6;
-  const completedChecks = totalChecks - missingFields.length;
-  const score = Math.round((completedChecks / totalChecks) * 100);
+  const bonusChecks = [
+    Boolean(profile.businessModel),
+    Boolean((profile.targetRoles?.length ?? 0) > 0 || profile.idealCustomer.trim()),
+    Boolean((profile.preferredChannels?.length ?? 0) > 0),
+    Boolean(profile.primaryGoal),
+  ];
 
-  // Require at least identity/offer context plus key business parameters (or filled profile)
+  const coreCompleted = 6 - missingFields.length;
+  const bonusBoost = Math.min(missingFields.length, Math.floor(bonusChecks.filter(Boolean).length / 2));
+  const score = Math.min(100, Math.round(((coreCompleted + bonusBoost) / 6) * 100));
+
   const complete = missingFields.length <= 1 && (hasWhatYouSell || hasOffer) && hasIndustry;
   return { complete, missingFields, score };
 }

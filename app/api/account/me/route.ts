@@ -43,26 +43,54 @@ export async function GET(req: NextRequest) {
       avatarUrl: user.avatarUrl,
     });
 
-    let onboardingCompleted = false;
+    let onboardingStatus: "not_started" | "in_progress" | "completed" = "not_started";
+    let onboardingStep = 1;
+
     if (supabaseServer) {
-      const onb = await supabaseServer
-        .from("knowledge")
-        .select("content")
-        .eq("id", `system_onboarding_${user.ownerId}`)
-        .eq("owner_id", user.ownerId)
-        .maybeSingle();
+      const [onbRes, kbCountRes, campCountRes] = await Promise.all([
+        supabaseServer
+          .from("knowledge")
+          .select("content")
+          .eq("id", `system_onboarding_${user.ownerId}`)
+          .eq("owner_id", user.ownerId)
+          .maybeSingle(),
+        supabaseServer
+          .from("knowledge")
+          .select("id", { count: "exact", head: true })
+          .eq("owner_id", user.ownerId)
+          .neq("content", "")
+          .not("category", "like", "system_%")
+          .not("category", "like", "growth_advisor_%"),
+        supabaseServer
+          .from("campaigns")
+          .select("id", { count: "exact", head: true })
+          .eq("owner_id", user.ownerId),
+      ]);
+
       try {
-        const parsed = JSON.parse(String((onb.data as { content?: string } | null)?.content ?? "{}")) as {
-          status?: string;
-        };
-        onboardingCompleted = parsed.status === "completed";
+        const raw = (onbRes.data as { content?: string } | null)?.content;
+        if (raw) {
+          const parsed = JSON.parse(raw) as { status?: string; currentStep?: number };
+          if (parsed.status === "completed") onboardingStatus = "completed";
+          else if (parsed.status === "in_progress") onboardingStatus = "in_progress";
+          if (typeof parsed.currentStep === "number") {
+            onboardingStep = Math.max(1, Math.min(12, parsed.currentStep));
+          }
+        } else if ((kbCountRes.count ?? 0) > 0 || (campCountRes.count ?? 0) > 0) {
+          onboardingStatus = "completed";
+          onboardingStep = 12;
+        }
       } catch {
-        onboardingCompleted = false;
+        onboardingStatus = "not_started";
       }
     }
 
-    const announcements = await listActiveAnnouncementsForUser(user.ownerId, onboardingCompleted);
+    const announcements = await listActiveAnnouncementsForUser(
+      user.ownerId,
+      onboardingStatus === "completed",
+    );
 
+    // Zero admin hints leaked into the user-facing response.
     return NextResponse.json(
       {
         user: {
@@ -72,13 +100,13 @@ export async function GET(req: NextRequest) {
           displayName: user.name,
           photoURL: user.avatarUrl,
           emailVerified: true,
-          role: meta.role,
           status: meta.status,
-          twoFactorEnabled: meta.totpEnabled,
+          onboardingStatus,
+          onboardingStep,
         },
         announcements,
       },
-      { headers: { "Cache-Control": "no-store" } },
+      { headers: { "Cache-Control": "private, no-store, max-age=0" } },
     );
   } catch (err) {
     return handleApiError(err);

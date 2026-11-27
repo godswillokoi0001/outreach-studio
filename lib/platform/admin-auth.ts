@@ -1,74 +1,111 @@
 import type { NextRequest } from "next/server";
-import { verifyAdmin2faToken, verifyTotpCode, decryptSecret } from "../key-vault";
-import { AuthError, verifyRequest, type AuthUser } from "../server-auth";
-import { getUserGovernance, type UserGovernanceMeta } from "./store-server";
+import { decryptSecret, verifyTotpCode } from "../key-vault";
+import { AuthError } from "../server-auth";
+import { findAdminAccountById, type AdminAccountRecord } from "./admin-credentials";
+import {
+  readAdminReauthFromRequest,
+  readAdminSessionFromRequest,
+} from "./admin-session";
 import { ROLE_RANK, type AdminRole } from "./types";
 
-export class AdminAuthError extends AuthError {
-  code: string;
-  constructor(message: string, code: string, status = 403) {
-    super(message, status);
-    this.code = code;
-  }
+export interface AdminContext {
+  user: {
+    id: string;
+    ownerId: string;
+    email: string;
+    name: string;
+    avatarUrl: string | null;
+  };
+  meta: {
+    ownerId: string;
+    email: string;
+    name: string;
+    role: AdminRole;
+    status: "active" | "suspended";
+    plan: string;
+    lastActiveAt: string;
+    totpEnabled: boolean;
+    createdAt: string;
+    updatedAt: string;
+  };
+  admin: AdminAccountRecord;
+  reauthenticated: boolean;
 }
 
+/**
+ * Completely isolated Admin authentication guard.
+ * Reads ONLY the separate `os_admin_session` / `os_admin_reauth` HttpOnly cookies
+ * backed by `admin_accounts` — never trusts regular Google/Supabase user tokens.
+ */
 export async function requireAdmin(
   req: NextRequest,
-  minRole: Exclude<AdminRole, "user"> = "support",
+  minRole: AdminRole = "support",
   options?: { requireReauth?: boolean; inlineTotpCode?: string },
-): Promise<{ user: AuthUser; meta: UserGovernanceMeta }> {
-  const user = await verifyRequest(req);
-  const meta = await getUserGovernance(user.ownerId, user.email, {
-    name: user.name,
-    avatarUrl: user.avatarUrl,
-  });
-
-  if (meta.status === "suspended") {
-    throw new AuthError("Your account has been suspended. Contact support.", 403);
+): Promise<AdminContext> {
+  const session = readAdminSessionFromRequest(req);
+  if (!session) {
+    throw new AuthError("Admin authentication required.", 401, "ADMIN_UNAUTHENTICATED");
   }
 
-  if (ROLE_RANK[meta.role] < ROLE_RANK[minRole]) {
-    throw new AdminAuthError(
-      `This action requires ${minRole.replace("_", " ")} permissions.`,
-      "ADMIN_FORBIDDEN",
+  const account = await findAdminAccountById(session.adminId);
+  if (!account || account.status !== "active") {
+    throw new AuthError("Admin session is no longer valid.", 401, "ADMIN_UNAUTHENTICATED");
+  }
+
+  if (!account.totpEnabled || !account.totpSecretEncrypted) {
+    throw new AuthError(
+      "Two-factor authentication is required for administrator access.",
       403,
-    );
-  }
-
-  if (!meta.totpEnabled || !meta.totpSecretEncrypted) {
-    throw new AdminAuthError(
-      "Two-factor authentication must be enabled before accessing the Admin Dashboard.",
-      "ADMIN_2FA_SETUP_REQUIRED",
-      403,
-    );
-  }
-
-  const sessionToken = req.headers.get("x-admin-2fa");
-  if (!verifyAdmin2faToken(sessionToken, user.id, "session")) {
-    throw new AdminAuthError(
-      "Enter your 6-digit authenticator code to unlock this Admin session.",
       "ADMIN_2FA_REQUIRED",
-      403,
     );
   }
 
-  if (options?.requireReauth) {
-    const reauthToken = req.headers.get("x-admin-reauth");
-    const hasValidReauthToken = verifyAdmin2faToken(reauthToken, user.id, "reauth");
-    let hasValidInlineCode = false;
-    if (!hasValidReauthToken && options.inlineTotpCode) {
-      const secret = decryptSecret(meta.totpSecretEncrypted);
-      hasValidInlineCode = verifyTotpCode(secret, options.inlineTotpCode);
-    }
+  if (ROLE_RANK[account.role] < ROLE_RANK[minRole]) {
+    throw new AuthError("Insufficient administrator privileges.", 403, "ADMIN_FORBIDDEN");
+  }
 
-    if (!hasValidReauthToken && !hasValidInlineCode) {
-      throw new AdminAuthError(
-        "Re-authentication with your 2FA code is required for this sensitive action.",
-        "ADMIN_REAUTH_REQUIRED",
+  let reauthenticated = readAdminReauthFromRequest(req, account.id);
+
+  if (options?.requireReauth && !reauthenticated) {
+    if (options.inlineTotpCode) {
+      try {
+        const secret = decryptSecret(account.totpSecretEncrypted);
+        reauthenticated = verifyTotpCode(secret, options.inlineTotpCode);
+      } catch {
+        reauthenticated = false;
+      }
+    }
+    if (!reauthenticated) {
+      throw new AuthError(
+        "Re-authentication required before performing this sensitive action.",
         403,
+        "ADMIN_REAUTH_REQUIRED",
       );
     }
   }
 
-  return { user, meta };
+  const nowIso = new Date().toISOString();
+  return {
+    user: {
+      id: account.id,
+      ownerId: account.id,
+      email: account.email,
+      name: account.name,
+      avatarUrl: null,
+    },
+    meta: {
+      ownerId: account.id,
+      email: account.email,
+      name: account.name,
+      role: account.role,
+      status: account.status,
+      plan: "platform_admin",
+      lastActiveAt: account.lastLoginAt ?? nowIso,
+      totpEnabled: account.totpEnabled,
+      createdAt: account.createdAt,
+      updatedAt: account.updatedAt,
+    },
+    admin: account,
+    reauthenticated,
+  };
 }

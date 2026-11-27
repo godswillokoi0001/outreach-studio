@@ -1,7 +1,5 @@
 "use client";
 
-import { getAccessToken } from "@/lib/auth";
-
 export class AdminClientError extends Error {
   code?: string;
   status?: number;
@@ -21,21 +19,14 @@ export async function adminFetch<T>(
     reauthToken?: string | null;
   } = {},
 ): Promise<T> {
-  const accessToken = await getAccessToken();
-  if (!accessToken) {
-    throw new AdminClientError("Sign in with Google first.", "UNAUTHENTICATED", 401);
-  }
-
   const headers: Record<string, string> = {
-    Authorization: `Bearer ${accessToken}`,
     Accept: "application/json",
   };
-  if (options.sessionToken) headers["X-Admin-2FA"] = options.sessionToken;
-  if (options.reauthToken) headers["X-Admin-Reauth"] = options.reauthToken;
   if (options.body !== undefined) headers["Content-Type"] = "application/json";
 
   const res = await fetch(path, {
     method: options.method ?? "GET",
+    credentials: "same-origin",
     headers,
     body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
     cache: "no-store",

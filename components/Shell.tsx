@@ -32,14 +32,14 @@ import {
   Search,
   Send,
   Settings,
-  Shield,
   TrendingUp,
   Users,
   X,
 } from "lucide-react";
 import { AnimatePresence, motion } from "framer-motion";
 import { initAiConfig } from "@/lib/ai-client";
-import { errorMessage } from "@/lib/client";
+import { errorMessage, authedGet } from "@/lib/client";
+import type { OnboardingState } from "@/lib/onboarding";
 import { getOnboardingState, subscribeBadgeCounts, subscribeOpenEvents } from "@/lib/store";
 import {
   emptySignalMarks,
@@ -59,6 +59,7 @@ import { BrandLockup, BrandMark } from "./BrandMark";
 import { Menu, MenuItem, MenuSeparator } from "./Menu";
 import { ThemeToggle } from "./ThemeToggle";
 import { DashboardChat } from "./DashboardChat";
+import { BackgroundJobsBar } from "./BackgroundJobsBar";
 import { AgentPresenceProvider } from "./AgentPresence";
 import { TaskDockProvider, useTaskDock } from "./Loading";
 import { WorkspaceIssueNotice } from "./WorkspaceIssueNotice";
@@ -151,8 +152,8 @@ function ShellInner({ children }: { children: ReactNode }) {
   const [syncNote, setSyncNote] = useState<string | null>(null);
   const [signals, setSignals] = useState<SignalToast[]>([]);
   const [latest, setLatest] = useState<{ open: string; reply: string }>({ open: "", reply: "" });
-  const [onboardingChecked, setOnboardingChecked] = useState(false);
-  const [onboardingDone, setOnboardingDone] = useState(true);
+  const [onboardingChecked, setOnboardingChecked] = useState(() => Boolean(user.onboardingStatus));
+  const [onboardingDone, setOnboardingDone] = useState(() => user.onboardingStatus === "completed");
   const [dismissedAnnouncementIds, setDismissedAnnouncementIds] = useState<string[]>([]);
   const uid = user?.uid ?? "";
 
@@ -178,16 +179,20 @@ function ShellInner({ children }: { children: ReactNode }) {
     }
   })();
 
+  const isOnboardingRoute = pathname === "/onboarding" || pathname.startsWith("/onboarding/");
+
   useEffect(() => {
     if (!uid) return;
     let active = true;
-    getOnboardingState(uid, user)
+    authedGet<{ state: OnboardingState }>("/api/onboarding/state")
+      .then((res) => res.state)
+      .catch(() => getOnboardingState(uid, user))
       .then((state) => {
         if (!active) return;
         const done = state.status === "completed";
         setOnboardingDone(done);
         setOnboardingChecked(true);
-        if (!done && pathname !== "/onboarding") {
+        if (!done && !isOnboardingRoute) {
           router.replace("/onboarding");
         }
       })
@@ -198,7 +203,16 @@ function ShellInner({ children }: { children: ReactNode }) {
     return () => {
       active = false;
     };
-  }, [uid, user, pathname, router]);
+  }, [uid, user, isOnboardingRoute, router]);
+
+  useEffect(() => {
+    const onDone = () => {
+      setOnboardingDone(true);
+      setOnboardingChecked(true);
+    };
+    window.addEventListener("knowrevo:onboarding-completed", onDone);
+    return () => window.removeEventListener("knowrevo:onboarding-completed", onDone);
+  }, []);
   // What this browser has already announced and already looked at, so a
   // notification appears once and stays marked seen until something new lands.
   const marks = useSyncExternalStore(
@@ -393,46 +407,40 @@ function ShellInner({ children }: { children: ReactNode }) {
     return "seen";
   };
 
-  const isAdminUser =
-    user.role === "super_admin" || user.role === "admin" || user.role === "support";
-
-  const navSections = isAdminUser
-    ? [
-        ...NAV,
-        {
-          group: "Administration",
-          items: [{ href: "/admin", label: "Admin Dashboard", icon: Shield }],
-        },
-      ]
-    : NAV;
-
   const displayName = user.displayName || user.email || "Signed in";
-  const currentSection = navSections.flatMap((group) => group.items).find((item) =>
+  const currentSection = NAV.flatMap((group) => group.items).find((item) =>
     item.href === "/" ? pathname === "/" : pathname.startsWith(item.href),
   );
 
-  // Never flash the dashboard before onboarding status is verified for new sign-ups.
-  if (!onboardingChecked || (!onboardingDone && pathname !== "/onboarding")) {
-    return <BrandLoader fullScreen />;
-  }
-
-  // Focused onboarding screen wrapper during first-time setup
-  if (pathname === "/onboarding" && !onboardingDone) {
+  // Distraction-free onboarding wrapper (no header bar, no sidebar, no chatbot icon — zero flash on enter or exit).
+  if (isOnboardingRoute) {
     return (
-      <div style={{ minHeight: "100vh", background: "var(--bg)", display: "flex", flexDirection: "column" }}>
-        <header className="topbar" style={{ justifyContent: "space-between" }}>
-          <BrandLockup tone="brand" size={22} subtitle="Workspace Setup" />
-          <div className="row" style={{ gap: 8 }}>
-            <ThemeToggle />
-            <button type="button" className="btn btn-sm btn-ghost" onClick={() => void signOut()}>
-              <LogOut size={13} />
-              Sign out
-            </button>
-          </div>
-        </header>
+      <div
+        style={{
+          minHeight: "100dvh",
+          background: "var(--canvas, var(--bg))",
+          display: "flex",
+          flexDirection: "column",
+        }}
+      >
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "center",
+            alignItems: "center",
+            padding: "20px 16px 4px",
+          }}
+        >
+          <BrandLockup tone="brand" size={24} />
+        </div>
         <div style={{ flex: 1, paddingBottom: 40 }}>{children}</div>
       </div>
     );
+  }
+
+  // Never flash dashboard chrome or chatbot before onboarding status is verified for new sign-ups.
+  if (!onboardingChecked || !onboardingDone) {
+    return <BrandLoader fullScreen />;
   }
 
   return (
@@ -476,7 +484,7 @@ function ShellInner({ children }: { children: ReactNode }) {
           </button>
         </div>
         <nav className="nav">
-          {navSections.map((group) => (
+          {NAV.map((group) => (
             <div key={group.group}>
               <div className="nav-group-label">{group.group}</div>
               {group.items.map((item) => {
@@ -583,6 +591,7 @@ function ShellInner({ children }: { children: ReactNode }) {
             <span className="topbar-sep" aria-hidden="true" />
 
             <div className="topbar-group" aria-label="Preferences">
+              <BackgroundJobsBar uid={uid} />
               <ThemeToggle compact />
 
               <Menu

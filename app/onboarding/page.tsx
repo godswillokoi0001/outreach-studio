@@ -26,7 +26,10 @@ import { BrandLoader } from "@/components/BrandLoader";
 import { ImproveAnswerControl } from "@/components/ImproveAnswerControl";
 import { Badge, Banner, Card, Field } from "@/components/ui";
 import { useToast } from "@/components/Feedback";
-import { authedPost, authedUpload, errorMessage } from "@/lib/client";
+import { authedGet, authedPost, authedPut, authedUpload, errorMessage } from "@/lib/client";
+import { getAccessToken } from "@/lib/auth";
+import type { BackgroundJobRecord } from "@/lib/background-jobs";
+import { formatApproxEta } from "@/components/BackgroundJobsBar";
 import {
   computeOnboardingCompleteness,
   DEFAULT_ONBOARDING_ANSWERS,
@@ -48,7 +51,6 @@ import {
   getSettings,
   getStructuredKnowledgeBase,
   saveGrowthProfile,
-  saveOnboardingState,
   saveSettings,
   saveStructuredKnowledgeBase,
 } from "@/lib/store";
@@ -157,8 +159,7 @@ export default function OnboardingPage() {
   const [loading, setLoading] = useState(true);
   const [step, setStep] = useState(1);
   const [answers, setAnswers] = useState<OnboardingAnswers>(DEFAULT_ONBOARDING_ANSWERS);
-  const [onboardingState, setOnboardingState] = useState<OnboardingState | null>(null);
-  const [savingIndicator, setSavingIndicator] = useState<"idle" | "saving" | "saved">("idle");
+  const [savingIndicator, setSavingIndicator] = useState<"idle" | "saving" | "saved" | "retrying">("idle");
   const [validationError, setValidationError] = useState<string | null>(null);
 
   // Website scanner states (Screen 3)
@@ -177,8 +178,9 @@ export default function OnboardingPage() {
   // File / logo upload states (Screen 11)
   const [uploadingFile, setUploadingFile] = useState(false);
 
-  // Screen 12 Generation & Preview states
+  // Screen 12 Generation & Preview states (backed by persistent server job)
   const [generatingKb, setGeneratingKb] = useState(false);
+  const [compileJob, setCompileJob] = useState<BackgroundJobRecord | null>(null);
   const [genError, setGenError] = useState<string | null>(null);
   const [previewSections, setPreviewSections] = useState<KnowledgeSection[] | null>(null);
   const [previewGaps, setPreviewGaps] = useState<string[]>([]);
@@ -186,63 +188,200 @@ export default function OnboardingPage() {
   const [completedScreen, setCompletedScreen] = useState(false);
 
   const saveTimerRef = useRef<number | null>(null);
+  const retryTimerRef = useRef<number | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const latestRef = useRef<{
+    step: number;
+    answers: OnboardingAnswers;
+    status: OnboardingState["status"];
+    startedAt?: string;
+    completedAt?: string;
+    dirty: boolean;
+  }>({
+    step: 1,
+    answers: DEFAULT_ONBOARDING_ANSWERS,
+    status: "not_started",
+    dirty: false,
+  });
 
   useEffect(() => {
     let active = true;
-    getOnboardingState(user.uid, user)
-      .then((state) => {
+    Promise.all([
+      authedGet<{ state: OnboardingState }>("/api/onboarding/state")
+        .then((r) => r.state)
+        .catch(() => getOnboardingState(user.uid, user)),
+      authedGet<{ job: BackgroundJobRecord | null }>("/api/onboarding/compile").catch(() => ({ job: null })),
+    ])
+      .then(([state, compileRes]) => {
         if (!active) return;
         const hydrated = prefillAnswersFromUser(state.answers, user);
-        setOnboardingState(state);
         setAnswers(hydrated);
-        // Resume at saved screen if in progress
-        if (state.status === "in_progress" && state.currentStep >= 1 && state.currentStep <= TOTAL_STEPS) {
-          setStep(state.currentStep);
-        } else {
-          setStep(1);
+
+        let initialStep = 1;
+        if (state.currentStep >= 1 && state.currentStep <= TOTAL_STEPS && state.status === "in_progress") {
+          initialStep = state.currentStep;
+        } else if (state.status === "completed") {
+          initialStep = 1;
         }
+
+        const job = compileRes.job;
+        if (job) {
+          setCompileJob(job);
+          if (job.status === "queued" || job.status === "running") {
+            initialStep = TOTAL_STEPS;
+            setGeneratingKb(true);
+          } else if (
+            job.status === "succeeded" &&
+            state.status !== "completed" &&
+            Array.isArray(job.result?.sections)
+          ) {
+            initialStep = TOTAL_STEPS;
+            setPreviewSections(job.result.sections as KnowledgeSection[]);
+            setPreviewGaps(Array.isArray(job.result.missingGaps) ? (job.result.missingGaps as string[]) : []);
+          } else if (job.status === "failed" && state.status !== "completed") {
+            initialStep = TOTAL_STEPS;
+            setGenError(job.errorMessage || "Knowledge Base compilation failed.");
+          }
+        }
+
+        setStep(initialStep);
+        latestRef.current = {
+          step: initialStep,
+          answers: hydrated,
+          status: state.status,
+          startedAt: state.startedAt,
+          completedAt: state.completedAt,
+          dirty: false,
+        };
         setLoading(false);
       })
       .catch(() => {
         if (!active) return;
-        setAnswers(prefillAnswersFromUser(DEFAULT_ONBOARDING_ANSWERS, user));
+        const hydrated = prefillAnswersFromUser(DEFAULT_ONBOARDING_ANSWERS, user);
+        setAnswers(hydrated);
+        latestRef.current.answers = hydrated;
         setLoading(false);
       });
     return () => {
       active = false;
     };
-  }, [user]);
+    // Key strictly on user.uid so silent token refreshes never reset form or step state.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user.uid]);
+
+  const persistProgressRef = useRef<
+    (nextStep: number, nextAnswers: OnboardingAnswers, statusOverride?: OnboardingState["status"]) => Promise<void>
+  >(async () => {});
 
   const persistProgress = useCallback(
-    async (nextStep: number, nextAnswers: OnboardingAnswers, statusOverride?: OnboardingState["status"]) => {
+    async (
+      nextStep: number,
+      nextAnswers: OnboardingAnswers,
+      statusOverride?: OnboardingState["status"],
+    ) => {
+      const nextStatus: OnboardingState["status"] =
+        statusOverride ?? (latestRef.current.status === "completed" ? "completed" : "in_progress");
+      const nowIso = new Date().toISOString();
+      latestRef.current = {
+        ...latestRef.current,
+        step: nextStep,
+        answers: nextAnswers,
+        status: nextStatus,
+        startedAt: latestRef.current.startedAt || nowIso,
+        completedAt: nextStatus === "completed" ? nowIso : latestRef.current.completedAt,
+        dirty: false,
+      };
       setSavingIndicator("saving");
       try {
-        const nextState: OnboardingState = {
-          status: statusOverride ?? (onboardingState?.status === "completed" ? "completed" : "in_progress"),
+        await authedPut<{ state: OnboardingState }>("/api/onboarding/state", {
+          status: nextStatus,
           currentStep: nextStep,
           answers: nextAnswers,
-          startedAt: onboardingState?.startedAt || new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-          completedAt: statusOverride === "completed" ? new Date().toISOString() : onboardingState?.completedAt,
-        };
-        const saved = await saveOnboardingState(user.uid, nextState);
-        setOnboardingState(saved);
+          startedAt: latestRef.current.startedAt,
+          completedAt: latestRef.current.completedAt,
+        });
         setSavingIndicator("saved");
       } catch {
-        setSavingIndicator("idle");
+        latestRef.current.dirty = true;
+        setSavingIndicator("retrying");
+        if (retryTimerRef.current) window.clearTimeout(retryTimerRef.current);
+        retryTimerRef.current = window.setTimeout(() => {
+          if (latestRef.current.dirty) {
+            void persistProgressRef.current(
+              latestRef.current.step,
+              latestRef.current.answers,
+              latestRef.current.status,
+            );
+          }
+        }, 3000);
       }
     },
-    [user.uid, onboardingState],
+    [],
   );
 
-  // Auto-save debounced when editing fields
+  useEffect(() => {
+    persistProgressRef.current = persistProgress;
+  }, [persistProgress]);
+
+  // Flush dirty answers silently when tab closes or connection returns
+  useEffect(() => {
+    const flushKeepalive = () => {
+      if (!latestRef.current.dirty) return;
+      void getAccessToken().then((token) => {
+        if (!token) return;
+        const snap = latestRef.current;
+        latestRef.current.dirty = false;
+        void fetch("/api/onboarding/state", {
+          method: "PUT",
+          keepalive: true,
+          credentials: "same-origin",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({
+            status: snap.status === "completed" ? "completed" : "in_progress",
+            currentStep: snap.step,
+            answers: snap.answers,
+            startedAt: snap.startedAt || new Date().toISOString(),
+            completedAt: snap.completedAt,
+          }),
+        }).catch(() => {
+          latestRef.current.dirty = true;
+        });
+      });
+    };
+
+    const onVisibility = () => {
+      if (document.visibilityState === "hidden") flushKeepalive();
+    };
+    const onOnline = () => {
+      if (latestRef.current.dirty) {
+        void persistProgress(latestRef.current.step, latestRef.current.answers, latestRef.current.status);
+      }
+    };
+
+    window.addEventListener("pagehide", flushKeepalive);
+    document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("online", onOnline);
+    return () => {
+      window.removeEventListener("pagehide", flushKeepalive);
+      document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("online", onOnline);
+      if (retryTimerRef.current) window.clearTimeout(retryTimerRef.current);
+    };
+  }, [persistProgress]);
+
+  // Debounced silent auto-save while editing fields (never reloads or moves cursor)
   useEffect(() => {
     if (loading || completedScreen) return;
+    latestRef.current.step = step;
+    latestRef.current.answers = answers;
+    latestRef.current.dirty = true;
     if (saveTimerRef.current) window.clearTimeout(saveTimerRef.current);
     saveTimerRef.current = window.setTimeout(() => {
       void persistProgress(step, answers);
-    }, 900);
+    }, 650);
     return () => {
       if (saveTimerRef.current) window.clearTimeout(saveTimerRef.current);
     };
@@ -395,6 +534,38 @@ export default function OnboardingPage() {
     }
   };
 
+  // Poll background KB compilation job until done or failed
+  useEffect(() => {
+    if (!compileJob || (compileJob.status !== "queued" && compileJob.status !== "running")) return;
+    let cancelled = false;
+    const timer = window.setInterval(() => {
+      void authedGet<{ job: BackgroundJobRecord | null }>("/api/onboarding/compile")
+        .then((res) => {
+          if (cancelled || !res.job) return;
+          setCompileJob(res.job);
+          if (res.job.status === "succeeded") {
+            setGeneratingKb(false);
+            if (Array.isArray(res.job.result?.sections)) {
+              setPreviewSections(res.job.result.sections as KnowledgeSection[]);
+              setPreviewGaps(
+                Array.isArray(res.job.result.missingGaps) ? (res.job.result.missingGaps as string[]) : [],
+              );
+            }
+          } else if (res.job.status === "failed") {
+            setGeneratingKb(false);
+            setGenError(res.job.errorMessage || "Knowledge Base compilation failed.");
+          }
+        })
+        .catch(() => {
+          /* keep polling quietly */
+        });
+    }, 1200);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [compileJob]);
+
   const generateKnowledgePreview = async () => {
     setGeneratingKb(true);
     setGenError(null);
@@ -411,19 +582,25 @@ export default function OnboardingPage() {
         bookingOrPortfolioUrl: normalizeUrlInput(answers.bookingOrPortfolioUrl),
       };
 
-      const res = await authedPost<{ sections: KnowledgeSection[]; missingGaps: string[] }>(
-        "/api/ai/onboarding-assist",
-        {
-          action: "generate_kb",
-          answers: normalizedAnswers,
-        },
+      await persistProgress(TOTAL_STEPS, normalizedAnswers);
+      const res = await authedPost<{ job: BackgroundJobRecord }>(
+        "/api/onboarding/compile",
+        { answers: normalizedAnswers },
       );
-      setPreviewSections(res.sections);
-      setPreviewGaps(res.missingGaps ?? []);
+      setCompileJob(res.job);
+      if (res.job.status === "succeeded" && Array.isArray(res.job.result?.sections)) {
+        setGeneratingKb(false);
+        setPreviewSections(res.job.result.sections as KnowledgeSection[]);
+        setPreviewGaps(
+          Array.isArray(res.job.result.missingGaps) ? (res.job.result.missingGaps as string[]) : [],
+        );
+      } else if (res.job.status === "failed") {
+        setGeneratingKb(false);
+        setGenError(res.job.errorMessage || "Knowledge Base compilation failed.");
+      }
     } catch (err) {
-      setGenError(errorMessage(err));
-    } finally {
       setGeneratingKb(false);
+      setGenError(errorMessage(err));
     }
   };
 
@@ -466,6 +643,7 @@ export default function OnboardingPage() {
       });
 
       await persistProgress(TOTAL_STEPS, answers, "completed");
+      window.dispatchEvent(new CustomEvent("knowrevo:onboarding-completed"));
       setCompletedScreen(true);
       toast.success("Knowledge Base saved", "Your workspace is now personalized and ready.");
     } catch (err) {
@@ -585,18 +763,19 @@ export default function OnboardingPage() {
             <span className="strong" style={{ fontSize: 14 }}>{STEP_TITLES[step - 1]}</span>
           </div>
           <div className="row" style={{ gap: 10, alignItems: "center" }}>
-            <span className="tiny muted">
-              {savingIndicator === "saving"
-                ? "Auto-saving…"
-                : savingIndicator === "saved"
-                  ? "Progress saved"
-                  : ""}
+            <span className="tiny muted" style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+              {savingIndicator === "saving" ? (
+                "Saving…"
+              ) : savingIndicator === "saved" ? (
+                <>
+                  <Check size={12} style={{ color: "var(--ok, #16a34a)" }} /> Saved
+                </>
+              ) : savingIndicator === "retrying" ? (
+                "Saving offline changes…"
+              ) : (
+                ""
+              )}
             </span>
-            {onboardingState?.status === "completed" && (
-              <Link href="/" className="btn btn-sm btn-ghost">
-                Back to dashboard
-              </Link>
-            )}
           </div>
         </div>
 
@@ -1641,7 +1820,96 @@ export default function OnboardingPage() {
               sub="Confirm your answers below, generate a preview, and save your Knowledge Base."
             >
               <div className="stack" style={{ gap: 16 }}>
-                {!previewSections ? (
+                {(generatingKb || (compileJob && (compileJob.status === "queued" || compileJob.status === "running"))) ? (
+                  <div
+                    style={{
+                      padding: 20,
+                      borderRadius: 12,
+                      border: "1px solid var(--line)",
+                      background: "var(--surface-2)",
+                    }}
+                    className="stack"
+                  >
+                    <div className="row" style={{ gap: 14, alignItems: "center" }}>
+                      <BrandLoader size={48} />
+                      <div style={{ flex: 1 }}>
+                        <div className="strong" style={{ fontSize: 15 }}>
+                          {compileJob?.currentStep || "Building your Knowledge Base…"}
+                        </div>
+                        <div className="tiny muted" style={{ marginTop: 2 }}>
+                          {compileJob
+                            ? `${compileJob.progressPct}% complete · ${formatApproxEta(compileJob.estimatedSecondsRemaining)}`
+                            : "Starting background compiler…"}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div
+                      role="progressbar"
+                      aria-valuenow={compileJob?.progressPct ?? 10}
+                      aria-valuemin={0}
+                      aria-valuemax={100}
+                      style={{
+                        height: 8,
+                        borderRadius: 999,
+                        background: "var(--surface)",
+                        border: "1px solid var(--line-soft)",
+                        overflow: "hidden",
+                      }}
+                    >
+                      <div
+                        style={{
+                          height: "100%",
+                          width: `${compileJob?.progressPct ?? 10}%`,
+                          background: "var(--teal-deep, #0f766e)",
+                          transition: "width 0.35s ease",
+                        }}
+                      />
+                    </div>
+
+                    <div className="stack" style={{ gap: 6 }}>
+                      {(compileJob?.steps ?? []).map((st) => (
+                        <div
+                          key={st.key}
+                          className="row"
+                          style={{
+                            justifyContent: "space-between",
+                            padding: "6px 10px",
+                            borderRadius: 8,
+                            background: "var(--surface)",
+                            border: "1px solid var(--line-soft)",
+                          }}
+                        >
+                          <span className="tiny strong">{st.label}</span>
+                          <Badge
+                            tone={
+                              st.status === "done"
+                                ? "ok"
+                                : st.status === "in_progress"
+                                  ? "info"
+                                  : st.status === "failed"
+                                    ? "bad"
+                                    : undefined
+                            }
+                          >
+                            {st.status === "in_progress"
+                              ? "In progress"
+                              : st.status === "done"
+                                ? "Done"
+                                : st.status === "failed"
+                                  ? "Failed"
+                                  : "Pending"}
+                          </Badge>
+                        </div>
+                      ))}
+                    </div>
+
+                    <p className="tiny muted" style={{ margin: 0 }}>
+                      You can safely refresh or close this tab — Knowrevo keeps compiling your Knowledge Base in the
+                      background and will show it right here when ready.
+                    </p>
+                  </div>
+                ) : !previewSections ? (
                   <>
                     <div className="grid grid-2" style={{ gap: 10 }}>
                       {[

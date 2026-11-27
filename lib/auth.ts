@@ -8,7 +8,10 @@ const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? "";
 
 export const supabaseConfigured = Boolean(supabaseUrl && supabaseAnonKey);
 
-export const supabaseBrowser = createBrowserClient(supabaseUrl, supabaseAnonKey);
+export const supabaseBrowser = createBrowserClient(
+  supabaseUrl || "https://placeholder.supabase.co",
+  supabaseAnonKey || "placeholder-anon-key",
+);
 
 /** Gmail + Sheets are requested separately from sign-in, through the app's own OAuth client. */
 export const WORKSPACE_SCOPES = [
@@ -31,9 +34,9 @@ export interface AppUser {
   displayName: string;
   photoURL: string | null;
   emailVerified: boolean;
-  role?: "super_admin" | "admin" | "support" | "user";
   status?: "active" | "suspended";
-  twoFactorEnabled?: boolean;
+  onboardingStatus?: "not_started" | "in_progress" | "completed";
+  onboardingStep?: number;
 }
 
 export interface ClientAnnouncement {

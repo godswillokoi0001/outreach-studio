@@ -1,6 +1,6 @@
 import { resolveUserSendingTier } from "../guardrails";
 import type { OnboardingState, StructuredKnowledgeBase } from "../onboarding";
-import { supabaseServer } from "../supabase-server";
+import { getSupabaseSettingsServer, supabaseServer } from "../supabase-server";
 import type { CampaignConfig, KnowledgeEntry, KnowledgeSource, Settings } from "../types";
 import type { UserBusinessProfile, UserBusinessVariables } from "./types";
 
@@ -356,11 +356,14 @@ export async function loadUserContextServer(
     }
   }
 
+  const loadedSettings =
+    overrides?.settings ?? (ownerId ? await getSupabaseSettingsServer(ownerId) : null);
+
   const knowledgeDigest = digestParts.join("\n\n").slice(0, 32_000);
   const variables = resolveUserBusinessVariables({
     ownerId,
     profile,
-    settings: overrides?.settings ?? null,
+    settings: loadedSettings,
     onboarding,
     structuredKb,
     campaign: overrides?.campaign ?? null,
@@ -375,6 +378,6 @@ export async function loadUserContextServer(
     notes,
     sources,
     knowledgeDigest,
-    settings: overrides?.settings ?? null,
+    settings: loadedSettings,
   };
 }

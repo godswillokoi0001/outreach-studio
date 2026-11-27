@@ -1,213 +1,323 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { Activity, BarChart3, Brain, CheckSquare, Cpu, Lock, Shield, Users } from "lucide-react";
-import { useAuth } from "@/components/AuthProvider";
+import {
+  Activity,
+  BarChart3,
+  Cpu,
+  HeartPulse,
+  Lock,
+  LogOut,
+  Megaphone,
+  Menu,
+  Moon,
+  Shield,
+  Sliders,
+  Sun,
+  Users,
+  X,
+} from "lucide-react";
 import { BrandLoader } from "@/components/BrandLoader";
-import { Badge, Banner, Card } from "@/components/ui";
-import { adminFetch } from "@/components/admin/admin-client";
-import { Admin2faGate, AdminReauthModal, type TwoFaStatusPayload } from "@/components/admin/Admin2faGate";
-import { AdminOverviewTab } from "@/components/admin/AdminOverviewTab";
-import { AdminUsersTab } from "@/components/admin/AdminUsersTab";
-import { AdminProvidersTab } from "@/components/admin/AdminProvidersTab";
-import { AdminGlobalKnowledgeTab } from "@/components/admin/AdminGlobalKnowledgeTab";
+import { BrandLockup } from "@/components/BrandMark";
+import { Badge } from "@/components/ui";
+import { AdminReauthModal } from "@/components/admin/Admin2faGate";
+import { AdminAdvancedTab } from "@/components/admin/AdminAdvancedTab";
 import { AdminAuditAndNoticesTab } from "@/components/admin/AdminAuditAndNoticesTab";
-import { AdminSystemCheckTab } from "@/components/admin/AdminSystemCheckTab";
+import { AdminHealthTab } from "@/components/admin/AdminHealthTab";
+import {
+  AdminLoginScreen,
+  type AuthenticatedAdminSummary,
+} from "@/components/admin/AdminLoginScreen";
+import { AdminOverviewTab } from "@/components/admin/AdminOverviewTab";
+import { AdminProvidersTab } from "@/components/admin/AdminProvidersTab";
+import { AdminUsersTab } from "@/components/admin/AdminUsersTab";
 
-type AdminTab = "overview" | "users" | "providers" | "global_knowledge" | "audit" | "system_check";
+type AdminSection =
+  | "overview"
+  | "users"
+  | "providers"
+  | "health"
+  | "announcements"
+  | "audit"
+  | "advanced";
 
 export default function AdminPage() {
-  const { user } = useAuth();
-
   const [checking, setChecking] = useState(true);
-  const [forbidden, setForbidden] = useState<string | null>(null);
-  const [twoFaStatus, setTwoFaStatus] = useState<TwoFaStatusPayload | null>(null);
-  const [sessionToken, setSessionToken] = useState<string | null>(null);
-  const [reauthToken, setReauthToken] = useState<string | null>(null);
+  const [admin, setAdmin] = useState<AuthenticatedAdminSummary | null>(null);
+  const [challenge, setChallenge] = useState<{
+    pending: boolean;
+    totpEnabled?: boolean;
+    setup?: { secret: string; otpauthUri: string };
+  }>({ pending: false });
+  const [reauthActive, setReauthActive] = useState(false);
 
-  const [activeTab, setActiveTab] = useState<AdminTab>("overview");
+  const [section, setSection] = useState<AdminSection>("overview");
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const [theme, setTheme] = useState<"light" | "dark">("light");
   const [reauthModal, setReauthModal] = useState<{
     open: boolean;
     label: string;
     pendingFn: ((token: string) => Promise<void>) | null;
   }>({ open: false, label: "", pendingFn: null });
 
-  const loadGate = useCallback(async (tok?: string | null) => {
-    setChecking(true);
-    setForbidden(null);
+  useEffect(() => {
+    const t = window.setTimeout(() => {
+      try {
+        const saved = window.localStorage.getItem("knowrevo:theme");
+        if (saved === "dark" || saved === "light") {
+          setTheme(saved);
+          document.documentElement.dataset.theme = saved;
+        }
+      } catch {
+        /* ignore */
+      }
+    }, 0);
+    return () => window.clearTimeout(t);
+  }, []);
+
+  const toggleTheme = () => {
+    const next = theme === "dark" ? "light" : "dark";
+    setTheme(next);
+    document.documentElement.dataset.theme = next;
     try {
-      const res = await adminFetch<TwoFaStatusPayload>("/api/admin/2fa", {
-        sessionToken: tok ?? sessionToken,
+      window.localStorage.setItem("knowrevo:theme", next);
+    } catch {
+      /* ignore */
+    }
+  };
+
+  const checkSession = useCallback(async () => {
+    setChecking(true);
+    try {
+      const res = await fetch("/api/admin/auth/session", {
+        credentials: "same-origin",
+        cache: "no-store",
       });
-      setTwoFaStatus(res);
-    } catch (err) {
-      setForbidden(err instanceof Error ? err.message : "Admin access denied.");
+      const data = (await res.json().catch(() => ({}))) as {
+        authenticated?: boolean;
+        admin?: AuthenticatedAdminSummary;
+        challengePending?: boolean;
+        totpEnabled?: boolean;
+        setup?: { secret: string; otpauthUri: string };
+      };
+      if (data.authenticated && data.admin) {
+        setAdmin(data.admin);
+        setReauthActive(Boolean(data.admin.reauthActive));
+        setChallenge({ pending: false });
+      } else {
+        setAdmin(null);
+        setChallenge({
+          pending: Boolean(data.challengePending),
+          totpEnabled: data.totpEnabled,
+          setup: data.setup,
+        });
+      }
     } finally {
       setChecking(false);
     }
-  }, [sessionToken]);
+  }, []);
 
   useEffect(() => {
-    const t = window.setTimeout(() => void loadGate(null), 0);
+    const t = window.setTimeout(() => {
+      void checkSession();
+    }, 0);
     return () => window.clearTimeout(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user.uid]);
+  }, [checkSession]);
+
+  const handleLogout = async () => {
+    await fetch("/api/admin/auth/logout", {
+      method: "POST",
+      credentials: "same-origin",
+    }).catch(() => {});
+    setAdmin(null);
+    setReauthActive(false);
+    setChallenge({ pending: false });
+  };
 
   const handleNeedReauth = (label: string, retryFn: (freshToken: string) => Promise<void>) => {
     setReauthModal({ open: true, label, pendingFn: retryFn });
   };
 
-  if (checking && !twoFaStatus && !forbidden) {
-    return (
-      <main className="page">
-        <BrandLoader fullScreen />
-      </main>
-    );
+  if (checking) {
+    return <BrandLoader fullScreen />;
   }
 
-  if (forbidden || !twoFaStatus) {
+  if (!admin) {
     return (
-      <main className="page" style={{ maxWidth: 620, margin: "32px auto" }}>
-        <Card title="Administrator Access Required" sub="Server-enforced access control">
-          <Banner tone="bad">{forbidden || "You do not have permission to view the Admin Dashboard."}</Banner>
-        </Card>
-      </main>
-    );
-  }
-
-  if (!twoFaStatus.totpEnabled || !twoFaStatus.sessionValid || !sessionToken) {
-    return (
-      <Admin2faGate
-        status={twoFaStatus}
-        onUnlocked={(sTok, rTok) => {
-          setSessionToken(sTok);
-          if (rTok) setReauthToken(rTok);
-          setTwoFaStatus((prev) => (prev ? { ...prev, totpEnabled: true, sessionValid: true } : prev));
+      <AdminLoginScreen
+        initialChallenge={challenge}
+        onSignedIn={(signedIn) => {
+          setAdmin(signedIn);
+          setReauthActive(true);
+          setChallenge({ pending: false });
         }}
       />
     );
   }
 
-  const role = twoFaStatus.role;
-  const canManageProviders = role === "super_admin" || role === "admin";
+  const canManageProviders = admin.role === "super_admin" || admin.role === "admin";
+  const navItems: { id: AdminSection; label: string; icon: React.ComponentType<{ size?: number; className?: string }> }[] = [
+    { id: "overview", label: "Overview", icon: BarChart3 },
+    { id: "users", label: "Users", icon: Users },
+    ...(canManageProviders ? [{ id: "providers" as const, label: "Providers & Models", icon: Cpu }] : []),
+    { id: "health", label: "System Health", icon: HeartPulse },
+    { id: "announcements", label: "Announcements", icon: Megaphone },
+    { id: "audit", label: "Audit Log", icon: Activity },
+    { id: "advanced", label: "Advanced", icon: Sliders },
+  ];
+
+  const activeLabel = navItems.find((item) => item.id === section)?.label ?? "Overview";
 
   return (
-    <main className="page">
-      <div className="page-head">
-        <div>
-          <div className="page-eyebrow">Platform Administration</div>
-          <h1 className="page-title">Admin Dashboard</h1>
-          <p className="page-sub">
-            Manage platform users, live telemetry, encrypted AI provider keys, model policies, and immutable audit logs.
-          </p>
+    <div className="app">
+      {mobileNavOpen && (
+        <div className="sidebar-backdrop" onClick={() => setMobileNavOpen(false)} />
+      )}
+
+      <aside className={`sidebar ${mobileNavOpen ? "open" : ""}`}>
+        <div className="brand" style={{ justifyContent: "space-between" }}>
+          <BrandLockup tone="dark" subtitle="Admin Console" />
+          <button
+            type="button"
+            className="btn btn-ghost btn-sm mobile-close"
+            onClick={() => setMobileNavOpen(false)}
+            aria-label="Close navigation"
+          >
+            <X size={16} />
+          </button>
         </div>
 
-        <div className="row-end" style={{ gap: 8, flexWrap: "wrap" }}>
+        <nav className="nav" aria-label="Admin navigation">
+          <div className="nav-section">
+            <div className="nav-label">Operations</div>
+            {navItems.map((item) => {
+              const Icon = item.icon;
+              const isActive = section === item.id;
+              return (
+                <button
+                  key={item.id}
+                  type="button"
+                  className={`nav-link ${isActive ? "active" : ""}`}
+                  style={{ width: "100%", textAlign: "left", background: isActive ? "rgba(255,255,255,0.08)" : "transparent", border: "none", cursor: "pointer" }}
+                  onClick={() => {
+                    setSection(item.id);
+                    setMobileNavOpen(false);
+                  }}
+                >
+                  <Icon className="nav-icon" size={16} />
+                  <span>{item.label}</span>
+                </button>
+              );
+            })}
+          </div>
+        </nav>
+
+        <div style={{ padding: "12px 14px", borderTop: "1px solid rgba(255,255,255,0.08)" }} className="stack">
+          <div className="tiny" style={{ color: "#d1d5db", wordBreak: "break-all" }}>
+            {admin.email}
+          </div>
+          <div className="row" style={{ gap: 6, justifyContent: "space-between" }}>
+            <Badge tone="info">{admin.role.replace("_", " ").toUpperCase()}</Badge>
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm"
+              style={{ color: "#e5e7eb" }}
+              onClick={() => void handleLogout()}
+            >
+              <LogOut size={13} /> Sign out
+            </button>
+          </div>
+        </div>
+      </aside>
+
+      <div className="main">
+        <header className="topbar">
+          <button
+            type="button"
+            className="btn btn-ghost btn-sm menu-btn"
+            onClick={() => setMobileNavOpen(true)}
+            aria-label="Open menu"
+          >
+            <Menu size={18} />
+          </button>
+          <span className="topbar-title">{activeLabel}</span>
+          <div className="topbar-spacer" />
+
           <Badge tone="ok">
             <Shield size={11} style={{ marginRight: 4 }} />
-            Role: {role.replace("_", " ").toUpperCase()}
+            {admin.role.replace("_", " ").toUpperCase()}
           </Badge>
           <Badge tone="info">
             <Lock size={11} style={{ marginRight: 4 }} />
-            2FA Verified
+            2FA Active
           </Badge>
-        </div>
-      </div>
 
-      {/* Tab Navigation */}
-      <div className="row" style={{ gap: 8, flexWrap: "wrap", marginBottom: 18 }}>
-        <button
-          type="button"
-          className={`btn btn-sm ${activeTab === "overview" ? "btn-primary" : ""}`}
-          onClick={() => setActiveTab("overview")}
-        >
-          <BarChart3 size={13} /> Overview &amp; Health
-        </button>
-        <button
-          type="button"
-          className={`btn btn-sm ${activeTab === "users" ? "btn-primary" : ""}`}
-          onClick={() => setActiveTab("users")}
-        >
-          <Users size={13} /> Users
-        </button>
-        {canManageProviders && (
           <button
             type="button"
-            className={`btn btn-sm ${activeTab === "providers" ? "btn-primary" : ""}`}
-            onClick={() => setActiveTab("providers")}
+            className="btn btn-ghost btn-sm"
+            onClick={toggleTheme}
+            title={`Switch to ${theme === "dark" ? "light" : "dark"} theme`}
           >
-            <Cpu size={13} /> Providers &amp; Models
+            {theme === "dark" ? <Sun size={14} /> : <Moon size={14} />}
           </button>
-        )}
-        <button
-          type="button"
-          className={`btn btn-sm ${activeTab === "global_knowledge" ? "btn-primary" : ""}`}
-          onClick={() => setActiveTab("global_knowledge")}
-        >
-          <Brain size={13} /> Global Brain
-        </button>
-        <button
-          type="button"
-          className={`btn btn-sm ${activeTab === "audit" ? "btn-primary" : ""}`}
-          onClick={() => setActiveTab("audit")}
-        >
-          <Activity size={13} /> Audit Log &amp; Notices
-        </button>
-        <button
-          type="button"
-          className={`btn btn-sm ${activeTab === "system_check" ? "btn-primary" : ""}`}
-          onClick={() => setActiveTab("system_check")}
-        >
-          <CheckSquare size={13} /> System Check
-        </button>
-      </div>
+        </header>
 
-      {activeTab === "overview" && (
-        <AdminOverviewTab role={role} sessionToken={sessionToken} />
-      )}
-      {activeTab === "users" && (
-        <AdminUsersTab
-          role={role}
-          sessionToken={sessionToken}
-          reauthToken={reauthToken}
-          onNeedReauth={handleNeedReauth}
-        />
-      )}
-      {activeTab === "providers" && canManageProviders && (
-        <AdminProvidersTab
-          role={role}
-          sessionToken={sessionToken}
-          reauthToken={reauthToken}
-          onNeedReauth={handleNeedReauth}
-        />
-      )}
-      {activeTab === "global_knowledge" && (
-        <AdminGlobalKnowledgeTab
-          role={role}
-          sessionToken={sessionToken}
-          reauthToken={reauthToken}
-          onNeedReauth={handleNeedReauth}
-        />
-      )}
-      {activeTab === "audit" && (
-        <AdminAuditAndNoticesTab role={role} sessionToken={sessionToken} />
-      )}
-      {activeTab === "system_check" && (
-        <AdminSystemCheckTab role={role} sessionToken={sessionToken} />
-      )}
+        <main className="page">
+          <div className="page-head">
+            <div>
+              <div className="page-eyebrow">Knowrevo Platform Administration</div>
+              <h1 className="page-title">{activeLabel}</h1>
+            </div>
+          </div>
+
+          {section === "overview" && <AdminOverviewTab role={admin.role} sessionToken="cookie" />}
+          {section === "users" && (
+            <AdminUsersTab
+              role={admin.role}
+              sessionToken="cookie"
+              reauthToken={reauthActive ? "cookie" : null}
+              onNeedReauth={handleNeedReauth}
+            />
+          )}
+          {section === "providers" && canManageProviders && (
+            <AdminProvidersTab
+              role={admin.role}
+              sessionToken="cookie"
+              reauthToken={reauthActive ? "cookie" : null}
+              onNeedReauth={handleNeedReauth}
+            />
+          )}
+          {section === "health" && <AdminHealthTab role={admin.role} />}
+          {section === "announcements" && (
+            <AdminAuditAndNoticesTab role={admin.role} sessionToken="cookie" mode="announcements" />
+          )}
+          {section === "audit" && (
+            <AdminAuditAndNoticesTab role={admin.role} sessionToken="cookie" mode="audit" />
+          )}
+          {section === "advanced" && (
+            <AdminAdvancedTab
+              role={admin.role}
+              currentAdminId={admin.id}
+              sessionToken="cookie"
+              reauthToken={reauthActive ? "cookie" : null}
+              onNeedReauth={handleNeedReauth}
+            />
+          )}
+        </main>
+      </div>
 
       <AdminReauthModal
         open={reauthModal.open}
         actionLabel={reauthModal.label}
-        sessionToken={sessionToken}
+        sessionToken="cookie"
         onClose={() => setReauthModal({ open: false, label: "", pendingFn: null })}
         onVerified={async (freshToken) => {
-          setReauthToken(freshToken);
+          setReauthActive(true);
           const fn = reauthModal.pendingFn;
           setReauthModal({ open: false, label: "", pendingFn: null });
           if (fn) await fn(freshToken);
         }}
       />
-    </main>
+    </div>
   );
 }

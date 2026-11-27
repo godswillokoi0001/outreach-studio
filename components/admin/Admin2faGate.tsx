@@ -149,13 +149,12 @@ export function Admin2faGate({
 export function AdminReauthModal({
   open,
   actionLabel,
-  sessionToken,
   onClose,
   onVerified,
 }: {
   open: boolean;
   actionLabel: string;
-  sessionToken: string | null;
+  sessionToken?: string | null;
   onClose: () => void;
   onVerified: (reauthToken: string) => void;
 }) {
@@ -172,13 +171,12 @@ export function AdminReauthModal({
     setBusy(true);
     setError(null);
     try {
-      const res = await adminFetch<{ ok: boolean; reauthToken: string }>("/api/admin/2fa", {
+      await adminFetch<{ ok: boolean }>("/api/admin/auth/reauth", {
         method: "POST",
-        sessionToken,
-        body: { action: "reauth", code: code.trim() },
+        body: { code: code.trim() },
       });
       setCode("");
-      onVerified(res.reauthToken);
+      onVerified("cookie");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Re-authentication failed.");
     } finally {

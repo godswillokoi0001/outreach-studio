@@ -12,7 +12,6 @@ import {
   Trash2,
   UserCheck,
 } from "lucide-react";
-import { getAccessToken } from "@/lib/auth";
 import type { AdminRole, AdminUserSummary } from "@/lib/platform/types";
 import { Badge, Banner, Card, Empty, Field, Modal, Pager } from "../ui";
 import { BrandLoader } from "../BrandLoader";
@@ -188,12 +187,9 @@ export function AdminUsersTab({
 
   const handleExportUser = async (ownerId: string, email: string) => {
     try {
-      const accessToken = await getAccessToken();
       const res = await fetch(`/api/admin/users/${encodeURIComponent(ownerId)}/export`, {
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          "X-Admin-2FA": sessionToken,
-        },
+        credentials: "same-origin",
+        cache: "no-store",
       });
       if (!res.ok) throw new Error("Export failed.");
       const data = await res.json();
