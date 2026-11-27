@@ -67,7 +67,10 @@ export async function verifyRequest(req: NextRequest): Promise<AuthUser> {
     (typeof metadata.full_name === "string" && metadata.full_name) ||
     (typeof metadata.name === "string" && metadata.name) ||
     email;
-  const avatarUrl = typeof metadata.avatar_url === "string" ? metadata.avatar_url : null;
+  const avatarUrl =
+    (typeof metadata.avatar_url === "string" && metadata.avatar_url.trim()) ||
+    (typeof metadata.picture === "string" && metadata.picture.trim()) ||
+    null;
 
   const ownerId = await resolveOwnerId(data.user.id, email);
 

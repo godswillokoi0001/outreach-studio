@@ -3,12 +3,15 @@
 import { BrandLoader } from "@/components/BrandLoader";
 
 import Link from "next/link";
-import { useEffect, useState, useSyncExternalStore } from "react";
-import { BookOpen, RotateCcw, Trash2 } from "lucide-react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { BookOpen, Camera, KeyRound, RotateCcw, Trash2 } from "lucide-react";
 import { useAuth } from "@/components/AuthProvider";
+import { PasswordStrengthInput } from "@/components/PasswordStrengthInput";
+import { UserAvatar } from "@/components/UserAvatar";
 import { Banner, Card, Empty, Field, Stat, Toggle } from "@/components/ui";
 import { useConfirm, useToast } from "@/components/Feedback";
-import { errorMessage } from "@/lib/client";
+import { authedPost, errorMessage } from "@/lib/client";
+import { evaluatePasswordStrength } from "@/lib/password-policy";
 import {
   addSuppression,
   deleteAllUserProfileAndKnowledgeData,
@@ -53,9 +56,16 @@ function readDeveloperMode(): boolean {
 }
 
 export default function SettingsPage() {
-  const { user } = useAuth();
+  const { user, patchUserLocal } = useAuth();
   const confirmDialog = useConfirm();
   const toast = useToast();
+  const avatarFileRef = useRef<HTMLInputElement | null>(null);
+  const [avatarBusy, setAvatarBusy] = useState(false);
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [passwordBusy, setPasswordBusy] = useState(false);
+  const [passwordError, setPasswordError] = useState<string | null>(null);
   const developerMode = useSyncExternalStore(subscribeDeveloperMode, readDeveloperMode, () => false);
   const [form, setForm] = useState<Settings>(DEFAULT_SETTINGS);
   const [suppressions, setSuppressions] = useState<Suppression[]>([]);
@@ -223,6 +233,85 @@ export default function SettingsPage() {
     }
   };
 
+  const handleAvatarUpload = async (file: File | null) => {
+    if (!file) return;
+    if (!file.type.startsWith("image/")) {
+      toast.error("Invalid image", "Please choose a PNG, JPG, or WebP file.");
+      return;
+    }
+    if (file.size > 500_000) {
+      toast.error("Image too large", "Please choose an image under 500 KB.");
+      return;
+    }
+    setAvatarBusy(true);
+    try {
+      const dataUrl = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result ?? ""));
+        reader.onerror = () => reject(new Error("Could not read file."));
+        reader.readAsDataURL(file);
+      });
+      const res = await authedPost<{ photoURL: string | null; avatarSource: "google" | "custom" }>(
+        "/api/account/avatar",
+        { action: "upload", dataUrl },
+      );
+      patchUserLocal({ photoURL: res.photoURL, avatarSource: res.avatarSource });
+      toast.success("Profile picture updated");
+    } catch (err) {
+      toast.error("Upload failed", errorMessage(err));
+    } finally {
+      setAvatarBusy(false);
+    }
+  };
+
+  const handleResetAvatarToGoogle = async () => {
+    setAvatarBusy(true);
+    try {
+      const res = await authedPost<{ photoURL: string | null; avatarSource: "google" | "custom" }>(
+        "/api/account/avatar",
+        { action: "reset_google" },
+      );
+      patchUserLocal({ photoURL: res.photoURL, avatarSource: res.avatarSource });
+      toast.success("Restored Google profile picture");
+    } catch (err) {
+      toast.error("Reset failed", errorMessage(err));
+    } finally {
+      setAvatarBusy(false);
+    }
+  };
+
+  const handleSavePassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const assessment = evaluatePasswordStrength(newPassword);
+    if (!assessment.valid) {
+      setPasswordError(assessment.error || "Password requirements not met.");
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      setPasswordError("Passwords do not match.");
+      return;
+    }
+    setPasswordBusy(true);
+    setPasswordError(null);
+    try {
+      await authedPost("/api/account/password", {
+        action: user.hasPassword ? "change" : "create_initial",
+        currentPassword: user.hasPassword ? currentPassword : undefined,
+        newPassword,
+        confirmPassword,
+      });
+      setCurrentPassword("");
+      setNewPassword("");
+      setConfirmPassword("");
+      patchUserLocal({ hasPassword: true });
+      toast.success("Password updated", "You can sign in anytime with email and password or Google.");
+    } catch (err) {
+      setPasswordError(errorMessage(err));
+    } finally {
+      setPasswordBusy(false);
+    }
+  };
+
   return (
     <main className="page">
       <div className="page-head">
@@ -237,6 +326,92 @@ export default function SettingsPage() {
       <div className="stack">
         {failure && <Banner tone="bad">{failure}</Banner>}
         {loading && <BrandLoader />}
+
+        <div className="grid grid-2" style={{ gap: 14 }}>
+          <Card title="Profile picture" sub="Shown in header, sidebar, onboarding and chat.">
+            <div className="row" style={{ gap: 14, alignItems: "center", flexWrap: "wrap" }}>
+              <UserAvatar
+                photoURL={user.photoURL}
+                name={user.displayName}
+                email={user.email}
+                size={60}
+              />
+              <div className="stack" style={{ gap: 6, flex: 1 }}>
+                <div className="strong">{user.displayName || user.email}</div>
+                <div className="tiny muted">
+                  Source: {user.avatarSource === "custom" ? "Custom upload" : "Google account"}
+                </div>
+                <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
+                  <input
+                    ref={avatarFileRef}
+                    type="file"
+                    accept="image/png,image/jpeg,image/webp"
+                    style={{ display: "none" }}
+                    onChange={(e) => {
+                      const f = e.target.files?.[0] ?? null;
+                      void handleAvatarUpload(f);
+                      e.target.value = "";
+                    }}
+                  />
+                  <button
+                    type="button"
+                    className="btn btn-sm"
+                    disabled={avatarBusy}
+                    onClick={() => avatarFileRef.current?.click()}
+                  >
+                    <Camera size={13} />
+                    {avatarBusy ? "Saving…" : "Upload picture"}
+                  </button>
+                  {user.googlePhotoURL && user.avatarSource === "custom" && (
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-ghost"
+                      disabled={avatarBusy}
+                      onClick={() => void handleResetAvatarToGoogle()}
+                    >
+                      <RotateCcw size={13} />
+                      Use Google picture
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>
+          </Card>
+
+          <Card
+            title={user.hasPassword ? "Change password" : "Set password"}
+            sub="Sign in with email & password in addition to Google Sign-In."
+          >
+            <form onSubmit={(e) => void handleSavePassword(e)} className="stack" style={{ gap: 10 }}>
+              {passwordError && <Banner tone="bad">{passwordError}</Banner>}
+              {user.hasPassword && (
+                <Field label="Current password">
+                  <input
+                    className="input"
+                    type="password"
+                    autoComplete="current-password"
+                    value={currentPassword}
+                    onChange={(e) => setCurrentPassword(e.target.value)}
+                    placeholder="Enter current password"
+                  />
+                </Field>
+              )}
+              <PasswordStrengthInput
+                password={newPassword}
+                confirmPassword={confirmPassword}
+                onPasswordChange={setNewPassword}
+                onConfirmPasswordChange={setConfirmPassword}
+                passwordLabel={user.hasPassword ? "New password" : "Create password"}
+              />
+              <div>
+                <button type="submit" className="btn btn-primary btn-sm" disabled={passwordBusy}>
+                  <KeyRound size={13} />
+                  {passwordBusy ? "Updating…" : user.hasPassword ? "Change password" : "Set password"}
+                </button>
+              </div>
+            </form>
+          </Card>
+        </div>
 
         <Card title="Sender identity" sub="Used in every email and in the signature.">
           <div className="grid grid-3">

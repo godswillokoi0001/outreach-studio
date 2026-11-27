@@ -1,3 +1,4 @@
+import QRCode from "qrcode";
 import { NextRequest, NextResponse } from "next/server";
 import { buildTotpUri, decryptSecret } from "@/lib/key-vault";
 import { findAdminAccountById } from "@/lib/platform/admin-credentials";
@@ -30,8 +31,8 @@ export async function GET(req: NextRequest) {
         },
         { headers: { "Cache-Control": "private, no-store, max-age=0" } },
       );
-      // Sliding 30-minute idle refresh while active
-      setAdminSessionCookies(res, account);
+      // Sliding 12-hour idle refresh while active
+      setAdminSessionCookies(res, account, { totpVerified: true });
       return res;
     }
   }
@@ -40,11 +41,15 @@ export async function GET(req: NextRequest) {
   if (challenge) {
     const account = await findAdminAccountById(challenge.adminId);
     if (account && account.status === "active") {
-      let setup: { secret: string; otpauthUri: string } | undefined;
+      let setup: { secret: string; otpauthUri: string; qrDataUrl?: string } | undefined;
       if (!account.totpEnabled && account.totpSecretEncrypted) {
         try {
           const secret = decryptSecret(account.totpSecretEncrypted);
-          setup = { secret, otpauthUri: buildTotpUri(secret, account.email, "Knowrevo Admin") };
+          const otpauthUri = buildTotpUri(secret, account.email, "Knowrevo Admin");
+          const qrDataUrl = await QRCode.toDataURL(otpauthUri, { width: 220, margin: 1 }).catch(
+            () => undefined,
+          );
+          setup = { secret, otpauthUri, qrDataUrl };
         } catch {
           setup = undefined;
         }
@@ -54,6 +59,8 @@ export async function GET(req: NextRequest) {
           authenticated: false,
           challengePending: true,
           totpEnabled: account.totpEnabled,
+          role: account.role,
+          email: account.email,
           setup,
         },
         { headers: { "Cache-Control": "private, no-store, max-age=0" } },

@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { handleApiError } from "@/lib/api-helpers";
 import { decryptSecret, verifyTotpCode } from "@/lib/key-vault";
 import { requireAdmin } from "@/lib/platform/admin-auth";
-import { verifyAdminPassword } from "@/lib/platform/admin-credentials";
+import { consumeAdminBackupCode, verifyAdminPassword } from "@/lib/platform/admin-credentials";
 import { setAdminReauthCookie } from "@/lib/platform/admin-session";
 import { appendAdminAuditLog } from "@/lib/platform/store-server";
 
@@ -28,6 +28,9 @@ export async function POST(req: NextRequest) {
       } catch {
         verified = false;
       }
+    } else if (code && ctx.admin.totpEnabled) {
+      method = "backup_code";
+      verified = await consumeAdminBackupCode(ctx.admin, code);
     } else if (password) {
       method = "password";
       verified = verifyAdminPassword(password, ctx.admin.passwordHash);

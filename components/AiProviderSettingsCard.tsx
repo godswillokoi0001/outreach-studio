@@ -7,6 +7,7 @@ import {
   Cpu,
   KeyRound,
   Loader2,
+  RefreshCw,
   ShieldCheck,
   TestTube2,
   Trash2,
@@ -63,6 +64,8 @@ export function AiProviderSettingsCard() {
   const [selectedModelInput, setSelectedModelInput] = useState("");
   const [customModelInput, setCustomModelInput] = useState("");
   const [verifyBanner, setVerifyBanner] = useState<string | null>(null);
+  const [refreshErrorByKey, setRefreshErrorByKey] = useState<Record<string, string>>({});
+  const [customKeyModelByKey, setCustomKeyModelByKey] = useState<Record<string, string>>({});
 
   // Live Proof Receipt from "Test Active Model"
   const [activeProof, setActiveProof] = useState<{
@@ -118,15 +121,41 @@ export function AiProviderSettingsCard() {
       const res = await authedPost<UserGatewayStatePayload>("/api/account/ai-provider", payload);
       setState(res);
       setActiveProof(null);
+      if (typeof payload.keyId === "string") {
+        setRefreshErrorByKey((prev) => {
+          const next = { ...prev };
+          delete next[payload.keyId as string];
+          return next;
+        });
+      }
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(new Event("os:ai-provider-updated"));
+      }
       if (successTitle) toast.success(successTitle);
       return res;
     } catch (err) {
       const msg = errorMessage(err);
-      setError(msg);
+      if (payload.action === "refresh_models" && typeof payload.keyId === "string") {
+        setRefreshErrorByKey((prev) => ({ ...prev, [payload.keyId as string]: msg }));
+      } else {
+        setError(msg);
+      }
       toast.error("Update failed", msg);
       return null;
     } finally {
       setBusy(null);
+    }
+  };
+
+  const handleRefreshKeyModels = async (keyId: string, label: string) => {
+    const res = await postAction(
+      { action: "refresh_models", keyId, freeTierOnly },
+      `refresh_${keyId}`,
+    );
+    if (res) {
+      const refreshedKey = res.keys.find((item) => item.id === keyId);
+      const count = refreshedKey?.models.length ?? 0;
+      toast.success(`Loaded ${count} model${count === 1 ? "" : "s"} from ${label}`);
     }
   };
 
@@ -480,10 +509,25 @@ export function AiProviderSettingsCard() {
                         ))}
                       </select>
 
+                      <button
+                        type="button"
+                        className="btn btn-sm"
+                        disabled={busy !== null}
+                        onClick={() => void handleRefreshKeyModels(k.id, k.label || meta.label)}
+                        title={`Load live models from ${meta.label}`}
+                      >
+                        {busy === `refresh_${k.id}` ? (
+                          <Loader2 size={13} className="spin" />
+                        ) : (
+                          <RefreshCw size={13} />
+                        )}
+                        <span>{busy === `refresh_${k.id}` ? "Loading…" : "Refresh models"}</span>
+                      </button>
+
                       {!isSelected && (
                         <button
                           type="button"
-                          className="btn btn-sm"
+                          className="btn btn-sm btn-primary"
                           disabled={busy !== null}
                           onClick={() =>
                             void postAction(
@@ -493,7 +537,7 @@ export function AiProviderSettingsCard() {
                                 model: currentModelForKey,
                               },
                               `activate_${k.id}`,
-                              `Activated ${meta.label}`,
+                              `Activated ${meta.label} / ${currentModelForKey}`,
                             )
                           }
                         >
@@ -512,6 +556,70 @@ export function AiProviderSettingsCard() {
                       </button>
                     </div>
                   </div>
+
+                  {/* Quick custom model override & live provider error/retry */}
+                  <div className="row" style={{ gap: 8, marginTop: 8, alignItems: "center", flexWrap: "wrap" }}>
+                    <input
+                      className="input"
+                      style={{ maxWidth: 260, fontSize: 12, padding: "5px 9px" }}
+                      placeholder="Or type a custom model ID…"
+                      aria-label={`Custom model ID for ${meta.label}`}
+                      value={customKeyModelByKey[k.id] ?? ""}
+                      onChange={(e) =>
+                        setCustomKeyModelByKey((prev) => ({ ...prev, [k.id]: e.target.value }))
+                      }
+                    />
+                    {(customKeyModelByKey[k.id] ?? "").trim() && (
+                      <button
+                        type="button"
+                        className="btn btn-sm"
+                        disabled={busy !== null}
+                        onClick={() => {
+                          const typed = (customKeyModelByKey[k.id] ?? "").trim();
+                          if (!typed) return;
+                          void postAction(
+                            { action: "select_key_and_model", keyId: k.id, model: typed },
+                            `custom_${k.id}`,
+                            `Active model switched to ${typed}`,
+                          ).then((ok) => {
+                            if (ok) {
+                              setCustomKeyModelByKey((prev) => ({ ...prev, [k.id]: "" }));
+                            }
+                          });
+                        }}
+                      >
+                        Use Model ID
+                      </button>
+                    )}
+                    <span className="tiny muted">
+                      {availableModels.length} model{availableModels.length === 1 ? "" : "s"} available
+                    </span>
+                  </div>
+
+                  {refreshErrorByKey[k.id] && (
+                    <div
+                      className="row"
+                      style={{
+                        marginTop: 8,
+                        padding: "6px 10px",
+                        borderRadius: 8,
+                        background: "var(--bad-soft)",
+                        color: "var(--bad)",
+                        justifyContent: "space-between",
+                        gap: 8,
+                      }}
+                    >
+                      <span className="tiny">{refreshErrorByKey[k.id]}</span>
+                      <button
+                        type="button"
+                        className="btn btn-sm"
+                        disabled={busy !== null}
+                        onClick={() => void handleRefreshKeyModels(k.id, k.label || meta.label)}
+                      >
+                        Retry
+                      </button>
+                    </div>
+                  )}
                 </div>
               );
             })}

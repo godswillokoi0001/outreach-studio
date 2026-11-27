@@ -46,6 +46,8 @@ interface AuthContextValue {
   /** Clears the stored Google access immediately, without a page reload. */
   disconnectWorkspace: () => Promise<void>;
   refreshWorkspace: () => Promise<void>;
+  refreshUser: () => Promise<AppUser | null>;
+  patchUserLocal: (patch: Partial<AppUser>) => void;
   signOut: () => Promise<void>;
 }
 
@@ -113,7 +115,10 @@ function classifyWorkspaceError(err: unknown): WorkspaceIssue {
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const pathname = usePathname();
-  const isPublicLegalPage = pathname === "/privacy-policy" || pathname === "/terms";
+  const isPublicLegalPage =
+    pathname === "/privacy-policy" ||
+    pathname === "/terms" ||
+    pathname === "/auth/reset-password";
   const isAdminRoute = pathname === "/admin" || pathname.startsWith("/admin/");
   // A mistyped address is not a sign-in prompt: let the 404 page render. The
   // marketing landing replaces every other signed-out route.
@@ -295,6 +300,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         disconnectWorkspace,
         refreshWorkspace: async () => {
           await hydrateWorkspace();
+        },
+        refreshUser: async () => {
+          const next = await fetchCurrentUser();
+          if (next) setUser(next);
+          return next;
+        },
+        patchUserLocal: (patch: Partial<AppUser>) => {
+          setUser((prev) => (prev ? { ...prev, ...patch } : prev));
         },
         signOut,
       }}

@@ -301,6 +301,7 @@ export async function createOrReuseBackgroundJob(input: {
   jobType: BackgroundJobType;
   steps: BackgroundJobStep[];
   payload?: Record<string, unknown>;
+  force?: boolean;
   forceRestartIfFailed?: boolean;
   staleAfterMs?: number;
 }): Promise<{ job: BackgroundJobRecord; reused: boolean }> {
@@ -310,11 +311,14 @@ export async function createOrReuseBackgroundJob(input: {
 
   if (active) {
     const ageMs = Date.now() - new Date(active.updatedAt).getTime();
-    if (ageMs < staleMs) {
+    if (!input.force && ageMs < staleMs) {
       return { job: active, reused: true };
     }
-    // Mark stale zombie job failed cleanly before starting a fresh one
-    await failBackgroundJob(input.ownerId, active.id, "Previous job timed out before finishing.");
+    await failBackgroundJob(
+      input.ownerId,
+      active.id,
+      input.force ? "Restarted by user request." : "Previous job timed out before finishing.",
+    );
   }
 
   const nowIso = new Date().toISOString();

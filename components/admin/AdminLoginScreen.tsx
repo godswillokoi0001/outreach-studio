@@ -6,6 +6,7 @@ import { BrandLoader } from "@/components/BrandLoader";
 import { BrandLockup } from "@/components/BrandMark";
 import { Banner, Card, Field } from "@/components/ui";
 import type { AdminRole } from "@/lib/platform/types";
+import { Admin2faGate, type TwoFaStatusPayload } from "./Admin2faGate";
 
 export interface AuthenticatedAdminSummary {
   id: string;
@@ -16,12 +17,15 @@ export interface AuthenticatedAdminSummary {
 }
 
 export function AdminLoginScreen({
+  initialChallenge,
   onSignedIn,
 }: {
   initialChallenge?: {
     pending: boolean;
     totpEnabled?: boolean;
-    setup?: { secret: string; otpauthUri: string };
+    role?: AdminRole;
+    email?: string;
+    setup?: { secret: string; otpauthUri: string; qrDataUrl?: string };
   };
   onSignedIn: (admin: AuthenticatedAdminSummary) => void;
 }) {
@@ -29,6 +33,16 @@ export function AdminLoginScreen({
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [twoFaChallenge, setTwoFaChallenge] = useState<TwoFaStatusPayload | null>(() =>
+    initialChallenge?.pending
+      ? {
+          role: initialChallenge.role ?? "admin",
+          email: initialChallenge.email,
+          totpEnabled: Boolean(initialChallenge.totpEnabled),
+          setup: initialChallenge.setup,
+        }
+      : null,
+  );
 
   const submitCredentials = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -47,21 +61,55 @@ export function AdminLoginScreen({
       });
       const data = (await res.json().catch(() => ({}))) as {
         ok?: boolean;
+        requires2fa?: boolean;
+        totpEnabled?: boolean;
+        role?: AdminRole;
+        email?: string;
+        setup?: { secret: string; otpauthUri: string; qrDataUrl?: string };
         admin?: AuthenticatedAdminSummary;
         error?: string;
       };
-      if (!res.ok || !data.ok || !data.admin) {
+      if (!res.ok || !data.ok) {
         setError(data.error || "Invalid credentials.");
         return;
       }
+
       setPassword("");
-      onSignedIn({ ...data.admin, reauthActive: true });
+      if (data.requires2fa) {
+        setTwoFaChallenge({
+          role: data.role ?? "admin",
+          email: data.email ?? email.trim(),
+          totpEnabled: Boolean(data.totpEnabled),
+          setup: data.setup,
+        });
+        return;
+      }
+
+      if (data.admin) {
+        onSignedIn({ ...data.admin, reauthActive: true });
+      }
     } catch {
       setError("Unable to verify credentials right now.");
     } finally {
       setBusy(false);
     }
   };
+
+  if (twoFaChallenge) {
+    return (
+      <Admin2faGate
+        status={twoFaChallenge}
+        onUnlocked={onSignedIn}
+        onResetToPassword={() => {
+          void fetch("/api/admin/auth/logout", {
+            method: "POST",
+            credentials: "same-origin",
+          }).catch(() => {});
+          setTwoFaChallenge(null);
+        }}
+      />
+    );
+  }
 
   return (
     <div
@@ -80,7 +128,7 @@ export function AdminLoginScreen({
 
         <Card
           title="Administrator Sign In"
-          sub="Sign in with your dedicated administrator email and password."
+          sub="Sign in with your dedicated administrator email and password, then verify 2FA."
         >
           {error && (
             <div style={{ marginBottom: 14 }}>
@@ -115,7 +163,7 @@ export function AdminLoginScreen({
 
             <button type="submit" className="btn btn-primary btn-block" disabled={busy}>
               {busy ? <BrandLoader size={16} /> : <Lock size={14} />}
-              {busy ? "Verifying…" : "Sign In"}
+              {busy ? "Verifying…" : "Continue to 2FA Verification"}
             </button>
           </form>
         </Card>

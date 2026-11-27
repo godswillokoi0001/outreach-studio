@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { handleApiError } from "@/lib/api-helpers";
 import { getUserGovernance, listActiveAnnouncementsForUser } from "@/lib/platform/store-server";
 import { verifyRequest } from "@/lib/server-auth";
+import { getUserAvatarStateServer } from "@/lib/server-avatar";
+import { userHasPasswordServer } from "@/lib/server-password";
 import { supabaseServer } from "@/lib/supabase-server";
 
 export const dynamic = "force-dynamic";
@@ -38,10 +40,14 @@ export async function GET(req: NextRequest) {
   try {
     const user = await verifyRequest(req);
     await ensureMasterKnowledge(user.ownerId);
-    const meta = await getUserGovernance(user.ownerId, user.email, {
-      name: user.name,
-      avatarUrl: user.avatarUrl,
-    });
+    const [meta, hasPassword, avatarState] = await Promise.all([
+      getUserGovernance(user.ownerId, user.email, {
+        name: user.name,
+        avatarUrl: user.avatarUrl,
+      }),
+      userHasPasswordServer(user.ownerId),
+      getUserAvatarStateServer(user.ownerId, user.avatarUrl),
+    ]);
 
     let onboardingStatus: "not_started" | "in_progress" | "completed" = "not_started";
     let onboardingStep = 1;
@@ -98,7 +104,10 @@ export async function GET(req: NextRequest) {
           ownerId: user.ownerId,
           email: user.email,
           displayName: user.name,
-          photoURL: user.avatarUrl,
+          photoURL: avatarState.effectivePhotoUrl,
+          googlePhotoURL: avatarState.googleAvatarUrl,
+          avatarSource: avatarState.avatarSource,
+          hasPassword,
           emailVerified: true,
           status: meta.status,
           onboardingStatus,

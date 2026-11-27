@@ -7,7 +7,7 @@ export const ADMIN_SESSION_COOKIE = "os_admin_session";
 export const ADMIN_REAUTH_COOKIE = "os_admin_reauth";
 
 export const ADMIN_CHALLENGE_TTL_SECONDS = 10 * 60; // 10 minutes to finish TOTP
-export const ADMIN_SESSION_TTL_SECONDS = 30 * 24 * 60 * 60; // 30 days sliding session
+export const ADMIN_SESSION_TTL_SECONDS = 12 * 60 * 60; // 12 hours session timeout
 export const ADMIN_REAUTH_TTL_SECONDS = 5 * 60; // 5 minutes for sensitive actions
 
 export interface AdminCookiePayload {
@@ -15,6 +15,7 @@ export interface AdminCookiePayload {
   adminId: string;
   email: string;
   role: AdminRole;
+  totpVerified?: boolean;
   iat: number;
   exp: number;
 }
@@ -33,6 +34,7 @@ export function signAdminCookieToken(input: {
   adminId: string;
   email: string;
   role: AdminRole;
+  totpVerified?: boolean;
   ttlSeconds: number;
 }): { token: string; exp: number } {
   const now = Math.floor(Date.now() / 1000);
@@ -42,6 +44,7 @@ export function signAdminCookieToken(input: {
     adminId: input.adminId,
     email: input.email.trim().toLowerCase(),
     role: input.role,
+    ...(input.kind === "session" ? { totpVerified: Boolean(input.totpVerified) } : {}),
     iat: now,
     exp,
   };
@@ -72,6 +75,9 @@ export function verifyAdminCookieToken(
       !parsed.role ||
       typeof parsed.exp !== "number"
     ) {
+      return null;
+    }
+    if (expectedKind === "session" && parsed.totpVerified !== true) {
       return null;
     }
     if (parsed.exp <= Math.floor(Date.now() / 1000)) {
@@ -110,13 +116,14 @@ export function setAdminChallengeCookie(
 export function setAdminSessionCookies(
   res: NextResponse,
   account: { id: string; email: string; role: AdminRole },
-  options?: { includeReauth?: boolean },
+  options?: { includeReauth?: boolean; totpVerified?: boolean },
 ): { sessionExpiresAt: string } {
   const session = signAdminCookieToken({
     kind: "session",
     adminId: account.id,
     email: account.email,
     role: account.role,
+    totpVerified: options?.totpVerified ?? true,
     ttlSeconds: ADMIN_SESSION_TTL_SECONDS,
   });
   res.cookies.set(ADMIN_SESSION_COOKIE, session.token, cookieBaseOptions(ADMIN_SESSION_TTL_SECONDS));

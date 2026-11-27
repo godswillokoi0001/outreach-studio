@@ -5,6 +5,7 @@ import { handleApiError } from "@/lib/api-helpers";
 import { validateApiKeyInput } from "@/lib/key-vault";
 import { LLMGateway } from "@/lib/llm/gateway";
 import {
+  decryptStoredGatewayKey,
   deleteUserAiKey,
   encryptGatewayKey,
   getUserAiSettings,
@@ -64,6 +65,7 @@ export async function POST(req: NextRequest) {
         | "set_mode"
         | "save_key"
         | "select_key_and_model"
+        | "refresh_models"
         | "set_fallback"
         | "test_active";
       mode?: "system_auto" | "byok";
@@ -75,6 +77,7 @@ export async function POST(req: NextRequest) {
       baseUrl?: string;
       model?: string;
       models?: GatewayModelConfig[];
+      freeTierOnly?: boolean;
       fallbackToSystemAuto?: boolean;
     };
 
@@ -162,10 +165,19 @@ export async function POST(req: NextRequest) {
       const models: GatewayModelConfig[] =
         Array.isArray(body.models) && body.models.length > 0
           ? body.models.slice(0, 100)
-          : meta.defaultModels;
+          : [...meta.defaultModels];
 
       const selectedModel =
         (body.model ?? "").trim() || models[0]?.id || meta.defaultModels[0]?.id || "auto";
+      if (selectedModel && !models.some((m) => m.id === selectedModel)) {
+        models.unshift({
+          id: selectedModel,
+          displayName: selectedModel,
+          enabled: true,
+          seats: ["smart", "balanced", "fast"],
+          capabilities: { json: true, tools: true, vision: false, reasoning: true },
+        });
+      }
 
       const record: UserAiKeyRecord = {
         id: keyId,
@@ -204,7 +216,29 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ error: "Saved API key not found." }, { status: 404 });
       }
       const chosenModel =
-        (body.model ?? "").trim() || chosen.models[0]?.id || getProviderMeta(chosen.provider).defaultModels[0]?.id || "";
+        (body.model ?? "").trim() ||
+        chosen.models[0]?.id ||
+        getProviderMeta(chosen.provider).defaultModels[0]?.id ||
+        "";
+      // Ensure custom/newly entered model IDs are preserved in the key's model list so
+      // reloads and the UI selector keep showing the exact selected model.
+      if (chosenModel && !chosen.models.some((m) => m.id === chosenModel)) {
+        const updatedModels: GatewayModelConfig[] = [
+          {
+            id: chosenModel,
+            displayName: chosenModel,
+            enabled: true,
+            seats: ["smart", "balanced", "fast"],
+            capabilities: { json: true, tools: true, vision: false, reasoning: true },
+          },
+          ...chosen.models,
+        ];
+        await saveUserAiKey(user.ownerId, {
+          ...chosen,
+          models: updatedModels.slice(0, 120),
+          lastError: null,
+        });
+      }
       await saveUserAiSettings(user.ownerId, {
         mode: "byok",
         activeKeyId: chosen.id,
@@ -214,6 +248,74 @@ export async function POST(req: NextRequest) {
       return NextResponse.json(await buildPublicUserState(user.ownerId), {
         headers: { "Cache-Control": "private, no-store, max-age=0" },
       });
+    }
+
+    if (body.action === "refresh_models") {
+      const keys = await listUserAiKeys(user.ownerId);
+      const chosen =
+        (body.keyId ? keys.find((k) => k.id === body.keyId) : undefined) ?? keys[0];
+      if (!chosen) {
+        return NextResponse.json({ error: "Saved API key not found." }, { status: 404 });
+      }
+      try {
+        const apiKey = decryptStoredGatewayKey(chosen.encryptedKey);
+        const verified = await LLMGateway.verifyAndFetchModels({
+          provider: chosen.provider,
+          apiKey,
+          accountId: chosen.accountId ?? undefined,
+          baseUrl: chosen.baseUrl ?? undefined,
+          freeTierOnly: body.freeTierOnly,
+        });
+        const meta = getProviderMeta(chosen.provider);
+        const refreshedModels: GatewayModelConfig[] =
+          verified.models.length > 0
+            ? verified.models.map((m) => ({
+                id: m.id,
+                displayName: m.displayName || m.id,
+                enabled: true,
+                seats: m.seats ?? ["smart", "balanced", "fast"],
+                capabilities: m.capabilities ?? { json: true, tools: true, vision: false, reasoning: true },
+                isFreeTier: m.isFreeTier,
+              }))
+            : meta.defaultModels;
+
+        const now = new Date().toISOString();
+        const curSettings = await getUserAiSettings(user.ownerId);
+        const curModel =
+          curSettings.activeKeyId === chosen.id ? (curSettings.activeModel ?? "").trim() : "";
+        if (curModel && !refreshedModels.some((m) => m.id === curModel)) {
+          refreshedModels.unshift({
+            id: curModel,
+            displayName: curModel,
+            enabled: true,
+            seats: ["smart", "balanced", "fast"],
+            capabilities: { json: true, tools: true, vision: false, reasoning: true },
+          });
+        }
+
+        await saveUserAiKey(user.ownerId, {
+          ...chosen,
+          models: refreshedModels.slice(0, 120),
+          lastVerifiedAt: now,
+          lastError: null,
+        });
+
+        const payload = await buildPublicUserState(user.ownerId);
+        return NextResponse.json(
+          { ...payload, refreshedCount: refreshedModels.length, warning: verified.warning ?? null },
+          { headers: { "Cache-Control": "private, no-store, max-age=0" } },
+        );
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "Could not load models from provider.";
+        await saveUserAiKey(user.ownerId, {
+          ...chosen,
+          lastError: message.slice(0, 300),
+        });
+        return NextResponse.json(
+          { error: message },
+          { status: 502, headers: { "Cache-Control": "private, no-store, max-age=0" } },
+        );
+      }
     }
 
     if (body.action === "set_fallback") {

@@ -119,6 +119,7 @@ export function useGrowthAdvisor(
             analyticsInsight: activeInsight,
             fingerprint: activeFp,
             model: settings.model,
+            force: Boolean(opts?.force),
           },
         );
 
@@ -203,10 +204,14 @@ export function useGrowthAdvisor(
   }, [uid]);
 
   // Poll active persistent Growth Advisor job until completion or failure
+  const isJobActive = Boolean(
+    researchJob && (researchJob.status === "queued" || researchJob.status === "running"),
+  );
+
   useEffect(() => {
-    if (!researchJob || (researchJob.status !== "queued" && researchJob.status !== "running")) return;
+    if (!isJobActive) return;
     let cancelled = false;
-    const timer = window.setInterval(() => {
+    const poll = () => {
       void authedGet<{ job: BackgroundJobRecord | null }>("/api/ai/growth-advisor/jobs")
         .then(async (res) => {
           if (cancelled || !res.job) return;
@@ -218,21 +223,24 @@ export function useGrowthAdvisor(
               setReport(rep);
               await saveGrowthAdvisorReport(uid, rep);
             }
+            window.dispatchEvent(new CustomEvent(BACKGROUND_JOB_EVENT));
           } else if (res.job.status === "failed") {
             setResearching(false);
             setError(res.job.errorMessage || "Research job failed.");
+            window.dispatchEvent(new CustomEvent(BACKGROUND_JOB_EVENT));
           }
         })
         .catch(() => {
           /* continue polling quietly */
         });
-    }, 1800);
+    };
+    const timer = window.setInterval(poll, 1800);
 
     return () => {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [researchJob, uid]);
+  }, [isJobActive, uid]);
 
   // Automatic background refresh when profile/data changes or report expires
   useEffect(() => {

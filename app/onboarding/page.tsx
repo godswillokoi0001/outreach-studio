@@ -24,10 +24,13 @@ import {
 import { useAuth } from "@/components/AuthProvider";
 import { BrandLoader } from "@/components/BrandLoader";
 import { ImproveAnswerControl } from "@/components/ImproveAnswerControl";
+import { PasswordStrengthInput } from "@/components/PasswordStrengthInput";
+import { UserAvatar } from "@/components/UserAvatar";
 import { Badge, Banner, Card, Field } from "@/components/ui";
 import { useToast } from "@/components/Feedback";
 import { authedGet, authedPost, authedPut, authedUpload, errorMessage } from "@/lib/client";
 import { getAccessToken } from "@/lib/auth";
+import { evaluatePasswordStrength } from "@/lib/password-policy";
 import type { BackgroundJobRecord } from "@/lib/background-jobs";
 import { formatApproxEta } from "@/components/BackgroundJobsBar";
 import {
@@ -153,8 +156,15 @@ function toggleArrayItem(arr: string[], item: string): string[] {
 
 export default function OnboardingPage() {
   const router = useRouter();
-  const { user } = useAuth();
+  const { user, patchUserLocal } = useAuth();
   const toast = useToast();
+
+  // Mandatory first screen for new sign-ups without an email-login password yet
+  const [pwPassword, setPwPassword] = useState("");
+  const [pwConfirm, setPwConfirm] = useState("");
+  const [pwBusy, setPwBusy] = useState(false);
+  const [pwError, setPwError] = useState<string | null>(null);
+  const needsPasswordSetup = user.hasPassword === false;
 
   const [loading, setLoading] = useState(true);
   const [step, setStep] = useState(1);
@@ -658,10 +668,105 @@ export default function OnboardingPage() {
     [answers],
   );
 
+  const handleSaveInitialPassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const strength = evaluatePasswordStrength(pwPassword);
+    if (!strength.valid) {
+      setPwError(strength.error || "Please complete all password requirements.");
+      return;
+    }
+    if (pwPassword !== pwConfirm) {
+      setPwError("Passwords do not match.");
+      return;
+    }
+    setPwBusy(true);
+    setPwError(null);
+    try {
+      await authedPost<{ ok: boolean; hasPassword: boolean }>("/api/account/password", {
+        action: "create_initial",
+        newPassword: pwPassword,
+        confirmPassword: pwConfirm,
+      });
+      setPwPassword("");
+      setPwConfirm("");
+      patchUserLocal({ hasPassword: true });
+      toast.success("Password saved", "You can now sign in with Google or email and password.");
+    } catch (err) {
+      setPwError(errorMessage(err));
+    } finally {
+      setPwBusy(false);
+    }
+  };
+
   if (loading) {
     return (
       <main className="page">
         <BrandLoader fullScreen />
+      </main>
+    );
+  }
+
+  if (needsPasswordSetup) {
+    const pwAssessment = evaluatePasswordStrength(pwPassword);
+    const pwCanSubmit = pwAssessment.valid && pwPassword === pwConfirm && !pwBusy;
+    return (
+      <main className="page" style={{ maxWidth: 640, margin: "0 auto" }}>
+        <div className="stack" style={{ gap: 10, marginBottom: 18 }}>
+          <div className="row" style={{ justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+            <div className="row" style={{ gap: 8, alignItems: "center" }}>
+              <Badge tone="info">Step 1 of {TOTAL_STEPS + 1}</Badge>
+              <span className="strong" style={{ fontSize: 14 }}>Create your password</span>
+            </div>
+            <Badge>Required security step</Badge>
+          </div>
+          <div
+            role="progressbar"
+            aria-valuenow={1}
+            aria-valuemin={1}
+            aria-valuemax={TOTAL_STEPS + 1}
+            style={{
+              height: 7,
+              width: "100%",
+              borderRadius: 999,
+              background: "var(--surface-2)",
+              overflow: "hidden",
+              border: "1px solid var(--line-soft)",
+            }}
+          >
+            <div
+              style={{
+                height: "100%",
+                width: `${Math.round((1 / (TOTAL_STEPS + 1)) * 100)}%`,
+                background: "var(--teal-deep, #0f766e)",
+                transition: "width 0.25s ease",
+              }}
+            />
+          </div>
+        </div>
+
+        <Card
+          title="Set a password for your workspace"
+          sub="This lets you sign in with Google OR with your email and password anytime. Encrypted and never visible in plain text."
+        >
+          <form onSubmit={(e) => void handleSaveInitialPassword(e)} className="stack" style={{ gap: 16 }}>
+            {pwError && <Banner tone="bad">{pwError}</Banner>}
+            <PasswordStrengthInput
+              emailReadOnly={user.email}
+              password={pwPassword}
+              confirmPassword={pwConfirm}
+              onPasswordChange={setPwPassword}
+              onConfirmPasswordChange={setPwConfirm}
+              autoFocus
+            />
+            <div className="row" style={{ justifyContent: "flex-end" }}>
+              <button type="submit" className="btn btn-primary" disabled={!pwCanSubmit}>
+                {pwBusy ? <Loader2 size={14} className="spin" /> : null}
+                {pwBusy ? "Securing account…" : "Save password & continue"}
+                {!pwBusy && <ArrowRight size={14} />}
+              </button>
+            </div>
+          </form>
+        </Card>
       </main>
     );
   }
@@ -836,14 +941,12 @@ export default function OnboardingPage() {
                     background: "var(--surface-2)",
                   }}
                 >
-                  {answers.photoUrl ? (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img
-                      src={answers.photoUrl}
-                      alt={answers.fullName || "Google profile"}
-                      style={{ width: 46, height: 46, borderRadius: "50%", objectFit: "cover" }}
-                    />
-                  ) : null}
+                  <UserAvatar
+                    photoURL={answers.photoUrl || user.photoURL}
+                    name={answers.fullName || user.displayName}
+                    email={answers.email || user.email}
+                    size={46}
+                  />
                   <div>
                     <div className="strong" style={{ fontSize: 14.5 }}>
                       Hi {answers.fullName || "there"}!
@@ -882,16 +985,14 @@ export default function OnboardingPage() {
             <Card title="About you" sub="We pre-filled your details from Google — adjust anything you'd like.">
               <div className="stack" style={{ gap: 14 }}>
                 <div className="row" style={{ gap: 12, alignItems: "center" }}>
-                  {answers.photoUrl && (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img
-                      src={answers.photoUrl}
-                      alt="Profile avatar"
-                      style={{ width: 52, height: 52, borderRadius: "50%", objectFit: "cover", border: "1px solid var(--line)" }}
-                    />
-                  )}
+                  <UserAvatar
+                    photoURL={answers.photoUrl || user.photoURL}
+                    name={answers.fullName || user.displayName}
+                    email={answers.email || user.email}
+                    size={52}
+                  />
                   <div style={{ flex: 1 }}>
-                    <Field label="Profile photo URL (optional)" hint="Pre-filled from your Google account">
+                    <Field label="Profile photo" hint="Synced automatically from Google (you can also customize it in Settings)">
                       <input
                         className="input"
                         value={answers.photoUrl}

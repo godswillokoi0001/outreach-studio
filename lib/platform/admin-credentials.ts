@@ -28,6 +28,7 @@ export interface AdminAccountRecord {
   passwordHash: string;
   totpEnabled: boolean;
   totpSecretEncrypted: string;
+  backupCodesHashes?: string[];
   lastLoginAt: string | null;
   lastLoginIp: string | null;
   createdBy: string | null;
@@ -42,6 +43,7 @@ export interface AdminAccountPublic {
   role: AdminRole;
   status: "active" | "suspended";
   totpEnabled: boolean;
+  backupCodesRemaining: number;
   lastLoginAt: string | null;
   lastLoginIp: string | null;
   createdBy: string | null;
@@ -95,11 +97,77 @@ export function toPublicAdminAccount(acc: AdminAccountRecord): AdminAccountPubli
     role: acc.role,
     status: acc.status,
     totpEnabled: acc.totpEnabled,
+    backupCodesRemaining: Array.isArray(acc.backupCodesHashes) ? acc.backupCodesHashes.length : 0,
     lastLoginAt: acc.lastLoginAt,
     lastLoginIp: acc.lastLoginIp,
     createdBy: acc.createdBy,
     createdAt: acc.createdAt,
   };
+}
+
+const BACKUP_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+
+function normalizeBackupCode(raw: string): string {
+  return raw.toUpperCase().replace(/[^A-Z0-9]/g, "");
+}
+
+function hashBackupCode(normalized: string): string {
+  const salt = randomBytes(12).toString("hex");
+  const derived = scryptSync(normalized, salt, 32).toString("hex");
+  return `scrypt_bc:${salt}:${derived}`;
+}
+
+function matchesBackupHash(normalized: string, stored: string): boolean {
+  if (!normalized || !stored.startsWith("scrypt_bc:")) return false;
+  const parts = stored.split(":");
+  if (parts.length !== 3) return false;
+  const [, salt, expectedHex] = parts;
+  if (!salt || !expectedHex) return false;
+  try {
+    const derived = scryptSync(normalized, salt, 32);
+    const expected = Buffer.from(expectedHex, "hex");
+    return derived.length === expected.length && timingSafeEqual(derived, expected);
+  } catch {
+    return false;
+  }
+}
+
+export function generateAdminBackupCodes(count = 10): {
+  plaintextCodes: string[];
+  hashes: string[];
+} {
+  const plaintextCodes: string[] = [];
+  const hashes: string[] = [];
+  for (let i = 0; i < count; i += 1) {
+    const bytes = randomBytes(8);
+    let chars = "";
+    for (let j = 0; j < 8; j += 1) {
+      chars += BACKUP_ALPHABET[bytes[j]! % BACKUP_ALPHABET.length];
+    }
+    const formatted = `${chars.slice(0, 4)}-${chars.slice(4)}`;
+    plaintextCodes.push(formatted);
+    hashes.push(hashBackupCode(chars));
+  }
+  return { plaintextCodes, hashes };
+}
+
+export async function consumeAdminBackupCode(
+  account: AdminAccountRecord,
+  rawCode: string,
+): Promise<boolean> {
+  const normalized = normalizeBackupCode(rawCode);
+  const hashes = Array.isArray(account.backupCodesHashes) ? account.backupCodesHashes : [];
+  if (!normalized || hashes.length === 0) return false;
+
+  const matchedIdx = hashes.findIndex((h) => matchesBackupHash(normalized, h));
+  if (matchedIdx < 0) return false;
+
+  const remaining = hashes.filter((_, idx) => idx !== matchedIdx);
+  await saveAdminAccountRecord({
+    ...account,
+    backupCodesHashes: remaining,
+  });
+  return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -116,6 +184,9 @@ function mapSqlAccountRow(row: Record<string, unknown>): AdminAccountRecord {
     passwordHash: String(row.password_hash ?? ""),
     totpEnabled: Boolean(row.totp_enabled),
     totpSecretEncrypted: String(row.totp_secret_encrypted ?? ""),
+    backupCodesHashes: Array.isArray(row.backup_codes_hashes)
+      ? (row.backup_codes_hashes as unknown[]).map((v) => String(v))
+      : [],
     lastLoginAt: row.last_login_at ? String(row.last_login_at) : null,
     lastLoginIp: row.last_login_ip ? String(row.last_login_ip) : null,
     createdBy: row.created_by ? String(row.created_by) : null,
@@ -190,6 +261,7 @@ async function upsertAdminAccountRaw(acc: AdminAccountRecord, useSql: boolean): 
         password_hash: acc.passwordHash,
         totp_enabled: acc.totpEnabled,
         totp_secret_encrypted: acc.totpSecretEncrypted,
+        backup_codes_hashes: acc.backupCodesHashes ?? [],
         last_login_at: acc.lastLoginAt,
         last_login_ip: acc.lastLoginIp,
         created_by: acc.createdBy,

@@ -798,6 +798,7 @@ test("isolated admin authentication: scrypt hashing, TOTP 2FA, separate cookies,
     adminId: "adm_1",
     email: "admin@example.com",
     role: "super_admin",
+    totpVerified: true,
     ttlSeconds: 1800,
   });
   assert.equal(verifyAdminCookieToken(sessionTok.token, "session")?.adminId, "adm_1");
@@ -4278,3 +4279,274 @@ test("Phase 5 10x: validateEmailQuality enforces zero AI slop, zero forced opt-o
   assert.ok(built.system.includes("Words to AVOID: digital landscape, leverage"));
   assert.ok(built.system.includes("Want to get a free look?"));
 });
+
+test("Password strength rules, bcrypt hashing, and non-exposure contract", async () => {
+  const { evaluatePasswordStrength } = await import("./password-policy");
+  const bcrypt = await import("bcryptjs");
+
+  const weak = evaluatePasswordStrength("short");
+  assert.equal(weak.valid, false);
+  assert.ok(weak.error);
+
+  const noUpper = evaluatePasswordStrength("alllower123!");
+  assert.equal(noUpper.valid, false);
+
+  const strong = evaluatePasswordStrength("Knowrevo#2026Safe");
+  assert.equal(strong.valid, true);
+  assert.ok(strong.score >= 3);
+
+  const hash = await bcrypt.default.hash("Knowrevo#2026Safe", 10);
+  assert.ok(hash.startsWith("$2"));
+  assert.equal(await bcrypt.default.compare("Knowrevo#2026Safe", hash), true);
+  assert.equal(await bcrypt.default.compare("WrongPass123!", hash), false);
+});
+
+test("Chatbot session duration & AI response time human formatting", async () => {
+  const { formatSessionDuration, formatResponseTime } = await import("./format");
+  assert.equal(formatSessionDuration(0), "0 s");
+  assert.equal(formatSessionDuration(42), "42 s");
+  assert.equal(formatSessionDuration(198), "3 min 18 s");
+  assert.equal(formatSessionDuration(3900), "1 h 05 min");
+  assert.equal(formatResponseTime(2400), "2.4 s");
+  assert.equal(formatResponseTime(74000), "1 min 14 s");
+});
+
+test("BYOK personal model switching applies immediately on the very next gateway request", async () => {
+  const { seedGatewayCachesForTests, resetGatewayCachesForTests } = await import("./llm/store");
+  const { encryptSecret } = await import("./key-vault");
+  const { clearRouterStateForTests } = await import("./llm/router");
+
+  resetGatewayCachesForTests();
+  clearRouterStateForTests();
+
+  const makeKey = (id: string, modelA: string, modelB: string): UserAiKeyRecord => ({
+    id,
+    ownerId: "byok_switch_user",
+    provider: "groq",
+    label: "Personal Groq Key",
+    encryptedKey: encryptSecret("gsk_test_personal_switch_key_12345"),
+    maskedKey: "gsk_•••2345",
+    accountId: null,
+    baseUrl: "https://api.groq.com/openai/v1",
+    models: [
+      {
+        id: modelA,
+        displayName: modelA,
+        enabled: true,
+        seats: ["smart", "balanced", "fast"],
+        capabilities: { json: true, tools: true, vision: false, reasoning: true },
+        isFreeTier: true,
+      },
+      {
+        id: modelB,
+        displayName: modelB,
+        enabled: true,
+        seats: ["smart", "balanced", "fast"],
+        capabilities: { json: true, tools: true, vision: false, reasoning: true },
+        isFreeTier: true,
+      },
+    ],
+    lastVerifiedAt: new Date().toISOString(),
+    lastError: null,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  });
+
+  const key = makeKey("ukey_1", "llama-3.1-8b-instant", "llama-3.3-70b-versatile");
+  const seenModels: string[] = [];
+  const prevFetch = globalThis.fetch;
+  globalThis.fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+    const parsed = JSON.parse(String(init?.body ?? "{}")) as { model?: string };
+    if (parsed.model) seenModels.push(parsed.model);
+    return new Response(
+      JSON.stringify({
+        choices: [{ message: { content: "ok" }, finish_reason: "stop" }],
+      }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    );
+  }) as typeof fetch;
+
+  try {
+    // Switch to model 1
+    seedGatewayCachesForTests({
+      userSettings: {
+        byok_switch_user: {
+          ownerId: "byok_switch_user",
+          mode: "byok",
+          activeKeyId: "ukey_1",
+          activeProvider: "groq",
+          activeModel: "llama-3.3-70b-versatile",
+          fallbackToSystemAuto: false,
+          updatedAt: new Date().toISOString(),
+        },
+      },
+      userKeys: { byok_switch_user: [key] },
+    });
+    const r1 = await LLMGateway.complete({
+      ownerId: "byok_switch_user",
+      taskType: "fast",
+      feature: "chat",
+      messages: [{ role: "user", content: "ping 1" }],
+    });
+    assert.equal(r1.receipt.actualModel, "llama-3.3-70b-versatile");
+
+    // Switch immediately to custom/unlisted model on same key (select_key_and_model registers it in key.models)
+    const keyWithCustom = makeKey("ukey_1", "llama-3.1-8b-instant", "mixtral-8x7b-custom");
+    seedGatewayCachesForTests({
+      userSettings: {
+        byok_switch_user: {
+          ownerId: "byok_switch_user",
+          mode: "byok",
+          activeKeyId: "ukey_1",
+          activeProvider: "groq",
+          activeModel: "mixtral-8x7b-custom",
+          fallbackToSystemAuto: false,
+          updatedAt: new Date().toISOString(),
+        },
+      },
+      userKeys: { byok_switch_user: [keyWithCustom] },
+    });
+    const r2 = await LLMGateway.complete({
+      ownerId: "byok_switch_user",
+      taskType: "fast",
+      feature: "chat",
+      messages: [{ role: "user", content: "ping 2" }],
+    });
+    assert.equal(r2.receipt.actualModel, "mixtral-8x7b-custom");
+    assert.deepEqual(seenModels, ["llama-3.3-70b-versatile", "mixtral-8x7b-custom"]);
+  } finally {
+    globalThis.fetch = prevFetch;
+    resetGatewayCachesForTests();
+    clearRouterStateForTests();
+  }
+});
+
+test("Background job progress advances cleanly across research stages and force restart", async () => {
+  const {
+    advanceBackgroundJobStep,
+    completeBackgroundJob,
+    createOrReuseBackgroundJob,
+  } = await import("./background-jobs");
+
+  const steps: BackgroundJobStep[] = [
+    { key: "searching_businesses", label: "Search", status: "pending", weightSec: 6 },
+    { key: "reading_sources", label: "Read", status: "pending", weightSec: 12 },
+    { key: "checking_niche", label: "Check", status: "pending", weightSec: 9 },
+    { key: "ranking_recommendations", label: "Rank", status: "pending", weightSec: 4 },
+  ];
+
+  const ownerId = `test_job_owner_${Date.now()}`;
+  const first = await createOrReuseBackgroundJob({
+    ownerId,
+    jobType: "growth_advisor_research",
+    steps,
+  });
+  assert.equal(first.reused, false);
+  const pct0 = first.job.progressPct;
+
+  const after1 = await advanceBackgroundJobStep(ownerId, first.job.id, "searching_businesses", "done");
+  assert.ok(after1 && after1.progressPct > pct0);
+
+  // Without force, calling again reuses running job
+  const dup = await createOrReuseBackgroundJob({
+    ownerId,
+    jobType: "growth_advisor_research",
+    steps,
+  });
+  assert.equal(dup.reused, true);
+  assert.equal(dup.job.id, first.job.id);
+
+  // With force=true, replaces running job with a fresh run
+  const forced = await createOrReuseBackgroundJob({
+    ownerId,
+    jobType: "growth_advisor_research",
+    steps,
+    force: true,
+  });
+  assert.equal(forced.reused, false);
+  assert.notEqual(forced.job.id, first.job.id);
+
+  const done = await completeBackgroundJob(ownerId, forced.job.id, { ok: true });
+  assert.equal(done?.status, "succeeded");
+  assert.equal(done?.progressPct, 100);
+});
+
+test("Admin 2FA session gating, challenge rejection, reauth enforcement, and backup codes", async () => {
+  const { generateAdminBackupCodes } = await import("./platform/admin-credentials");
+  const { ADMIN_SESSION_COOKIE } = await import("./platform/admin-session");
+
+  const codes = generateAdminBackupCodes(10);
+  assert.equal(codes.plaintextCodes.length, 10);
+  assert.equal(codes.hashes.length, 10);
+  assert.ok(codes.plaintextCodes.every((c) => /^[A-Z0-9]{4}-[A-Z0-9]{4}$/.test(c)));
+  assert.ok(codes.hashes.every((h) => h.startsWith("scrypt_bc:")));
+
+  // Cookie signed without totpVerified=true must NEVER grant session access
+  const unverified = signAdminCookieToken({
+    kind: "session",
+    adminId: "adm_censusokoi515_gmail_com",
+    email: "censusokoi515@gmail.com",
+    role: "super_admin",
+    totpVerified: false,
+    ttlSeconds: 3600,
+  });
+  assert.equal(verifyAdminCookieToken(unverified.token, "session"), null);
+
+  // Verified 2FA session passes verifyAdminCookieToken, and requireAdmin enforces requireReauth
+  const verified = signAdminCookieToken({
+    kind: "session",
+    adminId: "adm_censusokoi515_gmail_com",
+    email: "censusokoi515@gmail.com",
+    role: "super_admin",
+    totpVerified: true,
+    ttlSeconds: 3600,
+  });
+  assert.ok(verifyAdminCookieToken(verified.token, "session"));
+
+  const reqWithoutReauth = new NextRequest("http://localhost/api/admin/audit-logs", {
+    headers: { cookie: `${ADMIN_SESSION_COOKIE}=${verified.token}` },
+  });
+  await assert.rejects(
+    () => requireAdmin(reqWithoutReauth, "super_admin", { requireReauth: true }),
+    /Re-authentication required/,
+  );
+
+  // Support role must be blocked from super_admin operations
+  const supportVerified = signAdminCookieToken({
+    kind: "session",
+    adminId: "adm_support_test",
+    email: "support@knowrevo.com",
+    role: "support",
+    totpVerified: true,
+    ttlSeconds: 3600,
+  });
+  const reqSupport = new NextRequest("http://localhost/api/admin/audit-logs", {
+    headers: { cookie: `${ADMIN_SESSION_COOKIE}=${supportVerified.token}` },
+  });
+  await assert.rejects(() => requireAdmin(reqSupport, "super_admin"));
+});
+
+test("Admin AI Assistant secret/PII redaction and tool permission separation", async () => {
+  const {
+    ADMIN_CHAT_CONFIRM_TOOLS,
+    ADMIN_CHAT_READ_ONLY_TOOLS,
+    redactAdminChatText,
+  } = await import("./platform/admin-chat");
+
+  const leaky =
+    "Key failed AIzaSyAbCdEfGhIjKlMnOpQrStUvWxYz, vault enc:v1:abc==:xyz, user alice.founder@example.com";
+  const safe = redactAdminChatText(leaky, null);
+  assert.equal(safe.includes("AIzaSy"), false);
+  assert.equal(safe.includes("enc:v1:"), false);
+  assert.equal(safe.includes("alice.founder@example.com"), false);
+  assert.ok(safe.includes("[REDACTED_SECRET]"));
+
+  // Ensure clear separation: read-only never overlaps confirm-required tools
+  for (const t of ADMIN_CHAT_READ_ONLY_TOOLS) {
+    assert.equal(ADMIN_CHAT_CONFIRM_TOOLS.has(t), false);
+  }
+  assert.equal(ADMIN_CHAT_CONFIRM_TOOLS.has("propose_code_or_config_fix"), true);
+  assert.equal(ADMIN_CHAT_CONFIRM_TOOLS.has("rerun_module_check"), true);
+  assert.equal(ADMIN_CHAT_CONFIRM_TOOLS.has("clear_stuck_job"), true);
+});
+

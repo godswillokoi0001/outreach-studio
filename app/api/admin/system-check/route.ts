@@ -1,14 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
 import { handleApiError } from "@/lib/api-helpers";
-import { decryptSecret, encryptSecret, generateTotpAt, generateTotpSecret, verifyTotpCode } from "@/lib/key-vault";
 import { requireAdmin } from "@/lib/platform/admin-auth";
 import {
+  MODULE_VALIDATORS,
+  runAllModuleAndInfraChecks,
+  runSingleModuleCheck,
+  type SystemCheckItem,
+} from "@/lib/platform/module-validator";
+import { recordAdminNotification } from "@/lib/platform/notifications";
+import {
   appendAdminAuditLog,
-  computePlatformHealthAndAlerts,
-  decryptPlatformProviderKey,
-  getInternalPlatformPolicy,
   listAdminUsersDirectory,
-  listAiUsageEvents,
   listAnnouncements,
   saveAnnouncements,
 } from "@/lib/platform/store-server";
@@ -18,27 +20,10 @@ import { supabaseServer } from "@/lib/supabase-server";
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
-export type CheckStatus = "pass" | "warning" | "fail";
-
-export interface SystemCheckItem {
-  id: string;
-  category:
-    | "Database & Migrations"
-    | "AI Providers & Keys"
-    | "Security & Auth"
-    | "Jobs, Storage & Telemetry"
-    | "Core Features";
-  name: string;
-  status: CheckStatus;
-  detail: string;
-  checkedAt: string;
-  durationMs: number;
-}
-
 export interface SystemCheckRun {
   id: string;
   triggeredBy: string;
-  triggerType: "manual" | "scheduled";
+  triggerType: "manual" | "scheduled" | "single_module";
   startedAt: string;
   finishedAt: string;
   passCount: number;
@@ -90,45 +75,72 @@ async function writePlatformDoc(id: string, title: string, payload: unknown): Pr
   );
 }
 
-async function timedCheck(
-  id: string,
-  category: SystemCheckItem["category"],
-  name: string,
-  fn: () => Promise<{ status: CheckStatus; detail: string }>,
-): Promise<SystemCheckItem> {
-  const start = Date.now();
-  try {
-    const res = await fn();
-    return {
-      id,
-      category,
-      name,
-      status: res.status,
-      detail: res.detail,
-      checkedAt: new Date().toISOString(),
-      durationMs: Math.max(1, Date.now() - start),
-    };
-  } catch (err) {
-    return {
-      id,
-      category,
-      name,
-      status: "fail",
-      detail: err instanceof Error ? err.message : "Check threw an unexpected error.",
-      checkedAt: new Date().toISOString(),
-      durationMs: Math.max(1, Date.now() - start),
-    };
+type ClearRange = "all" | "7d" | "30d" | "90d";
+
+function cutoffForRange(range: ClearRange): string | null {
+  const now = Date.now();
+  if (range === "7d") return new Date(now - 7 * 86400_000).toISOString();
+  if (range === "30d") return new Date(now - 30 * 86400_000).toISOString();
+  if (range === "90d") return new Date(now - 90 * 86400_000).toISOString();
+  return null;
+}
+
+function paginateHistory(
+  allHistory: SystemCheckRun[],
+  params: URLSearchParams,
+) {
+  const page = Math.max(1, Number(params.get("historyPage") ?? 1) || 1);
+  const rawSize = Number(params.get("historyPageSize") ?? 10);
+  const pageSize = rawSize === 25 || rawSize === 50 ? rawSize : 10;
+  const sort = params.get("historySort") === "oldest" ? "oldest" : "newest";
+  const filter = params.get("historyFilter") ?? "all";
+
+  let filtered = [...allHistory];
+  if (filter === "has_failures") filtered = filtered.filter((r) => r.failCount > 0);
+  else if (filter === "manual") filtered = filtered.filter((r) => r.triggerType === "manual");
+  else if (filter === "scheduled") filtered = filtered.filter((r) => r.triggerType === "scheduled");
+
+  if (sort === "oldest") {
+    filtered.sort((a, b) => a.finishedAt.localeCompare(b.finishedAt));
+  } else {
+    filtered.sort((a, b) => b.finishedAt.localeCompare(a.finishedAt));
   }
+
+  const total = filtered.length;
+  const from = (page - 1) * pageSize;
+  return {
+    history: filtered.slice(from, from + pageSize),
+    historyTotal: total,
+    historyPage: page,
+    historyPageSize: pageSize,
+    latestRun: allHistory[0] ?? null,
+  };
 }
 
 export async function GET(req: NextRequest) {
   try {
     await requireAdmin(req, "support");
-    const [history, schedule] = await Promise.all([
+    const [allHistory, schedule] = await Promise.all([
       readPlatformDoc<SystemCheckRun[]>(DOC_CHECK_HISTORY, []),
-      readPlatformDoc<SystemCheckSchedule>(DOC_CHECK_SCHEDULE, { enabled: false, intervalMinutes: 60 }),
+      readPlatformDoc<SystemCheckSchedule>(DOC_CHECK_SCHEDULE, {
+        enabled: false,
+        intervalMinutes: 60,
+      }),
     ]);
-    return NextResponse.json({ history, schedule }, { headers: { "Cache-Control": "no-store" } });
+
+    const paged = paginateHistory(allHistory, req.nextUrl.searchParams);
+    return NextResponse.json(
+      {
+        ...paged,
+        schedule,
+        availableModules: MODULE_VALIDATORS.map((m) => ({
+          id: m.id,
+          name: m.name,
+          category: m.category,
+        })),
+      },
+      { headers: { "Cache-Control": "private, no-store, max-age=0" } },
+    );
   } catch (err) {
     return handleApiError(err);
   }
@@ -137,11 +149,67 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   try {
     const body = (await req.json().catch(() => ({}))) as {
-      action?: "run_now" | "update_schedule";
+      action?:
+        | "run_now"
+        | "run_module"
+        | "update_schedule"
+        | "preview_clear_history"
+        | "clear_history";
+      moduleId?: string;
       triggerType?: "manual" | "scheduled";
       enabled?: boolean;
       intervalMinutes?: number;
+      range?: ClearRange;
+      totpCode?: string;
     };
+
+    if (body.action === "preview_clear_history") {
+      await requireAdmin(req, "admin");
+      const range: ClearRange =
+        body.range === "7d" || body.range === "30d" || body.range === "90d" ? body.range : "all";
+      const cutoff = cutoffForRange(range);
+      const history = await readPlatformDoc<SystemCheckRun[]>(DOC_CHECK_HISTORY, []);
+      const matching = history.filter((r) => (!cutoff ? true : r.finishedAt < cutoff));
+      return NextResponse.json({ count: matching.length, range });
+    }
+
+    if (body.action === "clear_history") {
+      const ctx = await requireAdmin(req, "admin", {
+        requireReauth: true,
+        inlineTotpCode: body.totpCode,
+      });
+      const range: ClearRange =
+        body.range === "7d" || body.range === "30d" || body.range === "90d" ? body.range : "all";
+      const cutoff = cutoffForRange(range);
+      const history = await readPlatformDoc<SystemCheckRun[]>(DOC_CHECK_HISTORY, []);
+      const remaining = history.filter((r) => (cutoff ? r.finishedAt >= cutoff : false));
+      const removedCount = history.length - remaining.length;
+      await writePlatformDoc(DOC_CHECK_HISTORY, "System Check Run History", remaining);
+
+      await appendAdminAuditLog({
+        actorId: ctx.admin.id,
+        actorEmail: ctx.admin.email,
+        actorRole: ctx.admin.role,
+        action: "system_check_history_cleared",
+        targetType: "system_check",
+        targetId: range,
+        details: { range, removedCount },
+        req,
+      });
+
+      const schedule = await readPlatformDoc<SystemCheckSchedule>(DOC_CHECK_SCHEDULE, {
+        enabled: false,
+        intervalMinutes: 60,
+      });
+      return NextResponse.json({
+        ok: true,
+        removedCount,
+        history: remaining.slice(0, 10),
+        historyTotal: remaining.length,
+        latestRun: remaining[0] ?? null,
+        schedule,
+      });
+    }
 
     const { user, meta } = await requireAdmin(req, "admin");
 
@@ -169,196 +237,75 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ schedule: nextSchedule });
     }
 
-    // Run full automated audit checklist now
-    const startedAt = new Date().toISOString();
-    const items: SystemCheckItem[] = [];
+    if (body.action === "run_module") {
+      const moduleId = String(body.moduleId ?? "").trim();
+      const startedAt = new Date().toISOString();
+      const single = await runSingleModuleCheck(moduleId);
+      if (!single) {
+        return NextResponse.json({ error: "Unknown validation module ID." }, { status: 400 });
+      }
+      const history = await readPlatformDoc<SystemCheckRun[]>(DOC_CHECK_HISTORY, []);
+      const latestExisting = history[0];
+      const mergedItems: SystemCheckItem[] = latestExisting
+        ? latestExisting.items.some((it) => it.id === single.id)
+          ? latestExisting.items.map((it) => (it.id === single.id ? single : it))
+          : [...latestExisting.items, single]
+        : [single];
 
-    // 1. Database connection & core tables / migrations check
-    items.push(
-      await timedCheck("db_connection", "Database & Migrations", "Supabase connection & schema tables", async () => {
-        if (!supabaseServer) {
-          return { status: "fail", detail: "Missing NEXT_PUBLIC_SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY." };
-        }
-        const tables = [
-          "account_links",
-          "settings",
-          "campaigns",
-          "leads",
-          "messages",
-          "replies",
-          "knowledge",
-          "knowledge_sources",
-          "audit_logs",
-          "operator_conversations",
-        ];
-        const missing: string[] = [];
-        for (const t of tables) {
-          const res = await supabaseServer.from(t as never).select("id").limit(1);
-          if (res.error) missing.push(`${t} (${res.error.message})`);
-        }
-        if (missing.length > 0) {
-          return { status: "fail", detail: `Missing or unreadable tables: ${missing.join(", ")}` };
-        }
-        return { status: "pass", detail: `All ${tables.length} core PostgreSQL tables responded cleanly.` };
-      }),
-    );
+      const finishedAt = new Date().toISOString();
+      const run: SystemCheckRun = {
+        id: `chk_mod_${Date.now()}`,
+        triggeredBy: user.email,
+        triggerType: "single_module",
+        startedAt,
+        finishedAt,
+        passCount: mergedItems.filter((i) => i.status === "pass").length,
+        warningCount: mergedItems.filter((i) => i.status === "warning").length,
+        failCount: mergedItems.filter((i) => i.status === "fail").length,
+        items: mergedItems,
+      };
+      const nextHistory = [run, ...history].slice(0, 100);
+      await writePlatformDoc(DOC_CHECK_HISTORY, "System Check Run History", nextHistory);
 
-    // 2. Encryption Vault & TOTP Security check
-    items.push(
-      await timedCheck("security_vault", "Security & Auth", "AES-256-GCM key vault & 2FA crypto", async () => {
-        const probe = "sk-probe-audit-99887766";
-        const enc = encryptSecret(probe);
-        if (!enc.startsWith("enc:v1:") || decryptSecret(enc) !== probe) {
-          return { status: "fail", detail: "AES-256-GCM round-trip encryption failed." };
-        }
-        const totp = generateTotpSecret();
-        const code = generateTotpAt(totp, Math.floor(Date.now() / 1000 / 30));
-        if (!verifyTotpCode(totp, code)) {
-          return { status: "fail", detail: "TOTP RFC 6238 verification self-check failed." };
-        }
-        const hasDedicatedSecret = Boolean(process.env.KEY_ENCRYPTION_SECRET?.trim());
-        return hasDedicatedSecret
-          ? { status: "pass", detail: "Dedicated KEY_ENCRYPTION_SECRET configured; AES-256-GCM & 2FA verified." }
-          : {
-              status: "warning",
-              detail:
-                "AES-256-GCM & 2FA verified, but dedicated KEY_ENCRYPTION_SECRET is unset (deriving from service key).",
-            };
-      }),
-    );
+      if (single.status === "fail") {
+        await recordAdminNotification({
+          type: "system_check",
+          severity: "high",
+          title: `Module validation failed: ${single.name}`,
+          message: single.detail,
+          dedupKey: `module_fail_${single.id}`,
+          targetTab: "health",
+        });
+      }
 
-    // 3. Authentication & Admin RBAC check
-    items.push(
-      await timedCheck("auth_rbac", "Security & Auth", "Admin roster, 2FA & RBAC enforcement", async () => {
-        const users = await listAdminUsersDirectory();
-        const admins = users.filter((u) => u.role === "super_admin" || u.role === "admin");
-        if (admins.length === 0) {
-          return { status: "fail", detail: "No active Super Admin or Admin found in workspace." };
-        }
-        return {
-          status: "pass",
-          detail: `${admins.length} administrator(s) active; server-side 2FA & RBAC verified (${users.length} total users).`,
-        };
-      }),
-    );
+      await appendAdminAuditLog({
+        actorId: user.ownerId,
+        actorEmail: user.email,
+        actorRole: meta.role,
+        action: "module_validation_rerun",
+        targetType: "system_check",
+        targetId: single.id,
+        details: { status: single.status, detail: single.detail },
+        req,
+      });
 
-    // 4. AI Provider Keys & Fallback Chain
-    const policy = await getInternalPlatformPolicy();
-    for (const prov of policy.providers) {
-      const key = decryptPlatformProviderKey(policy, prov.id);
-      if (!key && !prov.enabled && prov.id !== "gemini") continue;
-      items.push(
-        await timedCheck(
-          `provider_${prov.id}`,
-          "AI Providers & Keys",
-          `Platform provider: ${prov.label}`,
-          async () => {
-            if (!key) {
-              return { status: "fail", detail: `${prov.label} is enabled but has no decrypted API key.` };
-            }
-            if (!prov.enabled) {
-              return { status: "warning", detail: `${prov.label} has a saved key (${prov.maskedKey}) but is disabled.` };
-            }
-            if (prov.lastTestOk === false) {
-              return {
-                status: "warning",
-                detail: `${prov.label} (${prov.maskedKey}) enabled, last connection test failed: ${prov.lastTestError ?? "unknown"}`,
-              };
-            }
-            const enabledModels = prov.models.filter((m) => m.enabled).length;
-            return {
-              status: enabledModels > 0 ? "pass" : "warning",
-              detail: `${prov.maskedKey} · ${enabledModels} enabled model(s)${prov.lastTestedAt ? ` · Last test OK` : ""}`,
-            };
-          },
-        ),
-      );
+      const schedule = await readPlatformDoc<SystemCheckSchedule>(DOC_CHECK_SCHEDULE, {
+        enabled: false,
+        intervalMinutes: 60,
+      });
+      return NextResponse.json({
+        item: single,
+        run,
+        latestRun: run,
+        history: nextHistory.slice(0, 10),
+        historyTotal: nextHistory.length,
+        schedule,
+      });
     }
 
-    // 5. Storage, Telemetry & API Error Rates
-    items.push(
-      await timedCheck("telemetry_health", "Jobs, Storage & Telemetry", "AI error rates, latency & spend cap", async () => {
-        const [users, usageEvents] = await Promise.all([
-          listAdminUsersDirectory(),
-          listAiUsageEvents({ sinceIso: new Date(Date.now() - 7 * 86400_000).toISOString(), limit: 1500 }),
-        ]);
-        const health = await computePlatformHealthAndAlerts(users, usageEvents, policy);
-        if (health.errorRatePct > 25 && usageEvents.length >= 5) {
-          return {
-            status: "fail",
-            detail: `High 7-day AI error rate: ${health.errorRatePct}% (${health.failedJobsCount} failed requests).`,
-          };
-        }
-        return {
-          status: health.alerts.some((a) => a.severity === "high") ? "warning" : "pass",
-          detail: `7d requests: ${usageEvents.length} · Error rate: ${health.errorRatePct}% · Avg latency: ${health.avgLatencyMs}ms · Alerts: ${health.alerts.length}`,
-        };
-      }),
-    );
-
-    // 6. Background Jobs & Workspace Tokens
-    items.push(
-      await timedCheck("jobs_storage", "Jobs, Storage & Telemetry", "Knowledge storage & send queue health", async () => {
-        if (!supabaseServer) return { status: "fail", detail: "Database client missing." };
-        const [failedMsgs, knowledgeCount] = await Promise.all([
-          supabaseServer.from("messages").select("id", { count: "exact", head: true }).eq("status", "failed"),
-          supabaseServer.from("knowledge").select("id", { count: "exact", head: true }),
-        ]);
-        const failCount = failedMsgs.count ?? 0;
-        const kCount = knowledgeCount.count ?? 0;
-        if (failCount > 25) {
-          return {
-            status: "warning",
-            detail: `${failCount} failed email deliveries detected in messages table · ${kCount} knowledge records stored.`,
-          };
-        }
-        return {
-          status: "pass",
-          detail: `Storage healthy (${kCount} knowledge docs) · ${failCount} failed email deliveries.`,
-        };
-      }),
-    );
-
-    // 7. Key Feature Modules Readiness
-    items.push(
-      await timedCheck("core_features", "Core Features", "Core modules & feature routing readiness", async () => {
-        const featureKeys = Object.entries(policy.featureDefaults);
-        const unrouted = featureKeys
-          .filter(([, cfg]) => !decryptPlatformProviderKey(policy, cfg.provider))
-          .map(([k]) => k);
-        if (unrouted.length > 0) {
-          return {
-            status: "warning",
-            detail: `Features waiting on default provider keys: ${unrouted.join(", ")} (BYOK still works).`,
-          };
-        }
-        return {
-          status: "pass",
-          detail: `All ${featureKeys.length} AI feature routes (Onboarding, KB, Growth Advisor, Analytics, Research, Ask AI, Compose, Chat) backed by active provider keys.`,
-        };
-      }),
-    );
-
-    // 8. Global Knowledge Brain & Server RAM Cache Check
-    items.push(
-      await timedCheck("global_brain", "Core Features", "Global AI Knowledge Brain (Modules 1-4) & Cache", async () => {
-        const { getGlobalKnowledgeCacheStats, getGlobalKnowledgeModules } = await import("@/lib/global-knowledge/service");
-        const modules = await getGlobalKnowledgeModules();
-        const stats = getGlobalKnowledgeCacheStats();
-        const hasAllFour = modules.size === 4;
-        if (!hasAllFour) {
-          return { status: "fail", detail: `Expected 4 active Global Knowledge Modules, got ${modules.size}.` };
-        }
-        return {
-          status: stats.source === "database" ? "pass" : "warning",
-          detail:
-            stats.source === "database"
-              ? `4/4 active modules loaded from PostgreSQL (${stats.hits} cache hits, ${stats.dbReads} DB reads).`
-              : `4/4 modules running on safe seed fallback (${stats.hits} cache hits). Apply 20251129000000_global_knowledge_and_profiles.sql to persist DB versions.`,
-        };
-      }),
-    );
-
+    // Run full infrastructure + module validation suite
+    const startedAt = new Date().toISOString();
+    const items = await runAllModuleAndInfraChecks();
     const finishedAt = new Date().toISOString();
     const run: SystemCheckRun = {
       id: `chk_${Date.now()}`,
@@ -373,7 +320,8 @@ export async function POST(req: NextRequest) {
     };
 
     const history = await readPlatformDoc<SystemCheckRun[]>(DOC_CHECK_HISTORY, []);
-    await writePlatformDoc(DOC_CHECK_HISTORY, "System Check Run History", [run, ...history].slice(0, 30));
+    const nextHistory = [run, ...history].slice(0, 100);
+    await writePlatformDoc(DOC_CHECK_HISTORY, "System Check Run History", nextHistory);
 
     const schedule = await readPlatformDoc<SystemCheckSchedule>(DOC_CHECK_SCHEDULE, {
       enabled: false,
@@ -382,12 +330,21 @@ export async function POST(req: NextRequest) {
     schedule.lastRunAt = finishedAt;
     await writePlatformDoc(DOC_CHECK_SCHEDULE, "System Check Schedule", schedule);
 
-    // Requirement 8: "Admins get an alert when a check fails."
     if (run.failCount > 0) {
       const failedNames = items
         .filter((i) => i.status === "fail")
         .map((i) => i.name)
         .join(", ");
+
+      await recordAdminNotification({
+        type: "system_check",
+        severity: "high",
+        title: `System Check Alert: ${run.failCount} module(s) failed`,
+        message: `Failed: ${failedNames}. Review Check & Diagnostics to inspect or re-run modules.`,
+        dedupKey: "system_check_failures",
+        targetTab: "health",
+      });
+
       const existingAnn = await listAnnouncements();
       const admins = (await listAdminUsersDirectory())
         .filter((u) => u.role === "super_admin" || u.role === "admin")
@@ -396,7 +353,7 @@ export async function POST(req: NextRequest) {
       const alertNotice: PlatformAnnouncement = {
         id: `ann_chk_${Date.now()}`,
         title: `System Check Alert: ${run.failCount} check(s) failed`,
-        message: `Failed checks: ${failedNames}. Review Admin Dashboard -> System Check for full diagnostics.`,
+        message: `Failed checks: ${failedNames}. Review Admin Dashboard -> Check & Diagnostics.`,
         tone: "warn",
         targetGroup: "selected",
         targetUserIds: admins,
@@ -423,7 +380,13 @@ export async function POST(req: NextRequest) {
       req,
     });
 
-    return NextResponse.json({ run, history: [run, ...history].slice(0, 30), schedule });
+    return NextResponse.json({
+      run,
+      latestRun: run,
+      history: nextHistory.slice(0, 10),
+      historyTotal: nextHistory.length,
+      schedule,
+    });
   } catch (err) {
     return handleApiError(err);
   }

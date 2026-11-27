@@ -58,6 +58,7 @@ import { BrandLoader } from "./BrandLoader";
 import { BrandLockup, BrandMark } from "./BrandMark";
 import { Menu, MenuItem, MenuSeparator } from "./Menu";
 import { ThemeToggle } from "./ThemeToggle";
+import { UserAvatar } from "./UserAvatar";
 import { DashboardChat } from "./DashboardChat";
 import { BackgroundJobsBar } from "./BackgroundJobsBar";
 import { AgentPresenceProvider } from "./AgentPresence";
@@ -153,7 +154,9 @@ function ShellInner({ children }: { children: ReactNode }) {
   const [signals, setSignals] = useState<SignalToast[]>([]);
   const [latest, setLatest] = useState<{ open: string; reply: string }>({ open: "", reply: "" });
   const [onboardingChecked, setOnboardingChecked] = useState(() => Boolean(user.onboardingStatus));
-  const [onboardingDone, setOnboardingDone] = useState(() => user.onboardingStatus === "completed");
+  const [onboardingDone, setOnboardingDone] = useState(
+    () => user.onboardingStatus === "completed" && user.hasPassword !== false,
+  );
   const [dismissedAnnouncementIds, setDismissedAnnouncementIds] = useState<string[]>([]);
   const uid = user?.uid ?? "";
 
@@ -189,7 +192,7 @@ function ShellInner({ children }: { children: ReactNode }) {
       .catch(() => getOnboardingState(uid, user))
       .then((state) => {
         if (!active) return;
-        const done = state.status === "completed";
+        const done = state.status === "completed" && user.hasPassword !== false;
         setOnboardingDone(done);
         setOnboardingChecked(true);
         if (!done && !isOnboardingRoute) {
@@ -513,6 +516,19 @@ function ShellInner({ children }: { children: ReactNode }) {
             </div>
           ))}
         </nav>
+        <div className="sidebar-foot">
+          <Link
+            href="/settings"
+            className="nav-link"
+            title={collapsed ? `${displayName} · Profile & Settings` : undefined}
+            style={{ width: "100%" }}
+          >
+            <UserAvatar photoURL={user.photoURL} name={displayName} email={user.email} size={28} />
+            <span className="nav-text" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              {displayName}
+            </span>
+          </Link>
+        </div>
       </aside>
 
       <button
@@ -678,14 +694,31 @@ function ShellInner({ children }: { children: ReactNode }) {
 
               <Menu
                 label="Account"
-                trigger={<span className="user-dot">{displayName.slice(0, 1).toUpperCase()}</span>}
+                trigger={
+                  <UserAvatar
+                    photoURL={user.photoURL}
+                    name={displayName}
+                    email={user.email}
+                    size={28}
+                  />
+                }
                 panelClassName="menu-panel-account"
               >
                 {(close) => (
                   <>
                     <div className="menu-account">
-                      <strong>{displayName}</strong>
-                      <span>{user.email}</span>
+                      <div className="row" style={{ gap: 10, alignItems: "center" }}>
+                        <UserAvatar
+                          photoURL={user.photoURL}
+                          name={displayName}
+                          email={user.email}
+                          size={34}
+                        />
+                        <div style={{ minWidth: 0 }}>
+                          <strong style={{ display: "block" }}>{displayName}</strong>
+                          <span style={{ display: "block" }}>{user.email}</span>
+                        </div>
+                      </div>
                     </div>
                     <MenuSeparator />
                     <MenuItem href="/settings" onClick={close}>

@@ -70,10 +70,7 @@ async function runGrowthResearchPipeline(
   }, JOB_HEARTBEAT_MS);
 
   try {
-    await advanceBackgroundJobStep(ownerId, jobId, "searching_businesses", "done");
-
-    activeStage = "reading_sources";
-    await advanceBackgroundJobStep(ownerId, jobId, "reading_sources", "in_progress");
+    await advanceBackgroundJobStep(ownerId, jobId, "searching_businesses", "in_progress");
     const report = await withDeadline(
       generateGrowthAdvisorReportServer({
         ownerId,
@@ -83,6 +80,10 @@ async function runGrowthResearchPipeline(
         metricsSummary: input.metricsSummary,
         analyticsInsight: input.analyticsInsight,
         fingerprint: input.fingerprint,
+        onStageProgress: async (stage, status, detail) => {
+          activeStage = stage;
+          await advanceBackgroundJobStep(ownerId, jobId, stage, status, detail);
+        },
       }),
       RESEARCH_DEADLINE_MS,
       "Live market research took too long to answer. Tap Retry research to run it again.",
@@ -94,25 +95,14 @@ async function runGrowthResearchPipeline(
       );
     }
 
-    await advanceBackgroundJobStep(
-      ownerId,
-      jobId,
-      "reading_sources",
-      "done",
-      `${report.sources.length} web source(s) analyzed`,
-    );
-
-    activeStage = "checking_niche";
-    await advanceBackgroundJobStep(
-      ownerId,
-      jobId,
-      "checking_niche",
-      "done",
-      `${report.recommendations.length} recommendation(s) matched to your market`,
-    );
-
     activeStage = "ranking_recommendations";
-    await advanceBackgroundJobStep(ownerId, jobId, "ranking_recommendations", "in_progress");
+    await advanceBackgroundJobStep(
+      ownerId,
+      jobId,
+      "ranking_recommendations",
+      "in_progress",
+      `${report.recommendations.length} recommendation(s) ranked`,
+    );
 
     if (supabaseServer) {
       await supabaseServer.from("knowledge").upsert(
@@ -168,6 +158,7 @@ export async function POST(req: NextRequest) {
       metricsSummary?: Record<string, unknown>;
       analyticsInsight?: PerformanceInsight | null;
       fingerprint?: string;
+      force?: boolean;
     };
 
     if (!body.profile || !body.settings) {
@@ -182,6 +173,7 @@ export async function POST(req: NextRequest) {
         fingerprint: body.fingerprint ?? "manual",
         industry: body.profile.industry || "",
       },
+      force: Boolean(body.force),
       staleAfterMs: STALE_RUN_MS,
     });
 

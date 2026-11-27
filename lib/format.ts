@@ -105,3 +105,29 @@ export function scoreClass(score: number | null | undefined): string {
   if (score >= 50) return "mid";
   return "low";
 }
+
+/** Format a session duration in human-readable units (e.g. "42 s", "3 min 18 s", "1 h 05 min"). */
+export function formatSessionDuration(totalSeconds: number | null | undefined): string {
+  const safe = Math.max(0, Math.floor(Number.isFinite(totalSeconds ?? NaN) ? (totalSeconds as number) : 0));
+  if (safe < 60) {
+    return `${safe} s`;
+  }
+  const hours = Math.floor(safe / 3600);
+  const minutes = Math.floor((safe % 3600) / 60);
+  const seconds = safe % 60;
+  if (hours > 0) {
+    return `${hours} h ${String(minutes).padStart(2, "0")} min`;
+  }
+  return `${minutes} min ${seconds} s`;
+}
+
+/** Format a single AI response duration cleanly (e.g. "2.4 s", "1 min 14 s"). */
+export function formatResponseTime(responseMs: number | null | undefined): string {
+  if (!Number.isFinite(responseMs ?? NaN) || (responseMs as number) < 0) return "";
+  const ms = responseMs as number;
+  if (ms < 60_000) {
+    const secs = Math.max(0.1, ms / 1000);
+    return `${secs.toFixed(1)} s`;
+  }
+  return formatSessionDuration(Math.round(ms / 1000));
+}

@@ -377,21 +377,25 @@
 }
 .sidebar-toggle:hover { background: rgba(255, 255, 255, 0.14); color: #ffffff; }
 
-.app[data-collapsed="true"] .sidebar { width: 70px; flex: 0 0 70px; }
+.app[data-collapsed="true"] .sidebar { width: 72px; flex: 0 0 72px; }
 .app[data-collapsed="true"] .brand {
-  flex-direction: column; gap: 8px; padding: 16px 0 14px; justify-content: center;
+  flex-direction: column; gap: 8px; padding: 14px 8px 12px; justify-content: center;
 }
 .app[data-collapsed="true"] .brand-copy { display: none; }
 .app[data-collapsed="true"] .sidebar-toggle { margin-left: 0; }
-.app[data-collapsed="true"] .nav { padding: 10px 8px 24px; }
-.app[data-collapsed="true"] .nav-link { justify-content: center; padding: 9px 0; }
+.app[data-collapsed="true"] .nav { padding: 12px 8px 24px; gap: 6px; }
+.app[data-collapsed="true"] .nav-link {
+  justify-content: center; align-items: center; padding: 0;
+  width: 48px; min-width: 44px; height: 44px; min-height: 44px; margin: 0 auto; border-radius: 10px;
+}
 .app[data-collapsed="true"] .nav-text,
 .app[data-collapsed="true"] .nav-count { display: none; }
 .app[data-collapsed="true"] .nav-icon { width: 18px; height: 18px; flex: 0 0 18px; }
 .app[data-collapsed="true"] .nav-group-label {
-  height: 1px; padding: 0; margin: 11px 10px; font-size: 0;
-  background: rgba(255, 255, 255, 0.09); color: transparent; overflow: hidden;
+  display: block; height: 1px; padding: 0; margin: 12px 10px 6px; font-size: 0; line-height: 0;
+  background: rgba(255, 255, 255, 0.12); color: transparent; overflow: hidden;
 }
+.app[data-collapsed="true"] .nav > .nav-group-label:first-child { display: none; }
 .app[data-collapsed="true"] .nav-link.active::before { left: 2px; }
 
 @media (max-width: 940px) {
@@ -401,9 +405,13 @@
   .app[data-collapsed="true"] .brand-copy,
   .app[data-collapsed="true"] .nav-count { display: block; }
   .app[data-collapsed="true"] .nav-text { display: inline; }
-  .app[data-collapsed="true"] .nav-link { justify-content: flex-start; padding: 8px 10px; }
-  .app[data-collapsed="true"] .nav-group-label {
-    height: auto; margin: 0; padding: 14px 10px 6px; font-size: 10px;
+  .app[data-collapsed="true"] .nav { gap: 2px; padding: 10px 10px 24px; }
+  .app[data-collapsed="true"] .nav-link {
+    justify-content: flex-start; width: auto; height: auto; min-height: 36px; margin: 0; padding: 8px 10px;
+  }
+  .app[data-collapsed="true"] .nav-group-label,
+  body .app[data-collapsed="true"] .nav > .nav-group-label:first-child {
+    display: block; height: auto; margin: 0; padding: 14px 10px 6px; font-size: 10px; line-height: 1.4;
     background: none; color: #6b717c;
   }
 }

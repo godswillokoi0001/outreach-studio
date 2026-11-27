@@ -70,6 +70,11 @@ export type Database = {
       search_enrichment_cache: LooseTable;
       search_provider_quotas: LooseTable;
       growth_execute_runs: LooseTable;
+      user_auth_profiles: LooseTable;
+      admin_notifications: LooseTable;
+      admin_chat_conversations: LooseTable;
+      admin_audit_logs: LooseTable;
+      platform_announcements: LooseTable;
     };
     views: Record<string, unknown>;
     functions: Record<string, unknown>;

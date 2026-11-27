@@ -211,6 +211,11 @@ export async function generateGrowthAdvisorReportServer(input: {
   analyticsInsight?: PerformanceInsight | null;
   fingerprint: string;
   model?: string;
+  onStageProgress?: (
+    stage: "searching_businesses" | "reading_sources" | "checking_niche" | "ranking_recommendations",
+    status: "in_progress" | "done",
+    detail?: string,
+  ) => Promise<void> | void;
 }): Promise<GrowthAdvisorReport> {
   const today = new Date().toISOString().slice(0, 10);
   const hasAnalytics = Boolean(input.analyticsInsight);
@@ -226,6 +231,7 @@ export async function generateGrowthAdvisorReportServer(input: {
     : `${input.profile.idealCustomer || primaryIndustry} buying trends ${year}`;
   const queryC = `${offerFocus} client acquisition objections ${year}`;
 
+  await input.onStageProgress?.("searching_businesses", "in_progress", `Researching ${primaryIndustry}`);
   const [webA, webB, webC, accountSnapshot] = await Promise.all([
     WebSearchService.search(queryA, { maxResults: 4 }).catch(() => null),
     WebSearchService.search(queryB, { maxResults: 4, locationHint: primaryLocation }).catch(() => null),
@@ -234,6 +240,12 @@ export async function generateGrowthAdvisorReportServer(input: {
   ]);
 
   const combinedSources = [...(webA?.results ?? []), ...(webB?.results ?? []), ...(webC?.results ?? [])].slice(0, 12);
+  await input.onStageProgress?.(
+    "searching_businesses",
+    "done",
+    `${combinedSources.length} live source(s) found`,
+  );
+  await input.onStageProgress?.("reading_sources", "in_progress", "Reviewing live market sources & compliance");
   const groundingUrls = combinedSources.map((s) => ({ uri: s.url, title: s.title || s.url }));
   const compliance = getRegionalComplianceGuidance({
     targetLocation: primaryLocation,
@@ -362,6 +374,13 @@ ${liveSearchContext}
 
 Generate marketPulse (3 trends with verified sources), candid pipelineDiagnosis (flagging ${accountSnapshot.untouchedNewLeads} untouched leads if > 0), topPlays (Top 3 Ranked Growth Plays linked to rec_1..rec_3), and 6 recommendations covering location, niche, messaging, channels_timing, and offer_strategy.`;
 
+  await input.onStageProgress?.(
+    "reading_sources",
+    "done",
+    `${combinedSources.length} web source(s) synthesized`,
+  );
+  await input.onStageProgress?.("checking_niche", "in_progress", `Scoring ${primaryIndustry} niche opportunities`);
+
   void input.model;
   const { data } = await LLMGateway.completeJSON<{
     overallStrategy?: string;
@@ -382,6 +401,9 @@ Generate marketPulse (3 trends with verified sources), candid pipelineDiagnosis 
     messages: [{ role: "user", content: user }],
     maxTokens: 2800,
   });
+
+  await input.onStageProgress?.("checking_niche", "done");
+  await input.onStageProgress?.("ranking_recommendations", "in_progress", "Prioritizing recommendations");
 
   const allowedSourceUrls = new Set(groundingUrls.map((g) => g.uri.toLowerCase()));
   const recs: GrowthRecommendation[] = (Array.isArray(data.recommendations) ? data.recommendations : [])

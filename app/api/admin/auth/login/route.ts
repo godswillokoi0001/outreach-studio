@@ -1,14 +1,16 @@
+import QRCode from "qrcode";
 import { NextRequest, NextResponse } from "next/server";
 import { handleApiError } from "@/lib/api-helpers";
+import { buildTotpUri } from "@/lib/key-vault";
 import {
   checkAdminLoginLockout,
   clearAdminAuthFailures,
   findAdminAccountByEmail,
+  getOrCreateAdminAccountTotpSecret,
   recordAdminAuthFailure,
-  saveAdminAccountRecord,
   verifyAdminPassword,
 } from "@/lib/platform/admin-credentials";
-import { clearAdminCookies, setAdminSessionCookies } from "@/lib/platform/admin-session";
+import { clearAdminCookies, setAdminChallengeCookie } from "@/lib/platform/admin-session";
 import { appendAdminAuditLog, extractRequestMeta } from "@/lib/platform/store-server";
 
 export const dynamic = "force-dynamic";
@@ -73,40 +75,43 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Login is the only authentication step: issue the session immediately.
+    // Password step passed: issue temporary challenge cookie until 2FA TOTP/backup is verified.
     await clearAdminAuthFailures(account.email, req);
     const { ipAddress } = extractRequestMeta(req);
-    const nowIso = new Date().toISOString();
-    await saveAdminAccountRecord({
-      ...account,
-      lastLoginAt: nowIso,
-      lastLoginIp: ipAddress,
-    });
+    const totpSecret = await getOrCreateAdminAccountTotpSecret(account);
+    let setup: { secret: string; otpauthUri: string; qrDataUrl?: string } | undefined;
+    if (!account.totpEnabled) {
+      const otpauthUri = buildTotpUri(totpSecret, account.email, "Knowrevo Admin");
+      const qrDataUrl = await QRCode.toDataURL(otpauthUri, { width: 220, margin: 1 }).catch(
+        () => undefined,
+      );
+      setup = { secret: totpSecret, otpauthUri, qrDataUrl };
+    }
+
     await appendAdminAuditLog({
       actorId: account.id,
       actorEmail: account.email,
       actorRole: account.role,
-      action: "admin_login_success",
+      action: "admin_password_verified_challenge_issued",
       targetType: "admin_session",
       targetId: account.id,
-      details: { role: account.role },
+      details: { role: account.role, totpEnabled: account.totpEnabled, ipAddress },
       req,
     });
 
     const res = NextResponse.json(
       {
         ok: true,
-        admin: {
-          id: account.id,
-          email: account.email,
-          name: account.name,
-          role: account.role,
-        },
+        requires2fa: true,
+        totpEnabled: account.totpEnabled,
+        role: account.role,
+        email: account.email,
+        setup,
       },
       { headers: { "Cache-Control": "private, no-store, max-age=0" } },
     );
     clearAdminCookies(res);
-    setAdminSessionCookies(res, account, { includeReauth: true });
+    setAdminChallengeCookie(res, account);
     return res;
   } catch (err) {
     return handleApiError(err);

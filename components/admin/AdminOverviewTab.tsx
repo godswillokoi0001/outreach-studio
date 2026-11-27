@@ -1,11 +1,17 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { Activity, AlertTriangle, CheckCircle2, RefreshCw } from "lucide-react";
+import { Activity, AlertTriangle, CheckCircle2, RefreshCw, Trash2 } from "lucide-react";
 import type { AdminRole, PlatformAlert } from "@/lib/platform/types";
 import { Badge, Banner, Card, Empty, Stat } from "../ui";
 import { BrandLoader } from "../BrandLoader";
-import { adminFetch } from "./admin-client";
+import { useToast } from "../Feedback";
+import { AdminClientError, adminFetch } from "./admin-client";
+import {
+  AdminClearConfirmModal,
+  AdminPaginationBar,
+  type ClearRangeOption,
+} from "./AdminPaginationBar";
 
 export interface OverviewData {
   kpis: {
@@ -28,6 +34,10 @@ export interface OverviewData {
     entityId: string;
     createdAt: string;
   }[];
+  liveFeedTotal?: number;
+  liveFeedPage?: number;
+  liveFeedPageSize?: number;
+  distinctActions?: string[];
   health: {
     errorRatePct: number;
     avgLatencyMs: number;
@@ -49,16 +59,32 @@ export interface OverviewData {
 export function AdminOverviewTab({
   role,
   sessionToken,
+  reauthToken,
+  onNeedReauth,
 }: {
   role: AdminRole;
   sessionToken: string;
+  reauthToken?: string | null;
+  onNeedReauth?: (label: string, retryFn: (freshToken: string) => Promise<void>) => void;
 }) {
+  const toast = useToast();
+  const canClearFeed = role === "admin" || role === "super_admin";
+
   const [range, setRange] = useState<"24h" | "7d" | "30d" | "all">("30d");
   const [userFilter, setUserFilter] = useState("");
   const [actionFilter, setActionFilter] = useState("all");
+  const [feedPage, setFeedPage] = useState(1);
+  const [feedPageSize, setFeedPageSize] = useState(25);
+  const [feedSort, setFeedSort] = useState<"newest" | "oldest">("newest");
   const [data, setData] = useState<OverviewData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  const [clearModalOpen, setClearModalOpen] = useState(false);
+  const [clearRange, setClearRange] = useState<ClearRangeOption>("30d");
+  const [clearPreviewCount, setClearPreviewCount] = useState<number | null>(null);
+  const [loadingPreview, setLoadingPreview] = useState(false);
+  const [clearingFeed, setClearingFeed] = useState(false);
 
   const loadOverview = useCallback(async () => {
     setLoading(true);
@@ -68,6 +94,9 @@ export function AdminOverviewTab({
         range,
         user: userFilter,
         action: actionFilter,
+        feedPage: String(feedPage),
+        feedPageSize: String(feedPageSize),
+        feedSort,
       });
       const res = await adminFetch<OverviewData>(`/api/admin/overview?${qs.toString()}`, {
         sessionToken,
@@ -78,7 +107,53 @@ export function AdminOverviewTab({
     } finally {
       setLoading(false);
     }
-  }, [range, userFilter, actionFilter, sessionToken]);
+  }, [range, userFilter, actionFilter, feedPage, feedPageSize, feedSort, sessionToken]);
+
+  const previewClearFeed = useCallback(
+    async (nextRange: ClearRangeOption) => {
+      if (!canClearFeed) return;
+      setLoadingPreview(true);
+      try {
+        const res = await adminFetch<{ count: number }>("/api/admin/overview", {
+          method: "POST",
+          sessionToken,
+          body: { action: "preview_clear_feed", range: nextRange },
+        });
+        setClearPreviewCount(res.count ?? 0);
+      } catch (err) {
+        toast.error("Could not preview count", err instanceof Error ? err.message : "Error");
+      } finally {
+        setLoadingPreview(false);
+      }
+    },
+    [canClearFeed, sessionToken, toast],
+  );
+
+  const executeClearFeed = async (freshToken?: string) => {
+    setClearingFeed(true);
+    try {
+      const res = await adminFetch<{ removedCount: number }>("/api/admin/overview", {
+        method: "POST",
+        sessionToken,
+        reauthToken: freshToken ?? reauthToken ?? null,
+        body: { action: "clear_feed", range: clearRange },
+      });
+      setClearModalOpen(false);
+      toast.success("Activity feed cleared", `${res.removedCount} log entries removed.`);
+      setFeedPage(1);
+      await loadOverview();
+    } catch (err) {
+      if (err instanceof AdminClientError && err.code === "ADMIN_REAUTH_REQUIRED" && onNeedReauth) {
+        onNeedReauth(`Clear ${clearPreviewCount ?? 0} Activity Feed items`, (t) =>
+          executeClearFeed(t),
+        );
+        return;
+      }
+      toast.error("Could not clear activity feed", err instanceof Error ? err.message : "Error");
+    } finally {
+      setClearingFeed(false);
+    }
+  };
 
   useEffect(() => {
     const t = window.setTimeout(() => void loadOverview(), 0);
@@ -88,7 +163,9 @@ export function AdminOverviewTab({
   if (loading && !data) return <BrandLoader />;
 
   const maxReq = Math.max(1, ...(data?.chartSeries.map((d) => d.requests) ?? [1]));
-  const distinctActions = Array.from(new Set(data?.liveFeed.map((f) => f.action) ?? []));
+  const distinctActions =
+    data?.distinctActions ?? Array.from(new Set(data?.liveFeed.map((f) => f.action) ?? []));
+  const feedTotal = data?.liveFeedTotal ?? data?.liveFeed.length ?? 0;
 
   return (
     <div className="stack" style={{ gap: 16 }}>
@@ -230,21 +307,27 @@ export function AdminOverviewTab({
           {/* Live Platform Activity Feed */}
           <Card
             title="Live Platform Activity Feed"
-            sub="Filter real-time user actions across workspaces"
+            sub="Filter, sort, paginate, or clear user activity feed display logs"
             actions={
               <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
                 <input
                   className="input"
-                  style={{ width: 180 }}
+                  style={{ width: 170 }}
                   placeholder="Filter by email…"
                   value={userFilter}
-                  onChange={(e) => setUserFilter(e.target.value)}
+                  onChange={(e) => {
+                    setUserFilter(e.target.value);
+                    setFeedPage(1);
+                  }}
                 />
                 <select
                   className="input"
-                  style={{ width: 170 }}
+                  style={{ width: 155 }}
                   value={actionFilter}
-                  onChange={(e) => setActionFilter(e.target.value)}
+                  onChange={(e) => {
+                    setActionFilter(e.target.value);
+                    setFeedPage(1);
+                  }}
                 >
                   <option value="all">All actions</option>
                   {distinctActions.map((act) => (
@@ -253,43 +336,100 @@ export function AdminOverviewTab({
                     </option>
                   ))}
                 </select>
+                <select
+                  className="input"
+                  aria-label="Sort activity feed"
+                  style={{ width: "auto" }}
+                  value={feedSort}
+                  onChange={(e) => {
+                    setFeedSort(e.target.value === "oldest" ? "oldest" : "newest");
+                    setFeedPage(1);
+                  }}
+                >
+                  <option value="newest">Newest first</option>
+                  <option value="oldest">Oldest first</option>
+                </select>
+                {canClearFeed && (
+                  <button
+                    type="button"
+                    className="btn btn-sm btn-danger"
+                    onClick={() => {
+                      setClearModalOpen(true);
+                      void previewClearFeed(clearRange);
+                    }}
+                  >
+                    <Trash2 size={12} />
+                    <span>Clear Feed</span>
+                  </button>
+                )}
               </div>
             }
           >
             {data.liveFeed.length === 0 ? (
               <Empty title="No matching activity recorded" />
             ) : (
-              <div className="table-wrap">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Time</th>
-                      <th>User</th>
-                      <th>Action</th>
-                      <th>Target</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {data.liveFeed.slice(0, 40).map((item) => (
-                      <tr key={item.id}>
-                        <td className="tiny nowrap">{new Date(item.createdAt).toLocaleString()}</td>
-                        <td className="tiny strong">{item.userEmail}</td>
-                        <td>
-                          <Badge>
-                            <Activity size={10} style={{ marginRight: 4 }} />
-                            {item.action.replace(/_/g, " ")}
-                          </Badge>
-                        </td>
-                        <td className="tiny muted">
-                          {item.entity} · {item.entityId}
-                        </td>
+              <>
+                <div className="table-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Time</th>
+                        <th>User</th>
+                        <th>Action</th>
+                        <th>Target</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+                    </thead>
+                    <tbody>
+                      {data.liveFeed.map((item) => (
+                        <tr key={item.id}>
+                          <td className="tiny nowrap">
+                            {new Date(item.createdAt).toLocaleString()}
+                          </td>
+                          <td className="tiny strong">{item.userEmail}</td>
+                          <td>
+                            <Badge>
+                              <Activity size={10} style={{ marginRight: 4 }} />
+                              {item.action.replace(/_/g, " ")}
+                            </Badge>
+                          </td>
+                          <td className="tiny muted">
+                            {item.entity} · {item.entityId}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                <AdminPaginationBar
+                  page={feedPage}
+                  pageSize={feedPageSize}
+                  totalCount={feedTotal}
+                  onPageChange={setFeedPage}
+                  onPageSizeChange={(next) => {
+                    setFeedPageSize(next);
+                    setFeedPage(1);
+                  }}
+                />
+              </>
             )}
           </Card>
+
+          <AdminClearConfirmModal
+            open={clearModalOpen}
+            title="Clear Platform Activity Feed"
+            description="Clears historical user activity display rows in the feed log only. User leads, campaigns, Knowledge Base items, analyses, and Admin Audit Logs are untouched."
+            range={clearRange}
+            previewCount={clearPreviewCount}
+            loadingPreview={loadingPreview}
+            clearing={clearingFeed}
+            onRangeChange={(nextRange) => {
+              setClearRange(nextRange);
+              void previewClearFeed(nextRange);
+            }}
+            onConfirm={() => void executeClearFeed()}
+            onClose={() => setClearModalOpen(false)}
+          />
         </>
       )}
     </div>

@@ -16,7 +16,7 @@ import {
   CheckCircle2,
   ChevronDown,
   ChevronUp,
-  Cpu,
+  Clock,
   GripVertical,
   History,
   ImagePlus,
@@ -55,24 +55,13 @@ import {
   type AppRoute,
 } from "@/lib/agent-meta";
 import { authedPost, errorMessage } from "@/lib/client";
-import { setActiveAiConfig } from "@/lib/ai-client";
-import {
-  enabledProviders,
-  providersFromSettings,
-  readActiveProviderId,
-  readProviders,
-  setActiveProviderId,
-  settingsPatchFor,
-  toAiConfig,
-  useModelProviders,
-  useActiveProviderId,
-  writeProviders,
-} from "@/lib/ai/providers";
 import { withRetry } from "@/lib/retry";
 import { readWorkspaceToken as getWorkspaceAccessToken } from "@/lib/workspace-token";
 import { getSettings, saveSettings } from "@/lib/store";
 import { buildLiveKnowledgeDigest } from "@/lib/pipeline-client";
+import { formatResponseTime, formatSessionDuration } from "@/lib/format";
 import { useAuth } from "./AuthProvider";
+import { UserAvatar } from "./UserAvatar";
 import { Menu, MenuItem, MenuSeparator } from "./Menu";
 import { useAgentPresence } from "./AgentPresence";
 import { useConfirm } from "./Feedback";
@@ -110,6 +99,9 @@ interface Conversation {
   providerId?: string;
   createdAt: number;
   updatedAt: number;
+  startedAt?: number | null;
+  endedAt?: number | null;
+  durationSeconds?: number;
   messages: ChatMessage[];
   contents: AgentContent[];
 }
@@ -138,6 +130,7 @@ interface ChatMessage {
   text: string;
   steps?: ActionStep[];
   modelUsed?: string;
+  responseTimeMs?: number;
   error?: string;
   retryPrompt?: string;
   attachments?: { name: string; dataUrl?: string }[];
@@ -187,6 +180,7 @@ interface PendingConfirmation {
 // (research → qualify → compose → review) needs dozens of model turns, so this
 // is only a runaway guard, not a place to stop and ask the operator.
 const MAX_TOOL_ROUNDS = 60;
+const SESSION_INACTIVITY_MS = 15 * 60 * 1000;
 const CONFIRM_KEY = "agent-operator-confirm-risky";
 const RECENT_KEY = "agent-operator-recent";
 const DOCK_KEY = "agent-operator-dock";
@@ -221,6 +215,9 @@ function conversationFromMemory(record: OperatorMemoryRecord): Conversation {
     providerId: record.providerId,
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
+    startedAt: record.startedAt ?? null,
+    endedAt: record.endedAt ?? null,
+    durationSeconds: record.durationSeconds ?? 0,
     messages: (record.messages ?? []) as ChatMessage[],
     contents: (record.contents ?? []) as AgentContent[],
   };
@@ -297,6 +294,7 @@ function timeAgo(timestamp: number, now: number): string {
 
 const noopSubscribe = () => () => {};
 const wait = (ms: number) => new Promise<void>((resolve) => window.setTimeout(resolve, ms));
+const nowEpochMs = () => Date.now();
 
 function readStored<T>(key: string): T | null {
   try {
@@ -394,48 +392,9 @@ export function DashboardChat({
     return stored && Number.isFinite(stored.x) && Number.isFinite(stored.y) ? stored : null;
   });
   const [dragging, setDragging] = useState(false);
-  const [now, setNow] = useState(() => Date.now());
-
-  // Attachments, voice notes and the model switcher. Providers come from the
-  // browser's model vault (Settings → Model providers); keys never enter the
-  // bundle and are only attached to authenticated AI requests.
-  const providers = useModelProviders();
-  // The active model is shared with Settings through one reactive store. Panel
-  // state used to pin an older choice, which let Settings show a model as active
-  // while this panel kept sending requests to the previous one.
-  const storedProviderId = useActiveProviderId();
-  const providerId =
-    storedProviderId && providers.some((provider) => provider.id === storedProviderId)
-      ? storedProviderId
-      : providers.find((provider) => provider.enabled)?.id || "";
-
-  // A browser that has never opened Settings still gets the account's provider
-  // vault, so the operator's model switcher lists every saved model here too.
-  useEffect(() => {
-    void getSettings(user.uid)
-      .then((settings) => {
-        const saved = providersFromSettings(settings);
-        if (saved.length > 0) {
-          const local = readProviders();
-          const merged = [
-            ...saved,
-            ...local.filter((entry) => !saved.some((remote) => remote.id === entry.id)),
-          ];
-          // Mirror the account's active provider so the switcher and the server
-          // agree, including after a change made on another computer.
-          const active =
-            saved.find(
-              (entry) =>
-                entry.provider === settings.ai_provider &&
-                entry.apiKey === settings.ai_api_key &&
-                entry.model === settings.model,
-            ) ?? saved.find((entry) => entry.enabled);
-          if (active && readActiveProviderId() !== active.id) setActiveProviderId(active.id);
-          writeProviders(merged);
-        }
-      })
-      .catch(() => undefined);
-  }, [user.uid]);
+  const [now, setNow] = useState(() => nowEpochMs());
+  const [sessionSeconds, setSessionSeconds] = useState(0);
+  const lastActivityRef = useRef<number>(0);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [attachNotice, setAttachNotice] = useState<string | null>(null);
   const [fileDrag, setFileDrag] = useState(false);
@@ -456,10 +415,8 @@ export function DashboardChat({
   const waveTimerRef = useRef<number | null>(null);
   const recordSecondsRef = useRef(0);
 
-  const activeSavedProvider = providers.find((provider) => provider.id === providerId) ?? null;
-  const visionCapable = activeSavedProvider ? activeSavedProvider.vision : true;
-  const audioCapable = activeSavedProvider ? activeSavedProvider.audio : true;
-  const providerInfoRef = useRef<{ id: string; model: string }>({ id: "", model: "" });
+  const visionCapable = true;
+  const audioCapable = true;
 
   // Operator modes: chat answers only, agent operates the app, developer
   // diagnoses and proposes patches.
@@ -620,11 +577,19 @@ export function DashboardChat({
           historyRef.current = restore.contents ?? [];
           setMessages(restore.messages ?? []);
           setMode(restore.mode);
+          if (restore.startedAt && !restore.endedAt) {
+            setSessionSeconds(
+              Math.max(restore.durationSeconds ?? 0, Math.floor((Date.now() - restore.startedAt) / 1000)),
+            );
+          } else {
+            setSessionSeconds(restore.durationSeconds ?? 0);
+          }
         } else {
           historyRef.current = [];
           activeIdRef.current = null;
           setActiveId(null);
           setMessages([]);
+          setSessionSeconds(0);
         }
       })
       .catch(() => undefined)
@@ -635,11 +600,6 @@ export function DashboardChat({
       active = false;
     };
   }, [user.uid]);
-
-  useEffect(() => {
-    providerInfoRef.current = { id: providerId, model: activeSavedProvider?.model ?? "" };
-    if (activeSavedProvider) setActiveAiConfig(toAiConfig(activeSavedProvider));
-  }, [providerId, activeSavedProvider]);
 
   useEffect(() => {
     try {
@@ -728,14 +688,21 @@ export function DashboardChat({
             : part,
         ),
       }));
+      const existingDuration =
+        existing?.startedAt && !existing?.endedAt
+          ? Math.max(existing.durationSeconds ?? 0, Math.floor((Date.now() - existing.startedAt) / 1000))
+          : (existing?.durationSeconds ?? 0);
       const entry: Conversation = {
         id: activeId,
         title,
         mode: existing?.mode ?? modeRef.current,
-        model: providerInfoRef.current.model || modelUsed || existing?.model,
-        providerId: providerInfoRef.current.id || existing?.providerId,
+        model: modelUsed || existing?.model,
+        providerId: existing?.providerId,
         createdAt: existing?.createdAt ?? Date.now(),
         updatedAt: Date.now(),
+        startedAt: existing?.startedAt ?? Date.now(),
+        endedAt: existing?.endedAt ?? null,
+        durationSeconds: existingDuration,
         messages: storedMessages,
         contents: storedContents,
       };
@@ -771,6 +738,72 @@ export function DashboardChat({
     const id = window.setInterval(() => setElapsed((value) => value + 1), 1000);
     return () => window.clearInterval(id);
   }, [busy]);
+
+  const finalizeActiveSession = (overrideId?: string | null) => {
+    const targetId = overrideId ?? activeIdRef.current;
+    if (!targetId) return;
+    const target = conversationsRef.current.find((item) => item.id === targetId);
+    if (!target || !target.startedAt || target.endedAt) return;
+    const endedAt = Date.now();
+    const durationSeconds = Math.max(
+      target.durationSeconds ?? 0,
+      Math.max(1, Math.round((endedAt - target.startedAt) / 1000)),
+    );
+    const finalized: Conversation = {
+      ...target,
+      endedAt,
+      durationSeconds,
+      updatedAt: endedAt,
+    };
+    setConversations((prev) =>
+      prev.map((item) => (item.id === targetId ? finalized : item)),
+    );
+    if (activeIdRef.current === targetId) {
+      setSessionSeconds(durationSeconds);
+    }
+    if (memoryReadyRef.current) {
+      void saveOperatorMemory(user.uid, finalized).catch(() => undefined);
+    }
+  };
+
+  // Track live session duration against server-persisted startedAt and end on
+  // 15 minutes of inactivity or panel close/collapse.
+  useEffect(() => {
+    if (!open || collapsed || !activeId) return undefined;
+    const tick = () => {
+      const current = conversationsRef.current.find((item) => item.id === activeId);
+      if (!current?.startedAt) {
+        setSessionSeconds(0);
+        return;
+      }
+      if (current.endedAt) {
+        setSessionSeconds(current.durationSeconds ?? 0);
+        return;
+      }
+      const currentNow = Date.now();
+      if (!busy && currentNow - lastActivityRef.current >= SESSION_INACTIVITY_MS) {
+        finalizeActiveSession(current.id);
+        return;
+      }
+      setSessionSeconds(Math.max(current.durationSeconds ?? 0, Math.floor((currentNow - current.startedAt) / 1000)));
+    };
+    tick();
+    const id = window.setInterval(tick, 1000);
+    return () => window.clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- reads live refs safely
+  }, [open, collapsed, activeId, busy]);
+
+  useEffect(() => {
+    lastActivityRef.current = nowEpochMs();
+    const onPageHide = () => {
+      finalizeActiveSession();
+    };
+    window.addEventListener("pagehide", onPageHide);
+    return () => {
+      window.removeEventListener("pagehide", onPageHide);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- finalizes current session on hide
+  }, [user.uid]);
 
   // "Full-time agent" presence: while idle and open, keep reading the workspace
   // and narrating what it notices, without taking any action on its own.
@@ -951,7 +984,9 @@ export function DashboardChat({
     startRound: number,
     model?: string,
     runMode: OperatorMode = "agent",
+    turnStartedAt?: number,
   ) => {
+    const effectiveStartedAt = turnStartedAt ?? nowEpochMs();
     let workingHistory = [...contents];
     let round = startRound;
     let activeModel = model;
@@ -1029,10 +1064,14 @@ export function DashboardChat({
       if (requestedCalls.length === 0) {
         workingHistory = [...workingHistory, modelContent];
         historyRef.current = workingHistory;
+        const finishedAt = nowEpochMs();
+        const responseTimeMs = Math.max(100, finishedAt - effectiveStartedAt);
+        lastActivityRef.current = finishedAt;
         updateAssistantMessage(assistantMsgId, (m) => ({
           ...m,
           text: [...narration, turn.text.trim()].filter(Boolean).join("\n\n") || "Done.",
           modelUsed: turn.modelUsed,
+          responseTimeMs,
           error: undefined,
           retryPrompt: undefined,
         }));
@@ -1156,31 +1195,11 @@ export function DashboardChat({
 
     updateAssistantMessage(assistantMsgId, (m) => ({
       ...m,
+      responseTimeMs: Math.max(100, nowEpochMs() - effectiveStartedAt),
       text:
         m.text ||
         `I reached this run's safety limit (${MAX_TOOL_ROUNDS} steps) before the job was fully done. Everything so far is saved — send "continue" and I'll pick up exactly where I stopped.`,
     }));
-  };
-
-  const chooseProvider = (id: string) => {
-    const next = providers.find((provider) => provider.id === id) ?? null;
-    if (!next) {
-      setActiveProviderId("");
-      return;
-    }
-    setActiveProviderId(next.id);
-    setActiveAiConfig(toAiConfig(next));
-    // Persist the choice: the settings row is what every device and every
-    // server-side AI call reads, so a refresh cannot fall back to the old model.
-    void saveSettings(user.uid, settingsPatchFor(next)).catch(() => undefined);
-    setConversations((prev) =>
-      prev.map((conversation) =>
-        conversation.id === activeIdRef.current
-          ? { ...conversation, providerId: next.id, model: next.model }
-          : conversation,
-      ),
-    );
-    narrate(`${next.name || next.model} selected for this chat.`);
   };
 
   const addFiles = async (files: File[]) => {
@@ -1188,7 +1207,7 @@ export function DashboardChat({
     if (files.length === 0) return;
     if (!visionCapable) {
       setAttachNotice(
-        `The selected model (${activeSavedProvider?.name || activeSavedProvider?.model || "current model"}) cannot read images. Switch to a vision-capable model in Settings → Model providers.`,
+        "The current AI model cannot read images. Configure a vision-capable model in Settings → AI Provider.",
       );
       return;
     }
@@ -1424,10 +1443,24 @@ export function DashboardChat({
     setAttachNotice(null);
     setRecordError(null);
     setElapsed(0);
+    const nowMs = nowEpochMs();
+    lastActivityRef.current = nowMs;
     if (!activeIdRef.current) {
       const id = makeLocalId("conv");
       activeIdRef.current = id;
       setActiveId(id);
+      setSessionSeconds(0);
+    } else {
+      const existing = conversationsRef.current.find((item) => item.id === activeIdRef.current);
+      if (existing?.endedAt) {
+        const carrySeconds = existing.durationSeconds ?? 0;
+        const resumedStart = nowMs - carrySeconds * 1000;
+        setConversations((prev) =>
+          prev.map((item) =>
+            item.id === existing.id ? { ...item, startedAt: resumedStart, endedAt: null } : item,
+          ),
+        );
+      }
     }
     setBusy(true);
     setStatusLabel("Preparing workspace context…");
@@ -1477,11 +1510,12 @@ export function DashboardChat({
     const nextHistory: AgentContent[] = [...prevHistory, { role: "user", parts }];
 
     try {
-      const settings = await getSettings(user.uid).catch(() => null);
+      const turnStartedAt = nowEpochMs();
+      await getSettings(user.uid).catch(() => null);
       // Read the knowledge base once per request: it is the source of truth for
       // every draft, plan and claim the operator makes in this turn.
       knowledgeRef.current = await buildLiveKnowledgeDigest(user.uid).catch(() => "");
-      await runAgentLoop(assistantId, nextHistory, 0, activeSavedProvider?.model || settings?.model, mode);
+      await runAgentLoop(assistantId, nextHistory, 0, undefined, mode, turnStartedAt);
     } catch (err) {
       // Only keep history clean if no tool exchange completed yet
       if (historyRef.current === prevHistory) {
@@ -1576,7 +1610,7 @@ export function DashboardChat({
     historyRef.current = nextHistory;
 
     try {
-      await runAgentLoop(pending.assistantMsgId, nextHistory, pending.round + 1, pending.model);
+      await runAgentLoop(pending.assistantMsgId, nextHistory, pending.round + 1, pending.model, modeRef.current, nowEpochMs());
     } catch (err) {
       const msg = errorMessage(err);
       updateAssistantMessage(pending.assistantMsgId, (m) => ({
@@ -1591,28 +1625,38 @@ export function DashboardChat({
   };
 
   const resetChat = () => {
+    finalizeActiveSession();
     cancelledRef.current = true;
     historyRef.current = [];
     activeIdRef.current = null;
     setActiveId(null);
     setPendingConfirm(null);
     setMessages([]);
+    setSessionSeconds(0);
     setBusy(false);
     setStatusLabel(null);
     setView("chat");
   };
 
   const openConversation = (conversation: Conversation) => {
+    if (conversation.id !== activeIdRef.current) {
+      finalizeActiveSession();
+    }
     cancelledRef.current = true;
     historyRef.current = conversation.contents ?? [];
     activeIdRef.current = conversation.id;
     setActiveId(conversation.id);
     setMessages(conversation.messages ?? []);
     setMode(conversation.mode ?? "agent");
-    const restore = providers.find((provider) => provider.id === conversation.providerId);
-    if (restore) {
-      setActiveProviderId(restore.id);
-      setActiveAiConfig(toAiConfig(restore));
+    if (conversation.startedAt && !conversation.endedAt) {
+      setSessionSeconds(
+        Math.max(
+          conversation.durationSeconds ?? 0,
+          Math.floor((nowEpochMs() - conversation.startedAt) / 1000),
+        ),
+      );
+    } else {
+      setSessionSeconds(conversation.durationSeconds ?? 0);
     }
     setPendingConfirm(null);
     setBusy(false);
@@ -1756,7 +1800,15 @@ export function DashboardChat({
             <Bot size={18} aria-hidden="true" />
           </div>
           <div style={{ minWidth: 0 }}>
-            <div className="chat-title">Operator</div>
+            <div className="chat-title-row">
+              <div className="chat-title">Operator</div>
+              {activeId && sessionSeconds > 0 && (
+                <span className="chat-session-timer" title="Chat session duration">
+                  <Clock size={11} aria-hidden="true" />
+                  <span>{formatSessionDuration(sessionSeconds)}</span>
+                </span>
+              )}
+            </div>
             <div className="chat-live-line" data-busy={busy ? "true" : "false"} title={liveLine}>
               <span className="chat-live-dot" />
               <span className="chat-live-text">{liveLine}</span>
@@ -1768,7 +1820,12 @@ export function DashboardChat({
           <button
             type="button"
             className="btn btn-sm btn-ghost"
-            onClick={() => setCollapsed((value) => !value)}
+            onClick={() =>
+              setCollapsed((value) => {
+                if (!value) finalizeActiveSession();
+                return !value;
+              })
+            }
             title={collapsed ? "Expand operator" : "Collapse operator"}
             aria-label={collapsed ? "Expand operator" : "Collapse operator"}
             aria-expanded={!collapsed}
@@ -1778,7 +1835,10 @@ export function DashboardChat({
           <button
             type="button"
             className="btn btn-sm btn-ghost"
-            onClick={onClose}
+            onClick={() => {
+              finalizeActiveSession();
+              onClose();
+            }}
             title="Close operator"
             aria-label="Close operator"
           >
@@ -1805,22 +1865,6 @@ export function DashboardChat({
             );
           })}
         </div>
-        <label className="chat-model" title="Model used by the operator in this chat">
-          <Cpu size={12} aria-hidden="true" />
-          <select
-            value={providerId}
-            onChange={(event) => chooseProvider(event.target.value)}
-            aria-label="Model provider"
-            disabled={busy}
-          >
-            {enabledProviders(providers).length === 0 ? <option value="">Default model</option> : null}
-            {enabledProviders(providers).map((provider) => (
-              <option key={provider.id} value={provider.id}>
-                {provider.name || provider.model || provider.provider}
-              </option>
-            ))}
-          </select>
-        </label>
         <div className="chat-toolbar-actions">
           <button
             type="button"
@@ -1994,6 +2038,9 @@ export function DashboardChat({
                           <span className="agent-convo-title">{conversation.title}</span>
                           <span className="agent-convo-meta">
                             {conversation.mode} · {timeAgo(conversation.updatedAt, now)}
+                            {(conversation.durationSeconds ?? 0) > 0
+                              ? ` · ${formatSessionDuration(conversation.durationSeconds)}`
+                              : ""}
                           </span>
                         </button>
                       )}
@@ -2115,29 +2162,38 @@ export function DashboardChat({
           messages.map((msg) => (
             <div key={msg.id} className={`chat-msg chat-msg-${msg.role}`}>
               {msg.role === "user" ? (
-                <div className="chat-bubble chat-bubble-user">
-                  {msg.attachments && msg.attachments.length > 0 ? (
-                    <div className="chat-bubble-media">
-                      {msg.attachments.map((attachment, index) =>
-                        attachment.dataUrl ? (
-                          // eslint-disable-next-line @next/next/no-img-element -- a data URL of the user's own upload
-                          <img key={`${attachment.name}-${index}`} src={attachment.dataUrl} alt={attachment.name} />
-                        ) : (
-                          <span key={`${attachment.name}-${index}`} className="chat-bubble-file">
-                            <ImagePlus size={12} aria-hidden="true" /> {attachment.name}
-                          </span>
-                        ),
-                      )}
-                    </div>
-                  ) : null}
-                  {msg.voice ? (
-                    <div className="chat-bubble-voice">
-                      <Volume2 size={12} aria-hidden="true" />
-                      <span>Voice note · {formatSeconds(msg.voice.seconds)}</span>
-                      {msg.voice.transcript ? <em>“{msg.voice.transcript}”</em> : null}
-                    </div>
-                  ) : null}
-                  {msg.text}
+                <div className="chat-user-row">
+                  <div className="chat-bubble chat-bubble-user">
+                    {msg.attachments && msg.attachments.length > 0 ? (
+                      <div className="chat-bubble-media">
+                        {msg.attachments.map((attachment, index) =>
+                          attachment.dataUrl ? (
+                            // eslint-disable-next-line @next/next/no-img-element -- a data URL of the user's own upload
+                            <img key={`${attachment.name}-${index}`} src={attachment.dataUrl} alt={attachment.name} />
+                          ) : (
+                            <span key={`${attachment.name}-${index}`} className="chat-bubble-file">
+                              <ImagePlus size={12} aria-hidden="true" /> {attachment.name}
+                            </span>
+                          ),
+                        )}
+                      </div>
+                    ) : null}
+                    {msg.voice ? (
+                      <div className="chat-bubble-voice">
+                        <Volume2 size={12} aria-hidden="true" />
+                        <span>Voice note · {formatSeconds(msg.voice.seconds)}</span>
+                        {msg.voice.transcript ? <em>“{msg.voice.transcript}”</em> : null}
+                      </div>
+                    ) : null}
+                    {msg.text}
+                  </div>
+                  <UserAvatar
+                    photoURL={user.photoURL}
+                    name={user.displayName}
+                    email={user.email}
+                    size={26}
+                    className="chat-user-avatar"
+                  />
                 </div>
               ) : (
                 <div className="chat-assistant-block">
@@ -2200,6 +2256,11 @@ export function DashboardChat({
                   {msg.text && (
                     <div className="chat-bubble chat-bubble-assistant">
                       <FormattedReply text={msg.text} />
+                      {typeof msg.responseTimeMs === "number" && msg.responseTimeMs > 0 && (
+                        <div className="chat-reply-meta">
+                          Response time · {formatResponseTime(msg.responseTimeMs)}
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>

@@ -33,6 +33,9 @@ export interface AppUser {
   email: string;
   displayName: string;
   photoURL: string | null;
+  googlePhotoURL?: string | null;
+  avatarSource?: "google" | "custom";
+  hasPassword?: boolean;
   emailVerified: boolean;
   status?: "active" | "suspended";
   onboardingStatus?: "not_started" | "in_progress" | "completed";
@@ -85,6 +88,23 @@ export async function signInWithGoogle(): Promise<void> {
       redirectTo: authCallbackUrl(),
       queryParams: { prompt: "select_account" },
     },
+  });
+  if (error) throw new Error(error.message);
+}
+
+/** Standard email + password sign-in (enabled after password creation on first Google sign-up). */
+export async function signInWithEmailPassword(email: string, password: string): Promise<void> {
+  const { error } = await supabaseBrowser.auth.signInWithPassword({
+    email: email.trim().toLowerCase(),
+    password,
+  });
+  if (error) throw new Error(error.message);
+}
+
+/** Sends a password recovery link via Supabase Auth. */
+export async function requestPasswordReset(email: string): Promise<void> {
+  const { error } = await supabaseBrowser.auth.resetPasswordForEmail(email.trim().toLowerCase(), {
+    redirectTo: `${appOrigin()}/auth/callback?next=/auth/reset-password`,
   });
   if (error) throw new Error(error.message);
 }

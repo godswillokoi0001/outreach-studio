@@ -1065,6 +1065,7 @@ export async function listUserAiKeys(ownerId: string): Promise<UserAiKeyRecord[]
 
 export async function saveUserAiKey(ownerId: string, rec: UserAiKeyRecord): Promise<UserAiKeyRecord> {
   const safe: UserAiKeyRecord = { ...rec, ownerId, updatedAt: new Date().toISOString() };
+  let wroteSql = false;
   if (supabaseServer) {
     const { error } = await supabaseServer.from("user_ai_keys").upsert(
       {
@@ -1084,33 +1085,37 @@ export async function saveUserAiKey(ownerId: string, rec: UserAiKeyRecord): Prom
       } as never,
       { onConflict: "id" },
     );
-    if (error) {
-      const existing =
-        (await readKnowledgeDoc<UserAiKeyRecord[]>(ownerId, `system_llm_user_keys_${ownerId}`)) ?? [];
-      const next = existing.some((x) => x.id === safe.id)
-        ? existing.map((x) => (x.id === safe.id ? safe : x))
-        : [...existing, safe];
-      await writeKnowledgeDoc(
-        ownerId,
-        `system_llm_user_keys_${ownerId}`,
-        "system_llm_user",
-        "User Encrypted AI Keys",
-        next,
-      );
-    }
+    wroteSql = !error;
+  }
+  if (!wroteSql) {
+    const existing =
+      (await readKnowledgeDoc<UserAiKeyRecord[]>(ownerId, `system_llm_user_keys_${ownerId}`)) ?? [];
+    const next = existing.some((x) => x.id === safe.id)
+      ? existing.map((x) => (x.id === safe.id ? safe : x))
+      : [...existing, safe];
+    await writeKnowledgeDoc(
+      ownerId,
+      `system_llm_user_keys_${ownerId}`,
+      "system_llm_user",
+      "User Encrypted AI Keys",
+      next,
+    );
   }
   invalidateUserAiCaches(ownerId);
   return safe;
 }
 
 export async function deleteUserAiKey(ownerId: string, keyId: string): Promise<void> {
-  if (!supabaseServer) return;
-  const { error } = await supabaseServer
-    .from("user_ai_keys")
-    .delete()
-    .eq("id", keyId)
-    .eq("owner_id", ownerId);
-  if (error) {
+  let deletedSql = false;
+  if (supabaseServer) {
+    const { error } = await supabaseServer
+      .from("user_ai_keys")
+      .delete()
+      .eq("id", keyId)
+      .eq("owner_id", ownerId);
+    deletedSql = !error;
+  }
+  if (!deletedSql) {
     const existing =
       (await readKnowledgeDoc<UserAiKeyRecord[]>(ownerId, `system_llm_user_keys_${ownerId}`)) ?? [];
     await writeKnowledgeDoc(

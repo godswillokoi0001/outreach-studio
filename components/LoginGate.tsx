@@ -7,13 +7,17 @@ import {
   ArrowRight,
   BookOpen,
   CheckCircle2,
+  Eye,
+  EyeOff,
   FileSpreadsheet,
+  KeyRound,
   Lock,
   MailCheck,
   MousePointerClick,
   Search,
   ShieldCheck,
 } from "lucide-react";
+import { requestPasswordReset, signInWithEmailPassword } from "@/lib/auth";
 import { BrandLockup } from "./BrandMark";
 import { ThemeToggle } from "./ThemeToggle";
 
@@ -60,9 +64,54 @@ export function LoginGate({
   onBack?: () => void;
 }) {
   const [mode, setMode] = useState<"signup" | "signin">(initialMode);
+  const [emailInput, setEmailInput] = useState("");
+  const [passwordInput, setPasswordInput] = useState("");
+  const [showPw, setShowPw] = useState(false);
+  const [emailBusy, setEmailBusy] = useState(false);
+  const [localError, setLocalError] = useState<string | null>(null);
+  const [forgotMode, setForgotMode] = useState(false);
+  const [resetSentMsg, setResetSentMsg] = useState<string | null>(null);
+
+  const effectiveError = localError || error;
   const domainIssue =
-    error && /unauthori[sz]ed domain|not authorised in Firebase|auth\/unauthorized-domain/i.test(error);
+    effectiveError && /unauthori[sz]ed domain|not authorised in Firebase|auth\/unauthorized-domain/i.test(effectiveError);
   const isSignup = mode === "signup";
+
+  const handleEmailSignIn = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!emailInput.trim() || !passwordInput) {
+      setLocalError("Enter both your email and password.");
+      return;
+    }
+    setEmailBusy(true);
+    setLocalError(null);
+    try {
+      await signInWithEmailPassword(emailInput, passwordInput);
+    } catch (err) {
+      setLocalError(err instanceof Error ? err.message : "Invalid email or password.");
+    } finally {
+      setEmailBusy(false);
+    }
+  };
+
+  const handleForgotSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!emailInput.trim()) {
+      setLocalError("Enter your account email first.");
+      return;
+    }
+    setEmailBusy(true);
+    setLocalError(null);
+    setResetSentMsg(null);
+    try {
+      await requestPasswordReset(emailInput);
+      setResetSentMsg(`Password reset link sent to ${emailInput.trim()}. Check your inbox.`);
+    } catch (err) {
+      setLocalError(err instanceof Error ? err.message : "Could not send reset email.");
+    } finally {
+      setEmailBusy(false);
+    }
+  };
 
   return (
     <main className="auth-shell">
@@ -158,10 +207,10 @@ export function LoginGate({
             </motion.div>
           </AnimatePresence>
 
-          {error && (
+          {effectiveError && (
             <div className="banner auth-error" data-tone="bad">
               <div>
-                {error}
+                {effectiveError}
                 {domainIssue && (
                   <>
                     <ol className="setup-steps">
@@ -241,6 +290,110 @@ export function LoginGate({
             Sign-in only reads your name, email and photo. Gmail and Sheets access is asked for separately and can be
             revoked any time from your Google account.
           </p>
+
+          {!isSignup && (
+            <div
+              style={{
+                marginTop: 14,
+                paddingTop: 14,
+                borderTop: "1px solid var(--line-soft)",
+              }}
+            >
+              {forgotMode ? (
+                <form onSubmit={(e) => void handleForgotSubmit(e)} className="stack" style={{ gap: 10 }}>
+                  <div className="strong tiny">Reset your password</div>
+                  {resetSentMsg && (
+                    <div className="banner" data-tone="ok">
+                      <span className="tiny">{resetSentMsg}</span>
+                    </div>
+                  )}
+                  <input
+                    className="input"
+                    type="email"
+                    required
+                    value={emailInput}
+                    onChange={(e) => setEmailInput(e.target.value)}
+                    placeholder="you@gmail.com"
+                    aria-label="Reset account email"
+                  />
+                  <div className="row" style={{ gap: 8, justifyContent: "space-between" }}>
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-ghost"
+                      onClick={() => {
+                        setForgotMode(false);
+                        setLocalError(null);
+                        setResetSentMsg(null);
+                      }}
+                    >
+                      Back to sign in
+                    </button>
+                    <button type="submit" className="btn btn-sm btn-primary" disabled={emailBusy}>
+                      {emailBusy ? "Sending…" : "Send reset link"}
+                    </button>
+                  </div>
+                </form>
+              ) : (
+                <form onSubmit={(e) => void handleEmailSignIn(e)} className="stack" style={{ gap: 9 }}>
+                  <div className="tiny muted strong" style={{ textTransform: "uppercase", letterSpacing: "0.06em" }}>
+                    Or sign in with email &amp; password
+                  </div>
+                  <input
+                    className="input"
+                    type="email"
+                    autoComplete="email"
+                    value={emailInput}
+                    onChange={(e) => setEmailInput(e.target.value)}
+                    placeholder="you@gmail.com"
+                    aria-label="Email address"
+                  />
+                  <div style={{ position: "relative" }}>
+                    <input
+                      className="input"
+                      type={showPw ? "text" : "password"}
+                      autoComplete="current-password"
+                      value={passwordInput}
+                      onChange={(e) => setPasswordInput(e.target.value)}
+                      placeholder="Password"
+                      aria-label="Password"
+                      style={{ paddingRight: 40 }}
+                    />
+                    <button
+                      type="button"
+                      className="btn btn-ghost btn-sm"
+                      onClick={() => setShowPw((v) => !v)}
+                      aria-label={showPw ? "Hide password" : "Show password"}
+                      style={{
+                        position: "absolute",
+                        right: 4,
+                        top: "50%",
+                        transform: "translateY(-50%)",
+                        padding: "3px 6px",
+                      }}
+                    >
+                      {showPw ? <EyeOff size={14} /> : <Eye size={14} />}
+                    </button>
+                  </div>
+                  <div className="row" style={{ justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-ghost"
+                      onClick={() => {
+                        setForgotMode(true);
+                        setLocalError(null);
+                      }}
+                    >
+                      Forgot password?
+                    </button>
+                    <button type="submit" className="btn btn-sm btn-primary" disabled={emailBusy || busy}>
+                      <KeyRound size={13} />
+                      {emailBusy ? "Signing in…" : "Sign in"}
+                    </button>
+                  </div>
+                </form>
+              )}
+            </div>
+          )}
 
           <ul className="auth-trust">
             {TRUST.map(({ icon: Icon, text }) => (

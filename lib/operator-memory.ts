@@ -20,6 +20,9 @@ export interface OperatorMemoryRecord {
   contents: unknown[];
   createdAt: number;
   updatedAt: number;
+  startedAt?: number | null;
+  endedAt?: number | null;
+  durationSeconds?: number;
 }
 
 const MEMORY_LIMIT = 200;
@@ -67,6 +70,12 @@ export async function loadOperatorMemory(uid: string): Promise<OperatorMemoryRec
       contents: Array.isArray(row.contents) ? row.contents : [],
       createdAt: toMillis(row.createdAt, Date.now()),
       updatedAt: toMillis(row.updatedAt, Date.now()),
+      startedAt: row.startedAt || row.started_at ? toMillis(row.startedAt ?? row.started_at, Date.now()) : null,
+      endedAt: row.endedAt || row.ended_at ? toMillis(row.endedAt ?? row.ended_at, Date.now()) : null,
+      durationSeconds:
+        typeof (row.durationSeconds ?? row.duration_seconds) === "number"
+          ? Math.max(0, Math.round(Number(row.durationSeconds ?? row.duration_seconds)))
+          : 0,
     };
   });
 }
@@ -85,6 +94,9 @@ export async function saveOperatorMemory(
     contents: record.contents,
     created_at: new Date(record.createdAt).toISOString(),
     updated_at: new Date(record.updatedAt).toISOString(),
+    ...(record.startedAt ? { started_at: new Date(record.startedAt).toISOString() } : {}),
+    ...(record.endedAt ? { ended_at: new Date(record.endedAt).toISOString() } : { ended_at: null }),
+    duration_seconds: Math.max(0, Math.round(record.durationSeconds ?? 0)),
   });
   announce(OPERATOR_MEMORY_CHANGED);
 }

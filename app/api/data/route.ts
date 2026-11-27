@@ -45,13 +45,13 @@ const COLUMNS: Record<string, string[]> = {
   email_opens: ["id", "owner_id", "message_id", "lead_id", "opened_at", "user_agent"],
   operator_conversations: [
     "id", "owner_id", "title", "mode", "model", "provider_id", "messages", "contents",
-    "created_at", "updated_at",
+    "started_at", "ended_at", "duration_seconds", "created_at", "updated_at",
   ],
 };
 
 const TIMESTAMP_COLUMNS = new Set([
   "created_at", "updated_at", "approved_at", "sent_at", "research_at",
-  "last_contacted_at", "received_at", "opened_at", "at",
+  "last_contacted_at", "received_at", "opened_at", "at", "started_at", "ended_at",
 ]);
 
 type Row = Record<string, unknown>;

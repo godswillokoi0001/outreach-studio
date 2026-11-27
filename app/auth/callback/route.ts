@@ -1,19 +1,15 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
+import { resolveOwnerId } from "@/lib/server-auth";
+import { userHasPasswordServer } from "@/lib/server-password";
+import { supabaseServer } from "@/lib/supabase-server";
 
 export const dynamic = "force-dynamic";
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL ?? "";
 const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? "";
 
-/**
- * Turns Supabase/Google's raw message into something a person can act on.
- *
- * "Unable to exchange external code" means the authorization code reached the
- * token endpoint twice, or after it expired: the callback was reloaded, opened
- * from history, or opened in a second tab. It is not a broken account.
- */
 function friendlyAuthError(raw: string): string {
   if (/exchange external code|invalid_grant|code verifier|code challenge|already been used|already used/i.test(raw)) {
     return "That Google sign-in link had already been used or had expired. Click Continue with Google to start a new sign-in.";
@@ -24,12 +20,13 @@ function friendlyAuthError(raw: string): string {
   return raw;
 }
 
-/** Completes the Supabase Google sign-in and returns to the app. */
+/** Completes Supabase OAuth / recovery code exchange and routes new users straight to onboarding. */
 export async function GET(request: Request) {
   const url = new URL(request.url);
   const code = url.searchParams.get("code");
   const errorDescription = url.searchParams.get("error_description") ?? url.searchParams.get("error");
   const next = url.searchParams.get("next") ?? "/";
+  const type = url.searchParams.get("type") ?? "";
 
   const cookieStore = await cookies();
   const supabase = createServerClient(supabaseUrl, supabaseAnonKey, {
@@ -43,7 +40,6 @@ export async function GET(request: Request) {
     },
   });
 
-  const home = () => NextResponse.redirect(new URL("/", url.origin));
   const backWithError = (reason: string) => {
     const back = new URL("/", url.origin);
     back.searchParams.set("auth", "error");
@@ -51,29 +47,54 @@ export async function GET(request: Request) {
     return NextResponse.redirect(back);
   };
 
-  // A failed callback is harmless when this browser already has a session:
-  // the code was spent by the first attempt, so continue instead of scaring
-  // the user with an error they cannot act on.
-  const hasSession = async () => {
-    const { data } = await supabase.auth.getUser();
-    return Boolean(data.user);
-  };
-
   if (errorDescription) {
-    if (await hasSession()) return home();
-    return backWithError(errorDescription);
+    const { data } = await supabase.auth.getUser();
+    if (!data.user) return backWithError(errorDescription);
+  } else if (!code) {
+    const { data } = await supabase.auth.getUser();
+    if (!data.user) return backWithError("Google did not return an authorization code.");
+  } else {
+    const { error } = await supabase.auth.exchangeCodeForSession(code);
+    if (error) {
+      const { data } = await supabase.auth.getUser();
+      if (!data.user) return backWithError(error.message);
+    }
   }
 
-  if (!code) {
-    if (await hasSession()) return home();
-    return backWithError("Google did not return an authorization code.");
+  if (type === "recovery" || next === "/auth/reset-password") {
+    return NextResponse.redirect(new URL("/auth/reset-password", url.origin));
   }
 
-  const { error } = await supabase.auth.exchangeCodeForSession(code);
-  if (error) {
-    if (await hasSession()) return home();
-    return backWithError(error.message);
+  // Determine right on the server whether user needs password setup or onboarding,
+  // so brand-new sign-ups land directly on /onboarding and never flash the dashboard.
+  let destination = next.startsWith("/") ? next : "/";
+  try {
+    const { data } = await supabase.auth.getUser();
+    const email = (data.user?.email ?? "").trim().toLowerCase();
+    if (data.user && email) {
+      const ownerId = await resolveOwnerId(data.user.id, email);
+      const hasPassword = await userHasPasswordServer(ownerId);
+      let onboardingDone = false;
+      if (supabaseServer) {
+        const { data: onbRow } = await supabaseServer
+          .from("knowledge")
+          .select("content")
+          .eq("id", `system_onboarding_${ownerId}`)
+          .eq("owner_id", ownerId)
+          .maybeSingle();
+        const raw = (onbRow as { content?: string } | null)?.content;
+        if (raw) {
+          const parsed = JSON.parse(raw) as { status?: string };
+          onboardingDone = parsed.status === "completed";
+        }
+      }
+      if (!hasPassword || !onboardingDone) {
+        destination = "/onboarding";
+      }
+    }
+  } catch {
+    /* fall through to Shell onboarding guard if check unavailable */
   }
 
-  return NextResponse.redirect(new URL(next.startsWith("/") ? next : "/", url.origin));
+  return NextResponse.redirect(new URL(destination, url.origin));
 }

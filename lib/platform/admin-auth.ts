@@ -1,7 +1,12 @@
 import type { NextRequest } from "next/server";
+import { decryptSecret, verifyTotpCode } from "../key-vault";
 import { AuthError } from "../server-auth";
-import { findAdminAccountById, type AdminAccountRecord } from "./admin-credentials";
-import { readAdminSessionFromRequest } from "./admin-session";
+import {
+  consumeAdminBackupCode,
+  findAdminAccountById,
+  type AdminAccountRecord,
+} from "./admin-credentials";
+import { readAdminReauthFromRequest, readAdminSessionFromRequest } from "./admin-session";
 import { ROLE_RANK, type AdminRole } from "./types";
 
 export interface AdminContext {
@@ -39,7 +44,7 @@ export async function requireAdmin(
   options?: { requireReauth?: boolean; inlineTotpCode?: string },
 ): Promise<AdminContext> {
   const session = readAdminSessionFromRequest(req);
-  if (!session) {
+  if (!session || !session.totpVerified) {
     throw new AuthError("Admin authentication required.", 401, "ADMIN_UNAUTHENTICATED");
   }
 
@@ -52,11 +57,29 @@ export async function requireAdmin(
     throw new AuthError("Insufficient administrator privileges.", 403, "ADMIN_FORBIDDEN");
   }
 
-  // Login is the only authentication step: once a valid admin session exists,
-  // sensitive actions never prompt for a second factor or re-authentication.
-  void options?.requireReauth;
-  void options?.inlineTotpCode;
-  const reauthenticated = true;
+  let reauthenticated = readAdminReauthFromRequest(req, account.id);
+  if (!reauthenticated && options?.inlineTotpCode) {
+    const code = options.inlineTotpCode.replace(/\s+/g, "").trim();
+    if (/^\d{6}$/.test(code) && account.totpSecretEncrypted) {
+      try {
+        const secret = decryptSecret(account.totpSecretEncrypted);
+        reauthenticated = verifyTotpCode(secret, code);
+      } catch {
+        reauthenticated = false;
+      }
+    }
+    if (!reauthenticated) {
+      reauthenticated = await consumeAdminBackupCode(account, code);
+    }
+  }
+
+  if (options?.requireReauth && !reauthenticated) {
+    throw new AuthError(
+      "Re-authentication required to perform this sensitive action.",
+      403,
+      "ADMIN_REAUTH_REQUIRED",
+    );
+  }
 
   const nowIso = new Date().toISOString();
   return {
