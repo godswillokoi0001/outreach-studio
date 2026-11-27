@@ -58,6 +58,7 @@ export type Database = {
       global_knowledge_modules: LooseTable;
       user_business_profiles: LooseTable;
       background_jobs: LooseTable;
+      email_rewrite_workspaces: LooseTable;
       admin_accounts: LooseTable;
       admin_login_attempts: LooseTable;
       admin_ai_settings: LooseTable;

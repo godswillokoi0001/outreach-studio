@@ -1,7 +1,10 @@
 import { randomBytes } from "node:crypto";
 import { supabaseServer } from "./supabase-server";
 
-export type BackgroundJobType = "onboarding_kb_compile" | "growth_advisor_research";
+export type BackgroundJobType =
+  | "onboarding_kb_compile"
+  | "growth_advisor_research"
+  | "email_review_rewrite";
 export type BackgroundJobStatus = "queued" | "running" | "succeeded" | "failed";
 export type BackgroundJobStepStatus = "pending" | "in_progress" | "done" | "failed";
 
@@ -35,6 +38,11 @@ export interface BackgroundJobRecord {
 }
 
 const FALLBACK_CATEGORY = "system_background_jobs";
+const memJobs = new Map<string, BackgroundJobRecord>();
+
+export function clearBackgroundJobsForTests(): void {
+  memJobs.clear();
+}
 const STALE_JOB_MS = 20 * 60 * 1000;
 // A running job writes progress (or a heartbeat) at least this often. If it goes
 // quiet for longer than JOB_STALL_MS the server that owned it is gone - on
@@ -161,6 +169,7 @@ async function saveJobFallback(job: BackgroundJobRecord): Promise<void> {
 }
 
 async function saveJobRecord(job: BackgroundJobRecord): Promise<void> {
+  memJobs.set(`${job.ownerId}:${job.id}`, job);
   if (!supabaseServer) return;
   const { error } = await supabaseServer.from("background_jobs").upsert(
     {
@@ -193,7 +202,13 @@ export async function listBackgroundJobsForOwner(
   jobType?: BackgroundJobType,
   limit = 10,
 ): Promise<BackgroundJobRecord[]> {
-  if (!supabaseServer || !ownerId) return [];
+  if (!ownerId) return [];
+  if (!supabaseServer) {
+    return Array.from(memJobs.values())
+      .filter((j) => j.ownerId === ownerId && (!jobType || j.jobType === jobType))
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+      .slice(0, limit);
+  }
 
   let q = supabaseServer
     .from("background_jobs")
@@ -235,7 +250,11 @@ export async function getBackgroundJobForOwner(
   ownerId: string,
   jobId: string,
 ): Promise<BackgroundJobRecord | null> {
-  if (!supabaseServer || !ownerId || !jobId) return null;
+  if (!ownerId || !jobId) return null;
+  if (!supabaseServer) {
+    const found = memJobs.get(`${ownerId}:${jobId}`) ?? null;
+    return found && found.ownerId === ownerId ? found : null;
+  }
 
   const { data, error } = await supabaseServer
     .from("background_jobs")

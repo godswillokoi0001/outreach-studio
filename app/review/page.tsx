@@ -8,6 +8,8 @@ import { useAuth } from "@/components/AuthProvider";
 import { BatchRunner } from "@/components/Runner";
 import { Badge, Banner, Card, Empty, Modal, Pager } from "@/components/ui";
 import { EmailBodyEditor } from "@/components/EmailBodyEditor";
+import { EmailRewriteWorkspace } from "@/components/EmailRewriteWorkspace";
+import type { RewriteScope } from "@/lib/email-rewrite";
 import { useConfirm, useToast } from "@/components/Feedback";
 import { authedPost, errorMessage } from "@/lib/client";
 import type { ComposedEmail } from "@/lib/compose";
@@ -59,6 +61,12 @@ export default function ReviewPage() {
   const [busy, setBusy] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [rewriteTrigger, setRewriteTrigger] = useState<{
+    scope: RewriteScope;
+    selectedIds?: string[];
+    nonce: number;
+  } | null>(null);
 
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [leads, setLeads] = useState<Lead[]>([]);
@@ -364,9 +372,24 @@ export default function ReviewPage() {
             can be sent, and only inside your sending window and limits.
           </p>
         </div>
-        <div className="row-end">
+        <div className="row-end" style={{ gap: 8 }}>
           <button
             className="btn btn-sm btn-primary"
+            onClick={() =>
+              setRewriteTrigger({
+                scope: selectedIds.length > 0 ? "selected" : "all",
+                selectedIds,
+                nonce: Date.now(),
+              })
+            }
+            disabled={rows.length === 0}
+            type="button"
+          >
+            <Sparkles size={13} aria-hidden="true" />
+            Rewrite all with AI
+          </button>
+          <button
+            className="btn btn-sm"
             onClick={() => {
               const nextInQueue = filtered.find((item) => item.status === "pending_approval") ?? filtered[0];
               if (nextInQueue) openMessageModal(nextInQueue);
@@ -382,6 +405,12 @@ export default function ReviewPage() {
       <div className="stack">
         {error && <Banner tone="bad">{error}</Banner>}
         {notice && <Banner tone="ok">{notice}</Banner>}
+
+        <EmailRewriteWorkspace
+          selectedIds={selectedIds}
+          preflightTrigger={rewriteTrigger}
+          onAcceptedChanges={reload}
+        />
 
         <Card tight>
           <div style={{ padding: "12px 16px 0" }}>
@@ -466,17 +495,46 @@ export default function ReviewPage() {
               <table>
                 <thead>
                   <tr>
+                    <th style={{ width: 32 }}>
+                      <input
+                        type="checkbox"
+                        aria-label="Select page emails"
+                        checked={paged.length > 0 && paged.every((m) => selectedIds.includes(m.id))}
+                        onChange={(e) =>
+                          setSelectedIds((prev) =>
+                            e.target.checked
+                              ? Array.from(new Set([...prev, ...paged.map((m) => m.id)]))
+                              : prev.filter((id) => !paged.some((m) => m.id === id)),
+                          )
+                        }
+                      />
+                    </th>
                     <th>Prospect</th>
                     <th>Subject</th>
                     <th>Type</th>
                     <th>Score</th>
                     <th>Status</th>
                     <th>Created</th>
+                    <th />
                   </tr>
                 </thead>
                 <tbody>
                   {paged.map((message) => (
                     <tr key={message.id} className="clickable" onClick={() => openMessageModal(message)}>
+                      <td onClick={(e) => e.stopPropagation()}>
+                        <input
+                          type="checkbox"
+                          aria-label={`Select email for ${message.business ?? message.id}`}
+                          checked={selectedIds.includes(message.id)}
+                          onChange={(e) =>
+                            setSelectedIds((prev) =>
+                              e.target.checked
+                                ? [...prev, message.id]
+                                : prev.filter((id) => id !== message.id),
+                            )
+                          }
+                        />
+                      </td>
                       <td>
                         <div className="strong">{message.business ?? "—"}</div>
                         <div className="tiny">
@@ -496,6 +554,24 @@ export default function ReviewPage() {
                         <Badge tone={statusTone(message.status)}>{label(message.status)}</Badge>
                       </td>
                       <td className="tiny nowrap">{fmtDate(message.created_at)}</td>
+                      <td onClick={(e) => e.stopPropagation()}>
+                        {message.status !== "sent" && message.status !== "sending" && (
+                          <button
+                            type="button"
+                            className="btn btn-sm btn-ghost"
+                            onClick={() =>
+                              setRewriteTrigger({
+                                scope: "selected",
+                                selectedIds: [message.id],
+                                nonce: Date.now(),
+                              })
+                            }
+                          >
+                            <Sparkles size={12} aria-hidden="true" />
+                            Rewrite
+                          </button>
+                        )}
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -599,6 +675,20 @@ export default function ReviewPage() {
               >
                 {busy === "regenerate" ? "Rewriting…" : "Regenerate with AI"}
               </button>
+              {open.status !== "sent" && open.status !== "sending" && (
+                <button
+                  className="btn btn-sm btn-ghost"
+                  type="button"
+                  onClick={() => {
+                    const targetId = open.id;
+                    setOpen(null);
+                    setRewriteTrigger({ scope: "selected", selectedIds: [targetId], nonce: Date.now() });
+                  }}
+                >
+                  <Sparkles size={12} aria-hidden="true" />
+                  AI Rewrite & Diff
+                </button>
+              )}
               <span className="tiny row-end">To: {open.lead_email ?? "no address"}</span>
             </div>
             <div className="row">

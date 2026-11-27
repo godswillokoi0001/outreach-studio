@@ -3084,3 +3084,803 @@ test("Phase 3 campaign gate & router hardening block placeholder emails, flag ju
   assert.equal(isCandidateCoolingDown(groqKey, "llama-3.3-70b-versatile"), true);
   clearAllInMemoryModelCooldowns();
 });
+
+test("AI Rewrite: KB preflight gap detection, diff highlighting, deterministic self-check, and empty KB handling", async () => {
+  const { diffEmailText, filterReviewableMessageIds, runDeterministicRewriteAudit } = await import("./email-rewrite");
+  const { extractKnowledgeForRewrite } = await import("./email-rewrite-server");
+  const { buildEmptyUserBusinessProfile } = await import("./global-knowledge/user-context");
+
+  // 1. Word diff highlights additions & removals cleanly
+  const tokens = diffEmailText("Hi there, want a website redesign?", "Hi Dr. Patel, want a faster mobile booking site?");
+  assert.ok(tokens.some((t) => t.type === "remove" && t.text.includes("there")));
+  assert.ok(tokens.some((t) => t.type === "add" && t.text.includes("Patel")));
+
+  // 2. Scope filtering keeps unsent reviewable messages and honors selected/unapproved
+  const msgs = [
+    { id: "m1", kind: "initial" as const, status: "pending_approval" as const },
+    { id: "m2", kind: "initial" as const, status: "approved" as const },
+    { id: "m3", kind: "initial" as const, status: "sent" as const },
+    { id: "m4", kind: "reply" as const, status: "draft" as const },
+  ];
+  assert.deepEqual(filterReviewableMessageIds(msgs, "all", []), ["m1", "m2"]);
+  assert.deepEqual(filterReviewableMessageIds(msgs, "unapproved", []), ["m1"]);
+  assert.deepEqual(filterReviewableMessageIds(msgs, "selected", ["m2", "m3"]), ["m2"]);
+
+  // 3. Deterministic audit catches [First Name], missing compliance, fabricated greeting names, wrong company, and sample cloning
+  const sampleText = "Noticed your clinic checkout takes four clicks on mobile. Worth sharing a 60-second walkthrough?";
+  const badAudit = runDeterministicRewriteAudit({
+    subject: "Quick note for [Company]",
+    body: "Hi Jordan, hope this email finds you well! Mentioned SmileOther Clinic yesterday. Noticed your clinic checkout takes four clicks on mobile. Worth sharing a 60-second walkthrough?",
+    kind: "initial",
+    leadBusiness: "Bright Dental",
+    leadContactName: "",
+    senderName: "Alex",
+    senderCompany: "Apex Web",
+    otherLeadBusinesses: ["SmileOther Clinic"],
+    sampleEmails: [sampleText],
+  });
+  assert.equal(badAudit.passed, false);
+  assert.equal(badAudit.noPlaceholdersOrWrongNames, false);
+  assert.equal(badAudit.compliancePresent, false);
+  assert.equal(badAudit.clearCtaAndLengthFit, false);
+
+  const goodAudit = runDeterministicRewriteAudit({
+    subject: "mobile booking gap at bright dental",
+    body: "Hi team at Bright Dental,\n\nI saw your booking form requires five extra taps on phones.\n\nWe help Austin clinics simplify mobile scheduling without redesigning the whole site. Would a 2-minute teardown video be helpful?\n\nBest,\nAlex · Apex Web\nReply stop to opt out.",
+    kind: "initial",
+    leadBusiness: "Bright Dental",
+    leadContactName: "",
+    senderName: "Alex",
+    senderCompany: "Apex Web",
+    otherLeadBusinesses: ["SmileOther Clinic"],
+    sampleEmails: [sampleText],
+  });
+  assert.equal(goodAudit.passed, true);
+
+  // 4. Empty KB detects missing sample emails, proof, offer, ICP, and voice cleanly without throwing
+  const emptyKb = extractKnowledgeForRewrite({
+    messages: [],
+    leads: [],
+    campaigns: [],
+    replies: [],
+    opens: [],
+    userContext: {
+      ownerId: "u_empty",
+      profile: buildEmptyUserBusinessProfile("u_empty"),
+      variables: {
+        USER_NAME: "Not provided",
+        USER_ROLE: "Not provided",
+        USER_COMPANY: "Not provided",
+        USER_OFFER: "Not provided",
+        USER_MECHANISM: "Not provided",
+        USER_LEAD_MAGNET: "Not provided",
+        USER_PROOF: "Not provided",
+        USER_ICP: "Not provided",
+        USER_EXCLUSIONS: "Not provided",
+        USER_SENDING_TIER: "free_gmail_starter",
+        USER_TONE: "Not provided",
+        USER_CUSTOM_RULES: "Not provided",
+      },
+      masterKnowledge: "",
+      notes: [],
+      sources: [],
+      knowledgeDigest: "",
+      settings: {},
+    },
+    onboarding: null,
+    structuredKb: null,
+    settings: { ...DEFAULT_SETTINGS },
+  });
+  assert.equal(emptyKb.kbEmpty, true);
+  assert.ok(emptyKb.gaps.some((g) => g.key === "sample_emails"));
+  assert.ok(emptyKb.gaps.some((g) => g.key === "proof_credibility"));
+});
+
+test("AI Rewrite E2E: multi-lead pipeline, sample style prompt, 3x self-check retry, Needs attention, Accept/Reject/History, job persistence & tenant isolation", async () => {
+  const { clearBackgroundJobsForTests } = await import("./background-jobs");
+  const {
+    __configureEmailRewriteStoreForTests,
+    applyRewriteItemAction,
+    getRewriteJobAndWorkspace,
+    getRewritePreflightAndWorkspace,
+    runEmailRewriteJobPipeline,
+    startEmailRewriteJob,
+  } = await import("./email-rewrite-server");
+  const { buildEmptyUserBusinessProfile } = await import("./global-knowledge/user-context");
+  type EmailRewriteWorkspaceState = import("./email-rewrite").EmailRewriteWorkspaceState;
+  type RewriteOwnerSnapshot = import("./email-rewrite-server").RewriteOwnerSnapshot;
+
+  clearBackgroundJobsForTests();
+  resetGatewayCachesForTests();
+  clearRouterStateForTests();
+
+  const prevFetch = globalThis.fetch;
+  const capturedPrompts: string[] = [];
+  const attemptByBusiness = new Map<string, number>();
+
+  // Mock Groq Gateway responding deterministically per lead case
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (!url.includes("api.groq.com")) {
+      return new Response("Not found", { status: 404 });
+    }
+    const rawBody = typeof init?.body === "string" ? init.body : "";
+    const parsed = JSON.parse(rawBody) as { messages?: { role: string; content: string }[] };
+    const sysAndUser = (parsed.messages ?? []).map((m) => m.content).join("\n");
+    capturedPrompts.push(sysAndUser);
+
+    // Self-check auditor call
+    if (sysAndUser.includes("REWRITTEN SUBJECT:")) {
+      const hasFakeClaim = sysAndUser.includes("500% guaranteed ROI");
+      return new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  kbGroundedOnly: !hasFakeClaim,
+                  matchesBrandVoice: true,
+                  issues: hasFakeClaim ? ["Invented '500% guaranteed ROI' not present in KB."] : [],
+                }),
+              },
+            },
+          ],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+
+    // Cross-lead pattern summary call
+    if (sysAndUser.includes("ENGAGEMENT DATA AVAILABLE:")) {
+      return new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  patterns: [
+                    {
+                      pattern: "Short observation-first emails fit local clinic decision makers",
+                      segment: "Dental & Medical Founders",
+                      explanation: "Informed recommendation based on verified mobile UX findings.",
+                    },
+                  ],
+                }),
+              },
+            },
+          ],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+
+    // Lead-by-lead writer:
+    // Case A: Bright Dental (fails attempt 1 due to [First Name], passes on attempt 2 regeneration!)
+    if (sysAndUser.includes("Company: Bright Dental")) {
+      const n = (attemptByBusiness.get("Bright Dental") ?? 0) + 1;
+      attemptByBusiness.set("Bright Dental", n);
+      const isSecond = n >= 2;
+      return new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  analysis: {
+                    decisionMaker: "Dr. Maya Patel",
+                    role: "Practice Owner",
+                    seniority: "Founder / Owner",
+                    company: "Bright Dental",
+                    industry: "Dental Clinics",
+                    size: "10-25",
+                    location: "Austin, TX",
+                    needsAndPainPoints: ["New patients drop off on mobile booking form"],
+                    buyingIntentSignals: ["Missing mobile viewport meta tag"],
+                    timingOrTriggers: ["Active Austin clinic expansion"],
+                    verifiedHooks: [
+                      {
+                        hook: "Booking page lacks mobile viewport tag on brightdental.com",
+                        source: "https://brightdental.com",
+                      },
+                    ],
+                    chosenPattern: {
+                      framework: "Problem-led",
+                      frameworkReason: "Ties directly to verified mobile booking friction.",
+                      toneAndFormality: "Warm conversational direct",
+                      toneReason: "Matches Knowledge Base brand voice for clinic owners.",
+                      lengthAndStructure: "Short 3-sentence scan",
+                      lengthReason: "Inspired by KB Sample Email 1 rhythm without copying.",
+                      subjectLineApproach: "2-4 word lowercase observation",
+                      subjectReason: "Clean inbox feel",
+                      ctaStyle: "Soft question",
+                      ctaReason: "Asks for permission before pitching",
+                      followUpTiming: "3 business days",
+                      followUpReason: "Respects clinic schedule",
+                      overallReason: "Grounded in brightdental.com viewport finding and KB sample cadence.",
+                    },
+                  },
+                  subject: isSecond ? "quick mobile booking note" : "Hi [First Name] note",
+                  subjectOptions: ["quick mobile booking note", "bright dental mobile scheduling", "2-min patient UX look"],
+                  body: isSecond
+                    ? "Hi Dr. Patel,\n\nI saw Bright Dental's booking page lacks a mobile viewport tag, which usually forces Austin patients to pinch-zoom on phones.\n\nWe recently helped an Austin clinic clean up mobile scheduling using our Speed Audit. Want me to send over a 90-second video showing what we found?\n\nBest,\nAlex · Apex Web\nReply stop to opt out."
+                    : "Hi [First Name], wanted to share quick UX feedback for [Company]. Reply stop to opt out.",
+                }),
+              },
+            },
+          ],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+
+    // Case B: Persistent hallucinator ("Bad Claim Biz") -> fails self-check all 3 times -> flagged Needs attention
+    if (sysAndUser.includes("Company: Bad Claim Biz")) {
+      return new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  analysis: {
+                    decisionMaker: "Not verified",
+                    role: "Owner",
+                    seniority: "Owner",
+                    company: "Bad Claim Biz",
+                    industry: "Consulting",
+                    size: "Unknown",
+                    location: "Dallas, TX",
+                    needsAndPainPoints: ["Need more qualified calls"],
+                    verifiedHooks: [],
+                    chosenPattern: {
+                      framework: "Direct",
+                      frameworkReason: "Sparse lead record",
+                      toneAndFormality: "Direct",
+                      toneReason: "Simple",
+                      lengthAndStructure: "Brief",
+                      lengthReason: "Fast skim",
+                      subjectLineApproach: "Short",
+                      subjectReason: "Direct",
+                      ctaStyle: "Soft",
+                      ctaReason: "Low friction",
+                      followUpTiming: "4 days",
+                      followUpReason: "Standard",
+                      overallReason: "Sparse record without site hook.",
+                    },
+                  },
+                  subject: "quick question",
+                  subjectOptions: ["quick question", "dallas consulting note"],
+                  body: "Hi team at Bad Claim Biz,\n\nOur system delivers 500% guaranteed ROI in 48 hours for Texas consultants.\n\nOpen to chatting this week?\n\nAlex · Apex Web\nReply stop to opt out.",
+                }),
+              },
+            },
+          ],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+
+    // Case C: Sparse hookless lead ("Quiet Co") -> verifiedHooks stays [], no invented claims -> passes!
+    return new Response(
+      JSON.stringify({
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({
+                analysis: {
+                  decisionMaker: "Not verified",
+                  role: "Unknown",
+                  seniority: "Unknown",
+                  company: "Quiet Co",
+                  industry: "Local Services",
+                  size: "Unknown",
+                  location: "Austin, TX",
+                  needsAndPainPoints: ["Convert existing local inquiries cleanly"],
+                  verifiedHooks: [],
+                  chosenPattern: {
+                    framework: "Consultative",
+                    frameworkReason: "Lead had sparse research and no site hook, so avoided guessing.",
+                    toneAndFormality: "Plain conversational",
+                    toneReason: "Matches brand voice without hype.",
+                    lengthAndStructure: "Short 3 lines",
+                    lengthReason: "Respects sparse data.",
+                    subjectLineApproach: "Plain observation",
+                    subjectReason: "No clickbait.",
+                    ctaStyle: "Soft question",
+                    ctaReason: "Low pressure.",
+                    followUpTiming: "4 business days",
+                    followUpReason: "Respectful spacing.",
+                    overallReason: "Sparse data handled honestly with zero invented hooks.",
+                  },
+                },
+                subject: "quick question for quiet co",
+                subjectOptions: ["quick question for quiet co", "austin outreach idea"],
+                body: "Hi team at Quiet Co,\n\nWe help Austin service businesses streamline how new customer inquiries turn into booked calls via our Speed Audit.\n\nWould it be useful if I shared two simple adjustments tailored to local teams like yours?\n\nBest,\nAlex · Apex Web\nReply stop to opt out.",
+              }),
+            },
+          },
+        ],
+      }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    );
+  }) as typeof fetch;
+
+  // In-memory multi-tenant store simulating Supabase with strict owner scoping
+  const ownerA = "owner_alice";
+  const ownerB = "owner_bob";
+  const now = new Date().toISOString();
+
+  const messagesDb = new Map<string, import("./types").Message>([
+    [
+      "msg_a1",
+      {
+        id: "msg_a1",
+        ownerId: ownerA,
+        lead_id: "lead_a1",
+        campaign_id: "camp_a",
+        step: 1,
+        kind: "initial",
+        subject: "Original A1 Subject",
+        body: "Original A1 Body.",
+        angle: "Old Angle",
+        rationale: "Old Rationale",
+        service: "Speed Audit",
+        status: "pending_approval",
+        gmail_id: null,
+        thread_id: null,
+        rfc_message_id: null,
+        sent_at: null,
+        error: null,
+        approved_at: null,
+        created_at: now,
+        updated_at: now,
+      },
+    ],
+    [
+      "msg_a2",
+      {
+        id: "msg_a2",
+        ownerId: ownerA,
+        lead_id: "lead_a2",
+        campaign_id: "camp_a",
+        step: 1,
+        kind: "initial",
+        subject: "Original A2 Subject",
+        body: "Original A2 Body.",
+        angle: null,
+        rationale: null,
+        service: "Speed Audit",
+        status: "pending_approval",
+        gmail_id: null,
+        thread_id: null,
+        rfc_message_id: null,
+        sent_at: null,
+        error: null,
+        approved_at: null,
+        created_at: now,
+        updated_at: now,
+      },
+    ],
+    [
+      "msg_a3",
+      {
+        id: "msg_a3",
+        ownerId: ownerA,
+        lead_id: "lead_a3",
+        campaign_id: "camp_a",
+        step: 1,
+        kind: "initial",
+        subject: "Original A3 Subject",
+        body: "Original A3 Body.",
+        angle: null,
+        rationale: null,
+        service: "Speed Audit",
+        status: "pending_approval",
+        gmail_id: null,
+        thread_id: null,
+        rfc_message_id: null,
+        sent_at: null,
+        error: null,
+        approved_at: null,
+        created_at: now,
+        updated_at: now,
+      },
+    ],
+    [
+      "msg_b1",
+      {
+        id: "msg_b1",
+        ownerId: ownerB,
+        lead_id: "lead_b1",
+        campaign_id: null,
+        step: 1,
+        kind: "initial",
+        subject: "Bob Private Subject",
+        body: "Bob Private Body.",
+        angle: null,
+        rationale: null,
+        service: null,
+        status: "pending_approval",
+        gmail_id: null,
+        thread_id: null,
+        rfc_message_id: null,
+        sent_at: null,
+        error: null,
+        approved_at: null,
+        created_at: now,
+        updated_at: now,
+      },
+    ],
+  ]);
+
+  const leadsDb = new Map<string, import("./types").Lead>([
+    [
+      "lead_a1",
+      {
+        id: "lead_a1",
+        ownerId: ownerA,
+        campaign_id: "camp_a",
+        business: "Bright Dental",
+        contact_name: "Dr. Maya Patel",
+        role: "Practice Owner",
+        email: "dr.patel@brightdental.com",
+        email_norm: "dr.patel@brightdental.com",
+        website: "https://brightdental.com",
+        phone: "+15125550100",
+        location: "Austin, TX",
+        industry: "Dental Clinics",
+        notes: null,
+        extra: null,
+        source: "web_discovery",
+        source_ref: "https://brightdental.com",
+        sheet_row: null,
+        status: "qualified",
+        score: 88,
+        priority: "high",
+        score_reason: {
+          score: 88,
+          category: "high",
+          reasons: ["Missing mobile viewport tag"],
+          opportunity: "Mobile scheduling audit",
+          value_tier: "high",
+          recommended_service: "Speed Audit",
+        },
+        research: {
+          business_name_confirmed: true,
+          industry: "Dental Clinics",
+          summary: "Family dental clinic in Austin missing mobile viewport meta tag.",
+          website_status: "reachable",
+          website_facts: ["Booking page lacks mobile viewport tag"],
+          verified_facts: [{ fact: "Missing mobile viewport meta tag", source: "https://brightdental.com" }],
+          findings: [],
+          inferences: [],
+          opportunities: [],
+          recommended_angle: "Mobile patient booking",
+          confidence: 90,
+          insufficient_data: false,
+          notes: "",
+        },
+        research_at: now,
+        research_ok: true,
+        manual_research: null,
+        last_contacted_at: null,
+        created_at: now,
+        updated_at: now,
+      },
+    ],
+    [
+      "lead_a2",
+      {
+        id: "lead_a2",
+        ownerId: ownerA,
+        campaign_id: "camp_a",
+        business: "Quiet Co",
+        contact_name: null,
+        role: null,
+        email: "hello@quietco.io",
+        email_norm: "hello@quietco.io",
+        website: null,
+        phone: "+15125550199",
+        location: "Austin, TX",
+        industry: "Local Services",
+        notes: null,
+        extra: null,
+        source: "manual",
+        source_ref: null,
+        sheet_row: null,
+        status: "qualified",
+        score: 68,
+        priority: "medium",
+        score_reason: null,
+        research: null,
+        research_at: null,
+        research_ok: false,
+        manual_research: null,
+        last_contacted_at: null,
+        created_at: now,
+        updated_at: now,
+      },
+    ],
+    [
+      "lead_a3",
+      {
+        id: "lead_a3",
+        ownerId: ownerA,
+        campaign_id: "camp_a",
+        business: "Bad Claim Biz",
+        contact_name: null,
+        role: "Owner",
+        email: "team@badclaimbiz.io",
+        email_norm: "team@badclaimbiz.io",
+        website: "https://badclaimbiz.io",
+        phone: null,
+        location: "Dallas, TX",
+        industry: "Consulting",
+        notes: null,
+        extra: null,
+        source: "manual",
+        source_ref: null,
+        sheet_row: null,
+        status: "qualified",
+        score: 70,
+        priority: "medium",
+        score_reason: null,
+        research: null,
+        research_at: null,
+        research_ok: false,
+        manual_research: null,
+        last_contacted_at: null,
+        created_at: now,
+        updated_at: now,
+      },
+    ],
+    [
+      "lead_b1",
+      {
+        id: "lead_b1",
+        ownerId: ownerB,
+        campaign_id: null,
+        business: "Bob Secret Client",
+        contact_name: "Bob",
+        role: "CEO",
+        email: "bob@bobsecret.io",
+        email_norm: "bob@bobsecret.io",
+        website: null,
+        phone: null,
+        location: "Miami, FL",
+        industry: "Finance",
+        notes: null,
+        extra: null,
+        source: "manual",
+        source_ref: null,
+        sheet_row: null,
+        status: "new",
+        score: null,
+        priority: null,
+        score_reason: null,
+        research: null,
+        research_at: null,
+        research_ok: false,
+        manual_research: null,
+        last_contacted_at: null,
+        created_at: now,
+        updated_at: now,
+      },
+    ],
+  ]);
+
+  const wsDb = new Map<string, EmailRewriteWorkspaceState>();
+
+  const buildSnap = (ownerId: string): RewriteOwnerSnapshot => {
+    const isAlice = ownerId === ownerA;
+    const baseProfile = buildEmptyUserBusinessProfile(ownerId);
+    return {
+      messages: Array.from(messagesDb.values()).filter((m) => m.ownerId === ownerId),
+      leads: Array.from(leadsDb.values()).filter((l) => l.ownerId === ownerId),
+      campaigns: [],
+      replies: [],
+      opens: [],
+      userContext: {
+        ownerId,
+        profile: {
+          ...baseProfile,
+          user_name: isAlice ? "Alex" : "BobUser",
+          user_company: isAlice ? "Apex Web" : "Bob Agency",
+          user_offer: isAlice ? "Speed Audit for local clinics" : "Bob Secret Offer",
+          user_proof: isAlice ? "Helped an Austin clinic simplify mobile scheduling" : "",
+          user_tone: "Warm conversational direct",
+        },
+        variables: {
+          USER_NAME: isAlice ? "Alex" : "BobUser",
+          USER_ROLE: "Founder",
+          USER_COMPANY: isAlice ? "Apex Web" : "Bob Agency",
+          USER_OFFER: isAlice ? "Speed Audit" : "Bob Secret Offer",
+          USER_MECHANISM: "90-second video teardown",
+          USER_LEAD_MAGNET: "Free Speed Audit",
+          USER_PROOF: isAlice ? "Helped an Austin clinic simplify mobile scheduling" : "Not provided",
+          USER_ICP: "Austin clinics",
+          USER_EXCLUSIONS: "None",
+          USER_SENDING_TIER: "free_gmail_starter",
+          USER_TONE: "Warm conversational direct",
+          USER_CUSTOM_RULES: "",
+        },
+        masterKnowledge: isAlice ? "## Business overview\nApex Web helps Austin clinics convert mobile bookings." : "",
+        notes: isAlice
+          ? [
+              {
+                id: "note_sample",
+                ownerId: ownerA,
+                category: "samples",
+                title: "Sample Emails",
+                content: "Hi Sarah, noticed one snag on mobile checkout — open to a quick 90-second clip? Reply stop to opt out.",
+                sort: 1,
+                is_master: false,
+                created_at: now,
+                updated_at: now,
+              },
+            ]
+          : [],
+        sources: [],
+        knowledgeDigest: isAlice ? "Apex Web Speed Audit sample cadence" : "Bob secret KB",
+        settings: { ...DEFAULT_SETTINGS, sender_name: isAlice ? "Alex" : "BobUser", sender_company: isAlice ? "Apex Web" : "Bob Agency" },
+      },
+      onboarding: isAlice
+        ? {
+            status: "completed",
+            currentStep: 12,
+            updatedAt: now,
+            answers: {
+              ...DEFAULT_ONBOARDING_ANSWERS,
+              businessDescription: "Apex Web builds faster mobile booking flows for clinics.",
+              sampleMessages: "Hi Sarah, noticed one snag on mobile checkout — open to a quick 90-second clip?",
+            },
+          }
+        : null,
+      structuredKb: null,
+      settings: { ...DEFAULT_SETTINGS, sender_name: isAlice ? "Alex" : "BobUser", sender_company: isAlice ? "Apex Web" : "Bob Agency" },
+    };
+  };
+
+  __configureEmailRewriteStoreForTests({
+    loadOwnerSnapshot: async (ownerId) => buildSnap(ownerId),
+    loadWorkspace: async (ownerId) => wsDb.get(ownerId) ?? null,
+    saveWorkspace: async (ownerId, st) => {
+      wsDb.set(ownerId, st);
+    },
+    updateMessageFields: async (ownerId, messageId, patch) => {
+      const existing = messagesDb.get(messageId);
+      assert.equal(existing?.ownerId, ownerId);
+      if (existing) {
+        messagesDb.set(messageId, { ...existing, ...patch });
+      }
+    },
+  });
+
+  seedGatewayCachesForTests({
+    adminSettings: makeSampleAdminSettings({ masterMode: "auto", strategy: "balanced" }),
+    adminKeys: [
+      makeSampleAdminKey("adm_groq_rw", "groq", "gsk_rewrite", {
+        models: [
+          {
+            id: "llama-3.3-70b-versatile",
+            displayName: "Llama 3.3 70B",
+            enabled: true,
+            seats: ["fast", "balanced", "smart"],
+            capabilities: { json: true, tools: true, vision: false, reasoning: false },
+          },
+        ],
+      }),
+    ],
+    userSettings: {
+      [ownerA]: { ownerId: ownerA, mode: "system_auto", fallbackToSystemAuto: false, updatedAt: now },
+      [ownerB]: { ownerId: ownerB, mode: "system_auto", fallbackToSystemAuto: false, updatedAt: now },
+    },
+    userKeys: { [ownerA]: [], [ownerB]: [] },
+  });
+
+  try {
+    // 1. Preflight summarizes exact counts, sample emails, and gaps for Alice
+    const pre = await getRewritePreflightAndWorkspace({ ownerId: ownerA, scope: "all" });
+    assert.equal(pre.preflight.inScopeEmails, 3);
+    assert.equal(pre.preflight.uniqueLeadsCount, 3);
+    assert.ok(pre.preflight.sampleEmailsFound >= 1);
+
+    // 2. Start durable job + prevent duplicate concurrent jobs
+    const s1 = await startEmailRewriteJob({ ownerId: ownerA, scope: "all" });
+    assert.equal(s1.reused, false);
+    assert.equal(s1.targetIds.length, 3);
+
+    const dupStart = await startEmailRewriteJob({ ownerId: ownerA, scope: "all" });
+    assert.equal(dupStart.reused, true);
+    assert.equal(dupStart.job.id, s1.job.id);
+
+    // 3. Execute background pipeline across all 3 emails
+    const finishedWs = await runEmailRewriteJobPipeline({
+      ownerId: ownerA,
+      jobId: s1.job.id,
+      targetIds: s1.targetIds,
+    });
+
+    // Originals in messagesDb are UNTOUCHED before acceptance
+    assert.equal(messagesDb.get("msg_a1")?.body, "Original A1 Body.");
+
+    // Prompt included Sample Emails style guidance
+    assert.ok(capturedPrompts.some((p) => p.includes("Hi Sarah, noticed one snag on mobile checkout")));
+
+    // Bright Dental failed attempt 1 ([First Name]), regenerated cleanly, passed attempt 2
+    const itemA1 = finishedWs.itemsByMessageId["msg_a1"];
+    assert.equal(itemA1.status, "rewritten");
+    assert.equal(itemA1.check?.attempts, 2);
+    assert.ok(itemA1.subjectOptions.length >= 2);
+    assert.ok(!itemA1.rewrittenBody.includes("[First Name]"));
+
+    // Sparse Quiet Co kept verifiedHooks = [] without guessing
+    const itemA2 = finishedWs.itemsByMessageId["msg_a2"];
+    assert.equal(itemA2.status, "rewritten");
+    assert.equal(itemA2.analysis?.verifiedHooks.length, 0);
+
+    // Bad Claim Biz hallucinated ROI -> regenerated 3x -> flagged "needs_attention" (NEVER dropped or marked ready!)
+    const itemA3 = finishedWs.itemsByMessageId["msg_a3"];
+    assert.equal(itemA3.status, "needs_attention");
+    assert.equal(itemA3.check?.attempts, 3);
+    assert.equal(itemA3.check?.passed, false);
+    assert.ok((itemA3.statusReason ?? "").includes("500% guaranteed ROI"));
+
+    // Cross-lead patterns explicitly labeled as recommendations (no engagement events recorded)
+    assert.equal(finishedWs.crossLeadSummary?.basedOnEngagementData, false);
+    assert.match(finishedWs.crossLeadSummary?.label ?? "", /not proven results/i);
+
+    // 4. Job state & workspace survive simulated reload; Bob cannot see Alice's job/items
+    const reloadedAlice = await getRewriteJobAndWorkspace({ ownerId: ownerA });
+    assert.equal(reloadedAlice.job?.status, "succeeded");
+    assert.equal(Object.keys(reloadedAlice.workspace.itemsByMessageId).length, 3);
+
+    const bobState = await getRewriteJobAndWorkspace({ ownerId: ownerB });
+    assert.equal(bobState.job, null);
+    assert.equal(Object.keys(bobState.workspace.itemsByMessageId).length, 0);
+
+    // Bob cannot accept or mutate Alice's email
+    await assert.rejects(
+      () => applyRewriteItemAction({ ownerId: ownerB, action: "accept", messageId: "msg_a1" }),
+      /not found/i,
+    );
+
+    // 5. Accept All Passed accepts msg_a1 & msg_a2 ONLY (leaves needs_attention msg_a3 unaccepted)
+    const acceptAllRes = await applyRewriteItemAction({ ownerId: ownerA, action: "accept_all_passed" });
+    assert.equal(acceptAllRes.updatedCount, 2);
+    assert.equal(acceptAllRes.workspace.itemsByMessageId["msg_a1"].status, "accepted");
+    assert.equal(acceptAllRes.workspace.itemsByMessageId["msg_a3"].status, "needs_attention");
+    assert.equal(messagesDb.get("msg_a1")?.subject, "quick mobile booking note");
+
+    // Version history preserves original & allows restoring it
+    assert.ok(itemA1.versions.some((v) => v.source === "original" && v.body === "Original A1 Body."));
+    await applyRewriteItemAction({
+      ownerId: ownerA,
+      action: "restore_version",
+      messageId: "msg_a1",
+      versionId: "v_orig",
+    });
+    assert.equal(messagesDb.get("msg_a1")?.body, "Original A1 Body.");
+
+    // Edit & Reject preserve original intact on Reject
+    await applyRewriteItemAction({
+      ownerId: ownerA,
+      action: "reject",
+      messageId: "msg_a2",
+    });
+    assert.equal(wsDb.get(ownerA)?.itemsByMessageId["msg_a2"].status, "rejected");
+
+    // Retry failed/flagged only skips already accepted/rejected good items
+    const retryRes = await startEmailRewriteJob({
+      ownerId: ownerA,
+      scope: "all",
+      retryFailedOnly: true,
+    });
+    assert.deepEqual(retryRes.targetIds, ["msg_a3"]);
+  } finally {
+    globalThis.fetch = prevFetch;
+    __configureEmailRewriteStoreForTests(null);
+    clearBackgroundJobsForTests();
+    resetGatewayCachesForTests();
+    clearRouterStateForTests();
+  }
+});
