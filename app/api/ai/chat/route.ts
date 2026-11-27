@@ -38,7 +38,7 @@ function knowledgeBlock(knowledge?: string): string {
   return `\n\nKNOWLEDGE BASE — SOURCE OF TRUTH (highest priority, overrides general knowledge)
 Every service, price, offer, claim, tone rule, template and call to action you write MUST come from this. Never invent an offer, price or fact that is not here. If something the user asks for is missing, say exactly what is missing and ask — do not guess.
 --- BEGIN KNOWLEDGE BASE ---
-${trimmed.slice(0, 12000)}
+${trimmed.slice(0, 3_500)}
 --- END KNOWLEDGE BASE ---`;
 }
 
@@ -50,7 +50,7 @@ function memoryBlock(memory?: string): string {
   return `\n\nOPERATOR MEMORY — saved from earlier sessions (persists until the user clears it)
 This is what you already did and discussed. Use it to stay consistent, to pick up unfinished work, and to avoid asking for the same information twice. Never claim to remember anything that is not written here.
 --- BEGIN MEMORY ---
-${trimmed.slice(0, 6000)}
+${trimmed.slice(0, 2_500)}
 --- END MEMORY ---`;
 }
 
@@ -168,6 +168,7 @@ export async function POST(req: NextRequest) {
       ownerId: authUser.ownerId,
       taskType: "balanced",
       feature: "operator_chat",
+      maxTokens: 2048,
       systemPrompt: orchestrated.system,
       messages: [],
       agentContents: trimmedContents as unknown as AgentContent[],

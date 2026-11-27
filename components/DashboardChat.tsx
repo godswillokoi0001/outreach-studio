@@ -1073,13 +1073,17 @@ export function DashboardChat({
           status: "running",
         });
 
+        const lastUserMessage = [...workingHistory]
+          .reverse()
+          .find((m) => m.role === "user")?.parts?.map((p) => p.text ?? "").join(" ") ?? "";
+        const toolEnv = { ...env, userTextCorpus: lastUserMessage };
         let attempts = 1;
-        let res = await executeAgentTool(toolName, fc.args, env);
+        let res = await executeAgentTool(toolName, fc.args, toolEnv);
         // One honest retry for transient failures — never for a missing Google session.
         while (!res.ok && !res.needsWorkspace && attempts < 2 && !cancelledRef.current) {
           attempts += 1;
           await wait(700);
-          res = await executeAgentTool(toolName, fc.args, env);
+          res = await executeAgentTool(toolName, fc.args, toolEnv);
         }
         const check = await verifyAction(toolName, res, routeArg);
         patchStep(assistantMsgId, stepId, {

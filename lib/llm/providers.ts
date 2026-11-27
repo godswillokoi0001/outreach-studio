@@ -118,24 +118,37 @@ function classifyHttpFailure(
     `HTTP ${res.status}`;
 
   const retryAfterMs = parseRetryAfterHeader(res);
+  const payloadTooLarge =
+    res.status === 413 ||
+    /request too large|context length|maximum context|exceeded.*context window|reduce your message size/i.test(
+      detail,
+    );
   const dailySignal =
-    /per.?day|daily.*quota|daily.*limit|free allocation|quota exceeded|rpd|tpd/i.test(detail) ||
-    (Array.isArray(errObj?.details) &&
-      errObj.details.some((d) => JSON.stringify(d).includes("PerDay")));
+    !payloadTooLarge &&
+    (/per.?day|daily.*quota|daily.*limit|free allocation|quota exceeded|rpd|tpd/i.test(detail) ||
+      (Array.isArray(errObj?.details) &&
+        errObj.details.some((d) => JSON.stringify(d).includes("PerDay"))));
 
   const authFailed = res.status === 401 || res.status === 403;
   const creditsExhausted =
     res.status === 402 || /insufficient.*credit|billing|quota.*balance|top.?up/i.test(detail);
-  const rateLimited = res.status === 429;
+  const rateLimited = res.status === 429 && !payloadTooLarge;
   const modelNotFound = res.status === 404 || /model.*not found|does not exist/i.test(detail);
-  // Some models are listed but refuse tools, multi-turn chat or other request
-  // shapes. That is a per-model limitation, never a reason to abandon the pool.
+  // Payload/context-size errors (400/413/422) or unsupported request shapes (tools, JSON mode)
+  // are strictly per-model limitations: skip that model without benching the whole API key.
   const modelUnsupported =
-    !modelNotFound &&
-    res.status < 500 &&
-    /not enabled|not supported|does not support|unsupported|not available for|invalid argument|only supports single/i.test(
-      detail,
-    );
+    payloadTooLarge ||
+    (!modelNotFound &&
+      res.status < 500 &&
+      res.status !== 401 &&
+      res.status !== 403 &&
+      res.status !== 429 &&
+      res.status !== 402 &&
+      (res.status === 400 ||
+        res.status === 422 ||
+        /not enabled|not supported|does not support|unsupported|not available for|invalid argument|only supports single/i.test(
+          detail,
+        )));
 
   return new GatewayProviderError(detail, {
     status: res.status,
@@ -144,6 +157,7 @@ function classifyHttpFailure(
       authFailed ||
       creditsExhausted ||
       modelNotFound ||
+      modelUnsupported ||
       res.status >= 500 ||
       res.status === 408,
     authFailed,

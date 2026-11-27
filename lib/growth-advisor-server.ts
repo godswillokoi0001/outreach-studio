@@ -19,8 +19,9 @@ import {
 } from "./growth-advisor";
 import type { PerformanceInsight } from "./intelligence";
 import { checkMobilePageSpeed } from "./search/pagespeed";
-import { verifyEmailDeliverability } from "./search/emailVerify";
-import { inspectProspectWebsites, isDirectoryUrl } from "./search/siteInspector";
+import { findDeepContactsForProspect } from "./search/contactFinder";
+import { validateContactableLead } from "./search/contactGate";
+import { isDirectoryUrl } from "./search/siteInspector";
 import { WebSearchService } from "./search/webSearch";
 import { supabaseServer } from "./supabase-server";
 import type { Settings } from "./types";
@@ -292,6 +293,7 @@ Generate 6 to 8 high-precision, diverse recommendations covering location, niche
     feature: "growth_advisor",
     systemPrompt: orchestrated.system,
     messages: [{ role: "user", content: user }],
+    maxTokens: 2000,
   });
 
   const allowedSourceUrls = new Set(groundingUrls.map((g) => g.uri.toLowerCase()));
@@ -464,6 +466,7 @@ Regional Compliance (${compliance.frameworkName}): ${compliance.requirements.joi
     feature: "growth_execute_strategy",
     systemPrompt: orchestrated.system,
     messages: [{ role: "user", content: user }],
+    maxTokens: 1800,
   });
 
   const defaultQuery = `${targetIndustry}${targetLocation ? ` in ${targetLocation}` : ""}`.trim();
@@ -572,8 +575,9 @@ export async function executeGrowthStageDiscover(input: {
         duplicatesRemoved += 1;
         continue;
       }
-      // Filter out aggregator directory links from primary candidate websites unless OSM entity has real data
+      // Filter out aggregator directory links & agency portfolio showcase pages
       if (isDirectoryUrl(r.url) && r.sourceProvider !== "osm") continue;
+      if (/\/(?:portfolio|case-studies?|our-work|work\/)/i.test(r.url)) continue;
       if (dom && seenDomains.has(dom)) continue;
       if (dom) seenDomains.add(dom);
 
@@ -615,7 +619,7 @@ export async function executeGrowthStageDiscover(input: {
   };
 }
 
-/** Stage 3: Live Parallel Site Verification + Jina Fallback + DNS MX Email Guard */
+/** Stage 3: $0 Deep Multi-Page Contact Extraction + DNS MX Email Guard */
 export async function executeGrowthStageInspect(input: {
   runId: string;
   ownerId: string;
@@ -627,81 +631,60 @@ export async function executeGrowthStageInspect(input: {
   }
 
   const candidates = existingState.discovered.candidates.slice(0, MAX_STAGE_INSPECT_SITES);
-  const urlsToInspect = candidates.map((c) => c.website).filter(Boolean);
+  const targetLocation = existingState.strategy?.targetLocation || "";
 
-  // Batch into 2 mini-batches of max 5 to stay crisp & parallel under attempt deadlines
-  const batchA = urlsToInspect.slice(0, 5);
-  const batchB = urlsToInspect.slice(5, 10);
-  const inspectedA = await inspectProspectWebsites(batchA, {
-    maxSites: 5,
-    timeoutMs: 5_000,
-    checkContactPage: false,
-  });
-  const inspectedB =
-    batchB.length > 0
-      ? await inspectProspectWebsites(batchB, {
-          maxSites: 5,
-          timeoutMs: 5_000,
-          checkContactPage: false,
-        })
-      : [];
+  const inspectOne = async (c: GrowthRunCandidate, idx: number): Promise<GrowthRunInspectedSite> => {
+    const deep = await findDeepContactsForProspect({
+      business: c.business,
+      website: c.website || undefined,
+      location: c.address || targetLocation,
+      osmPhone: c.phone,
+      osmEmail: c.email,
+      osmAddress: c.address,
+      snippet: c.snippet,
+      timeoutMs: 5_000,
+      allowTargetedSearch: true,
+    });
+    const site = deep.inspectedSite;
+    let mobileScore: number | null = null;
+    if (input.checkPageSpeed && site?.reachable && idx < 3) {
+      const ps = await checkMobilePageSpeed(site.finalUrl, { timeoutMs: 5_000 }).catch(() => null);
+      mobileScore = ps?.mobileScore ?? null;
+    }
 
-  const inspectedMap = new Map([...inspectedA, ...inspectedB].map((s) => [s.url.toLowerCase(), s]));
+    return {
+      business: c.business,
+      url: c.website || c.sourceUrl,
+      finalUrl: deep.website || c.website || c.sourceUrl,
+      reachable: site?.reachable ?? false,
+      httpStatus: site?.httpStatus ?? 0,
+      isHttps: site?.isHttps ?? (c.website || "").startsWith("https://"),
+      hasViewport: site?.hasViewport ?? false,
+      hasContactForm: site?.hasContactForm ?? false,
+      platform: site?.platform ?? null,
+      title: site?.title || c.business,
+      h1: site?.h1 || "",
+      statusHints: site?.statusHints ?? [],
+      verifiedEmails: deep.emails,
+      mxVerified: deep.mxVerified,
+      emailType: deep.emailType,
+      verifiedPhones: deep.phones,
+      socialLinks: deep.socials,
+      decisionMakers: deep.decisionMakers,
+      location: deep.location || c.address || targetLocation,
+      snippet: c.snippet,
+      textSummary: site?.textSummary?.slice(0, 1200) || c.snippet.slice(0, 800),
+      sourceUrl: c.sourceUrl,
+      mobileScore,
+    };
+  };
 
-  // Verify DNS MX records in parallel for all discovered emails
-  const sites: GrowthRunInspectedSite[] = await Promise.all(
-    candidates.map(async (c): Promise<GrowthRunInspectedSite> => {
-      const site = c.website ? inspectedMap.get(c.website.toLowerCase()) : undefined;
-      const mergedEmails = Array.from(
-        new Set([...(c.email ? [c.email.toLowerCase()] : []), ...(site?.emails ?? [])]),
-      );
-
-      let mxVerified = false;
-      let emailType: "direct" | "role_inbox" | "invalid" = "invalid";
-      const validEmails: string[] = [];
-
-      for (const em of mergedEmails.slice(0, 3)) {
-        const ver = await verifyEmailDeliverability(em);
-        if (ver.syntaxValid && !ver.disposable) {
-          validEmails.push(ver.email);
-          if (ver.mxVerified) mxVerified = true;
-          if (emailType === "invalid" || ver.emailType === "direct") {
-            emailType = ver.emailType;
-          }
-        }
-      }
-
-      let mobileScore: number | null = null;
-      if (input.checkPageSpeed && site?.reachable && sitesCountIndex(candidates, c) < 3) {
-        const ps = await checkMobilePageSpeed(site.finalUrl, { timeoutMs: 5_000 }).catch(() => null);
-        mobileScore = ps?.mobileScore ?? null;
-      }
-
-      return {
-        business: c.business,
-        url: c.website || c.sourceUrl,
-        finalUrl: site?.finalUrl || c.website || c.sourceUrl,
-        reachable: site?.reachable ?? false,
-        httpStatus: site?.httpStatus ?? 0,
-        isHttps: site?.isHttps ?? (c.website || "").startsWith("https://"),
-        hasViewport: site?.hasViewport ?? false,
-        hasContactForm: site?.hasContactForm ?? false,
-        platform: site?.platform ?? null,
-        title: site?.title || c.business,
-        h1: site?.h1 || "",
-        statusHints: site?.statusHints ?? [],
-        verifiedEmails: validEmails,
-        mxVerified,
-        emailType,
-        verifiedPhones: Array.from(new Set([...(c.phone ? [c.phone] : []), ...(site?.phones ?? [])])).slice(0, 3),
-        socialLinks: site?.socialLinks ?? [],
-        snippet: c.snippet,
-        textSummary: site?.textSummary?.slice(0, 1200) || c.snippet,
-        sourceUrl: c.sourceUrl,
-        mobileScore,
-      };
-    }),
-  );
+  // Batch into 2 mini-batches of max 5 to stay fast & parallel under serverless limits
+  const batchA = candidates.slice(0, 5);
+  const batchB = candidates.slice(5, 10);
+  const sitesA = await Promise.all(batchA.map((c, i) => inspectOne(c, i)));
+  const sitesB = batchB.length > 0 ? await Promise.all(batchB.map((c, i) => inspectOne(c, i + 5))) : [];
+  const sites = [...sitesA, ...sitesB];
 
   const reachableCount = sites.filter((s) => s.reachable).length;
   const verifiedEmailsCount = sites.filter((s) => s.verifiedEmails.length > 0).length;
@@ -725,10 +708,6 @@ export async function executeGrowthStageInspect(input: {
     state: nextState,
     summary: `Verified ${reachableCount}/${sites.length} live sites · ${verifiedEmailsCount} public contact emails checked`,
   };
-}
-
-function sitesCountIndex<T>(arr: T[], item: T): number {
-  return arr.indexOf(item);
 }
 
 /** Stage 4: Score Buying Intent, Generate Personalized First-Line Hooks & Build Blueprint */
@@ -782,14 +761,20 @@ export async function executeGrowthStageScoreAndBuild(input: {
 
   const siteDossier = sites
     .map((s, idx) => {
-      return `[${idx + 1}] Business: ${s.business}
-URL: ${s.finalUrl} (Source: ${s.sourceUrl}, HTTP ${s.httpStatus}, Reachable: ${s.reachable})
+      const dmLine = s.decisionMakers?.length
+        ? `\nDecision Makers: ${s.decisionMakers.map((d) => `${d.name} (${d.role})`).join("; ")}`
+        : "";
+      const socialLine = s.socialLinks?.length
+        ? `\nSocials: ${s.socialLinks.slice(0, 3).map((x) => `${x.platform}:${x.url}`).join(" | ")}`
+        : "";
+      return `[${idx + 1}] Business: ${s.business}${s.location ? ` | Location: ${s.location}` : ""}
+URL: ${s.finalUrl} (HTTP ${s.httpStatus}, Reachable: ${s.reachable})
 Title/H1: ${s.title} / ${s.h1 || "(none)"}
 HTTPS: ${s.isHttps} | Viewport: ${s.hasViewport} | Contact Form: ${s.hasContactForm} | Platform: ${s.platform || "unknown"}${s.mobileScore !== null && s.mobileScore !== undefined ? ` | Mobile PageSpeed: ${s.mobileScore}/100` : ""}
 Verified Emails: ${s.verifiedEmails.join(", ") || "(none found)"} (MX Verified: ${s.mxVerified}, Type: ${s.emailType})
-Verified Phones: ${s.verifiedPhones.join(", ") || "(none found)"}
+Verified Phones: ${s.verifiedPhones.join(", ") || "(none found)"}${dmLine}${socialLine}
 Signals/Hints: ${s.statusHints.join("; ") || "(none)"}
-Visible Site Copy: ${s.textSummary.slice(0, 700)}`;
+Visible Site Copy: ${s.textSummary.slice(0, 400)}`;
     })
     .join("\n\n");
 
@@ -850,6 +835,7 @@ Score, prioritize highest buying intent first, and draft non-hallucinated outrea
     feature: "growth_execute_score",
     systemPrompt: orchestrated.system,
     messages: [{ role: "user", content: user }],
+    maxTokens: 2200,
   });
 
   const existingSet = new Set((input.existingEmails ?? []).map((e) => e.trim().toLowerCase()).filter(Boolean));
@@ -897,17 +883,19 @@ Score, prioritize highest buying intent first, and draft non-hallucinated outrea
             .filter((s) => s.signal)
         : [];
 
+      const fallbackDm = siteRef?.decisionMakers?.[0];
       return {
         id: `exec_p_${Date.now()}_${idx}`,
         selected: intentScore >= 55 && Boolean(verifiedEmail || safeWebsite),
         business: cleanStr(raw.business, 200) || siteRef?.business || "",
-        contactName: cleanStr(raw.contactName, 140),
-        role: cleanStr(raw.role, 120),
+        contactName: cleanStr(raw.contactName, 140) || fallbackDm?.name || "",
+        role: cleanStr(raw.role, 120) || fallbackDm?.role || "",
         email: verifiedEmail,
         phone: cleanStr(raw.phone, 60) || siteRef?.verifiedPhones[0] || "",
         website: safeWebsite,
-        location: cleanStr(raw.location, 180) || strat.targetLocation,
+        location: cleanStr(raw.location, 180) || siteRef?.location || strat.targetLocation,
         industry: cleanStr(raw.industry, 140) || strat.targetIndustry,
+        socials: siteRef?.socialLinks ?? [],
         sourceUrl: safeSourceUrl,
         sourceDate: today,
         buyingIntentScore: intentScore,
@@ -925,6 +913,17 @@ Score, prioritize highest buying intent first, and draft non-hallucinated outrea
     })
     .filter((p) => {
       if (!p.business) return false;
+      const verdict = validateContactableLead({
+        business: p.business,
+        website: p.website,
+        location: p.location,
+        email: p.email,
+        phone: p.phone,
+        socials: p.socials,
+        decisionMaker: p.contactName,
+        mxVerified: p.email ? p.mxVerified : undefined,
+      });
+      if (!verdict.contactable) return false;
       const k = (p.website || p.business).toLowerCase().replace(/^https?:\/\//, "").replace(/\/+$/, "");
       if (seenKeys.has(k)) return false;
       seenKeys.add(k);

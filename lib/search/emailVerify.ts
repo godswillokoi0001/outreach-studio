@@ -1,6 +1,7 @@
 import { resolveMx } from "node:dns/promises";
+import { classifyEmailType, type EmailInboxType } from "./emailClassify";
 
-export type EmailInboxType = "direct" | "role_inbox" | "invalid";
+export { classifyEmailType, type EmailInboxType };
 
 export interface EmailVerificationResult {
   email: string;
@@ -13,27 +14,6 @@ export interface EmailVerificationResult {
   deliverable: boolean;
   reason?: string;
 }
-
-const ROLE_LOCAL_PARTS = new Set([
-  "info",
-  "hello",
-  "sales",
-  "office",
-  "contact",
-  "admin",
-  "support",
-  "team",
-  "enquiries",
-  "inquiries",
-  "billing",
-  "jobs",
-  "careers",
-  "help",
-  "marketing",
-  "mail",
-  "reception",
-  "general",
-]);
 
 const DISPOSABLE_DOMAINS = new Set([
   "mailinator.com",
@@ -83,19 +63,6 @@ async function lookupDomainMx(domain: string, timeoutMs = 3_000): Promise<{ ok: 
   } finally {
     if (timer) clearTimeout(timer);
   }
-}
-
-export function classifyEmailType(rawEmail: string): EmailInboxType {
-  const clean = rawEmail.trim().toLowerCase();
-  const at = clean.indexOf("@");
-  if (at <= 0) return "invalid";
-  const local = clean.slice(0, at);
-  const domain = clean.slice(at + 1);
-  if (!/^[a-z0-9._%+-]+$/.test(local) || !/^[a-z0-9.-]+\.[a-z]{2,}$/.test(domain)) {
-    return "invalid";
-  }
-  const baseLocal = local.split("+")[0];
-  return ROLE_LOCAL_PARTS.has(baseLocal) ? "role_inbox" : "direct";
 }
 
 export async function verifyEmailDeliverability(

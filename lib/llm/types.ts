@@ -17,7 +17,8 @@ export type SearchProviderId =
   | "firecrawl"
   | "jina"
   | "pagespeed"
-  | "brave";
+  | "brave"
+  | "hunter";
 
 export type SearchResetCycle = "monthly" | "daily" | "one_time" | "keyless";
 
@@ -119,6 +120,18 @@ export const SEARCH_PROVIDER_CATALOG: SearchProviderMeta[] = [
     resetCycle: "daily",
     kind: "pagespeed",
   },
+  {
+    id: "hunter",
+    label: "Hunter.io (Optional Contact Hook)",
+    blurb: "Optional domain email finder (25 free monthly searches); $0 multi-page crawler always runs first.",
+    docsUrl: "https://hunter.io/api",
+    keyPrefixes: [],
+    defaultRpmLimit: 15,
+    defaultRpdLimit: 25,
+    defaultQuotaLimit: 25,
+    resetCycle: "monthly",
+    kind: "enrichment",
+  },
 ];
 
 export const ALL_SEARCH_PROVIDER_IDS: SearchProviderId[] = [
@@ -129,6 +142,7 @@ export const ALL_SEARCH_PROVIDER_IDS: SearchProviderId[] = [
   "brave",
   "jina",
   "pagespeed",
+  "hunter",
 ];
 
 export function isSearchProviderId(raw: unknown): raw is SearchProviderId {
@@ -144,6 +158,30 @@ export function isSlowMegaModel(modelId: string): boolean {
   return /(?:550b|480b|405b|397b|235b|nemotron-3-ultra|ernie-5\.5|ernie-.*preview|step-3|trinity-large|deep-research|thinking-pro)/i.test(
     modelId.trim(),
   );
+}
+
+export function isTinyModelId(modelId: string): boolean {
+  return /(?:^|[-/:_])(?:[1-9]b|8b|7b|4b|3b|2b|1b|e4b|gemma-2b|gemma-3-4b)(?:$|[-/:_.])/i.test(
+    modelId.trim().toLowerCase(),
+  );
+}
+
+export function getModelContextWindow(provider: GatewayProviderId, modelId: string): number {
+  const clean = modelId.trim().toLowerCase();
+  if (provider === "cloudflare" || clean.startsWith("@cf/")) return 24_000;
+  if (provider === "google") {
+    if (clean.includes("gemma")) return 32_000;
+    return 1_000_000;
+  }
+  if (provider === "anthropic") return 200_000;
+  if (provider === "cerebras") {
+    if (clean.includes("8b")) return 32_000;
+    return 128_000;
+  }
+  if (provider === "groq" || provider === "nvidia" || provider === "zai" || provider === "openai" || provider === "openrouter") {
+    return 128_000;
+  }
+  return 64_000;
 }
 
 export type TaskSeat = "smart" | "balanced" | "fast";
@@ -165,6 +203,7 @@ export interface GatewayModelConfig {
   seats: TaskSeat[];
   capabilities: ModelCapabilities;
   isFreeTier?: boolean;
+  contextWindow?: number;
 }
 
 export interface ProviderCatalogMeta {

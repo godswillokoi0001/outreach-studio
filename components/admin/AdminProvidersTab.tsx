@@ -369,6 +369,19 @@ export function AdminProvidersTab({
             <Badge tone={healthyCount > 0 ? "ok" : "bad"}>{healthyCount} Healthy</Badge>
             {cooldownCount > 0 && <Badge tone="warn">{cooldownCount} Cooldown</Badge>}
             {invalidCount > 0 && <Badge tone="bad">{invalidCount} Invalid</Badge>}
+            {isSuper && (cooldownCount > 0 || invalidCount > 0) && (
+              <button
+                type="button"
+                className="btn btn-sm"
+                onClick={() =>
+                  void mutateGateway("Reset all cooldowns", { action: "clear_all_cooldowns" }, "clear_all_cooldowns")
+                }
+                disabled={busy !== null}
+              >
+                <RotateCcw size={12} />
+                Reset All Cooldowns
+              </button>
+            )}
             <button type="button" className="btn btn-sm" onClick={() => void loadData()} disabled={busy !== null}>
               <RefreshCw size={12} />
               Refresh

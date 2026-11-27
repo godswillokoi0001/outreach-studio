@@ -5,7 +5,7 @@ import { handleApiError } from "@/lib/api-helpers";
 import { validateApiKeyInput } from "@/lib/key-vault";
 import { LLMGateway } from "@/lib/llm/gateway";
 import { fetchProviderCatalogModels } from "@/lib/llm/providers";
-import { evaluateKeyHeadroom } from "@/lib/llm/router";
+import { clearAllInMemoryModelCooldowns, evaluateKeyHeadroom } from "@/lib/llm/router";
 import {
   decryptStoredGatewayKey,
   deleteAdminAiKey,
@@ -98,6 +98,7 @@ export async function POST(req: NextRequest) {
         | "update_key"
         | "toggle_key"
         | "clear_cooldown"
+        | "clear_all_cooldowns"
         | "delete_key"
         | "fetch_models"
         | "test_key"
@@ -169,7 +170,7 @@ export async function POST(req: NextRequest) {
 
     if (body.action === "add_search_key") {
       if (!isSearchProviderId(body.provider)) {
-        return NextResponse.json({ error: "Select Exa, Tavily, Firecrawl, Serper, Brave, Jina, or PageSpeed." }, { status: 400 });
+        return NextResponse.json({ error: "Select Exa, Tavily, Firecrawl, Serper, Brave, Jina, PageSpeed, or Hunter." }, { status: 400 });
       }
       const check = validateApiKeyInput(body.apiKey);
       if (!check.ok) {
@@ -405,6 +406,34 @@ export async function POST(req: NextRequest) {
         req,
       });
       return NextResponse.json(await buildAdminGatewayPayload(), { status: 201 });
+    }
+
+    if (body.action === "clear_all_cooldowns") {
+      clearAllInMemoryModelCooldowns();
+      const allKeys = await listAdminAiKeys();
+      const clearedIds: string[] = [];
+      for (const k of allKeys) {
+        if (k.healthStatus !== "healthy" || k.cooldownUntil) {
+          clearedIds.push(k.id);
+          await persistAdminKeyHealth(k.id, {
+            healthStatus: "healthy",
+            cooldownUntil: null,
+            cooldownStep: 0,
+            lastError: null,
+          });
+        }
+      }
+      await appendAdminAuditLog({
+        actorId: ctx.admin.id,
+        actorEmail: ctx.admin.email,
+        actorRole: ctx.admin.role,
+        action: "gateway_all_cooldowns_cleared",
+        targetType: "admin_ai_keys",
+        targetId: "all",
+        details: { clearedCount: clearedIds.length, clearedIds },
+        req,
+      });
+      return NextResponse.json(await buildAdminGatewayPayload());
     }
 
     if (body.action === "update_key" || body.action === "toggle_key" || body.action === "clear_cooldown") {

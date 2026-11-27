@@ -346,7 +346,7 @@ Visible hints: ${inspected.statusHints.join("; ") || "(none)"}
 Approximate word count on homepage: ${inspected.wordCount}
 
 PAGE TEXT (truncated):
-${inspected.textSummary}`
+${inspected.textSummary.slice(0, 2_500)}`
     : `WEBSITE CHECK: none available. ${lead.website ? "The stored URL could not be fetched." : "No website URL is stored for this prospect."}`;
 
   const searchBlock =
@@ -387,6 +387,7 @@ Run Workflow A (research_and_qualify) and return the complete structured JSON.`;
     systemPrompt: orchestrated.system,
     messages: [{ role: "user", content: user }],
     schema: RESEARCH_SCHEMA,
+    maxTokens: 1800,
   });
 
   const killSwitch = Boolean(result.kill_switch_triggered);

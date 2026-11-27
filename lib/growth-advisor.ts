@@ -152,6 +152,7 @@ export interface ExecutedProspect {
   website: string;
   location: string;
   industry: string;
+  socials?: { platform: string; url: string }[];
   sourceUrl: string;
   sourceDate: string;
   buyingIntentScore: number;
@@ -199,6 +200,8 @@ export interface GrowthRunInspectedSite {
   emailType: "direct" | "role_inbox" | "invalid";
   verifiedPhones: string[];
   socialLinks: { platform: string; url: string }[];
+  decisionMakers?: { name: string; role: string }[];
+  location?: string;
   snippet: string;
   textSummary: string;
   sourceUrl: string;

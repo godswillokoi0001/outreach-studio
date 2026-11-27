@@ -116,6 +116,14 @@ async function runPooledAutoFailover<T>(input: {
     listAdminAiKeys(),
   ]);
 
+  const estimateChars =
+    (input.req.systemPrompt?.length ?? 0) +
+    JSON.stringify(input.req.messages ?? []).length +
+    (input.req.agentContents ? JSON.stringify(input.req.agentContents).length : 0) +
+    (input.req.tools?.length ?? 0) * 650;
+  const maxOutputReserve = input.req.maxTokens ?? 1800;
+  const estimatedTokens = Math.ceil(estimateChars / 3.2) + maxOutputReserve;
+
   const ranked = rankPoolCandidates({
     keys: adminKeys,
     settings: adminSettings,
@@ -123,13 +131,17 @@ async function runPooledAutoFailover<T>(input: {
     requiresTools: Boolean(input.req.tools && input.req.tools.length > 0),
     requiresVision: input.req.requiresVision,
     requiresGrounding: input.req.useGrounding,
+    estimatedTokens,
+    feature: input.req.feature,
   });
 
   if (ranked.length === 0) {
     const errMsg =
       adminKeys.length === 0
         ? "No platform AI provider keys are configured yet. Ask an administrator to add free-tier or paid keys in Admin → AI Engine, or add your own key in Settings."
-        : "All pooled AI provider keys are currently cooling down or at capacity limits. Try again shortly or use your own API key in Settings.";
+        : input.req.tools && input.req.tools.length > 0
+          ? "No tool-capable AI model with sufficient context capacity is currently available. Enable Google Gemini Flash, Groq Llama 3.3 70B, NVIDIA NIM, or reset cooldowns in Admin."
+          : "All pooled AI provider keys are currently cooling down or at capacity limits. Try again shortly or use your own API key in Settings.";
 
     const failReceipt: GatewayReceipt = {
       ownerId: input.req.ownerId,

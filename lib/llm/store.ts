@@ -645,6 +645,7 @@ function readEnvSearchKeys(): DecryptedAdminSearchKey[] {
     { provider: "brave", envVar: "BRAVE_SEARCH_API_KEY" },
     { provider: "jina", envVar: "JINA_API_KEY" },
     { provider: "pagespeed", envVar: "PAGESPEED_API_KEY" },
+    { provider: "hunter", envVar: "HUNTER_API_KEY" },
   ];
   const out: DecryptedAdminSearchKey[] = [];
   for (const d of defs) {

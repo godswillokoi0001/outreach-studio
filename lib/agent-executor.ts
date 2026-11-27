@@ -45,6 +45,7 @@ import {
   writebackCampaignStatuses,
 } from "./pipeline-client";
 import { computeDashboardStats, findFollowupCandidatesFromData } from "./outreach-utils";
+import { validateContactableLead, validateOperatorAddLead } from "./search/contactGate";
 import {
   activeProviderEntry,
   patchActiveModel,
@@ -62,6 +63,30 @@ export interface AgentExecutionEnv {
   navigate: (route: AppRoute) => void;
   onDataMutated: () => void;
   hasWorkspaceToken: () => boolean;
+  userTextCorpus?: string;
+}
+
+const verifiedDiscoveryCorpusByUid = new Map<string, string[]>();
+
+export function recordVerifiedDiscoveryForSession(uid: string, candidates: DiscoveryCandidate[]): void {
+  const chunks: string[] = [];
+  for (const c of candidates) {
+    if (c.business) chunks.push(c.business);
+    if (c.website) chunks.push(c.website);
+    if (c.contact?.email) chunks.push(c.contact.email);
+    if (c.contact?.phone) chunks.push(c.contact.phone);
+    if (c.contact?.decision_maker) chunks.push(c.contact.decision_maker);
+    for (const s of c.contact?.socials ?? []) {
+      if (s.url) chunks.push(s.url);
+    }
+  }
+  const prev = verifiedDiscoveryCorpusByUid.get(uid) ?? [];
+  verifiedDiscoveryCorpusByUid.set(uid, [...prev, ...chunks].slice(-300));
+}
+
+export function clearVerifiedDiscoveryForTests(uid?: string): void {
+  if (uid) verifiedDiscoveryCorpusByUid.delete(uid);
+  else verifiedDiscoveryCorpusByUid.clear();
 }
 
 export interface ToolExecutionResult {
@@ -347,12 +372,36 @@ export async function executeAgentTool(
         if (!business) {
           return { ok: false, summary: "Business name is required.", data: { error: "business is required" } };
         }
+        const gate = validateOperatorAddLead(
+          {
+            business,
+            email: asStr(args.email) || undefined,
+            phone: asStr(args.phone) || undefined,
+            website: asStr(args.website) || undefined,
+            location: asStr(args.location) || undefined,
+            social: asStr(args.social) || asStr(args.linkedin) || undefined,
+            socials: Array.isArray(args.socials) ? args.socials : undefined,
+          },
+          {
+            userTextCorpus: env.userTextCorpus ?? "",
+            verifiedEvidenceCorpus: (verifiedDiscoveryCorpusByUid.get(uid) ?? []).join("\n"),
+          },
+        );
+        if (!gate.allowed) {
+          return {
+            ok: false,
+            summary: gate.error || "BLOCKED: Cannot add unverified or placeholder leads.",
+            data: { error: gate.error || "BLOCKED: Cannot add unverified or placeholder leads." },
+          };
+        }
+
         const res = await createLead(uid, {
           business,
           email: asStr(args.email) || undefined,
           contact_name: asStr(args.contact_name) || undefined,
           role: asStr(args.role) || undefined,
           website: asStr(args.website) || undefined,
+          phone: asStr(args.phone) || undefined,
           location: asStr(args.location) || undefined,
           industry: asStr(args.industry) || undefined,
           notes: asStr(args.notes) || undefined,
@@ -468,18 +517,43 @@ export async function executeAgentTool(
         const saveToLeads = Boolean(args.save_to_leads);
         const campaignId = asStr(args.campaign_id) || null;
 
-        if (saveToLeads && res.candidates.length > 0) {
-          for (const c of res.candidates) {
+        const contactableCandidates = (res.candidates ?? []).filter((c) => {
+          const v = validateContactableLead({
+            business: c.business,
+            website: c.website,
+            location: c.location,
+            email: c.contact?.email,
+            phone: c.contact?.phone,
+            socials: c.contact?.socials,
+            decisionMaker: c.contact?.decision_maker,
+            mxVerified: c.contact?.email_status !== "Not found",
+          });
+          return v.contactable;
+        });
+
+        recordVerifiedDiscoveryForSession(uid, contactableCandidates);
+
+        if (saveToLeads && contactableCandidates.length > 0) {
+          for (const c of contactableCandidates) {
             if (!c.business) continue;
             const created = await createLead(uid, {
               business: c.business,
               website: c.website || undefined,
               email: c.contact?.email || undefined,
+              phone: c.contact?.phone || undefined,
               contact_name: c.contact?.decision_maker || undefined,
               role: c.contact?.role || undefined,
               location: c.location || location || undefined,
               industry: c.industry || industry,
-              notes: [c.why, c.source_url ? `Source: ${c.source_url}` : ""].filter(Boolean).join("\n"),
+              notes: [
+                c.why,
+                c.contact?.socials?.length
+                  ? `Socials: ${c.contact.socials.map((s) => `${s.platform}: ${s.url}`).join(", ")}`
+                  : "",
+                c.source_url ? `Source: ${c.source_url}` : "",
+              ]
+                .filter(Boolean)
+                .join("\n"),
               source: "web_discovery",
               campaignId,
             });
@@ -493,18 +567,19 @@ export async function executeAgentTool(
           notifyIfMutated(savedCount > 0);
         }
 
+        const skippedZeroContact = (res.candidates ?? []).length - contactableCandidates.length;
         return {
           ok: true,
           summary: saveToLeads
-            ? `Discovered ${res.candidates.length} prospects and saved ${savedCount} to Leads`
-            : `Discovered ${res.candidates.length} prospects in ${industry}`,
+            ? `Discovered ${contactableCandidates.length} verified contactable prospects and saved ${savedCount} to Leads${skippedZeroContact > 0 ? ` (skipped ${skippedZeroContact} with no verified contact)` : ""}`
+            : `Discovered ${contactableCandidates.length} verified contactable prospects in ${industry}`,
           data: {
-            count: res.candidates.length,
+            count: contactableCandidates.length,
             saved: savedCount,
             duplicates: duplicateCount,
             saved_ids: savedIds,
             notes: res.notes,
-            candidates: res.candidates,
+            candidates: contactableCandidates,
           },
         };
       }

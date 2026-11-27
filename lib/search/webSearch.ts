@@ -560,6 +560,17 @@ export async function verifySearchKey(input: {
     return { ok: true, count: 1, ms: Date.now() - started, sampleTitle: "PageSpeed v5" };
   }
 
+  if (input.provider === "hunter") {
+    const { res, text } = await fetchWithTimeout(
+      `https://api.hunter.io/v2/account?api_key=${encodeURIComponent(key)}`,
+      { method: "GET" },
+      6_000,
+      20_000,
+    );
+    if (!res.ok) throw new Error(`Hunter HTTP ${res.status}: ${text.slice(0, 120)}`);
+    return { ok: true, count: 1, ms: Date.now() - started, sampleTitle: "Hunter.io Account" };
+  }
+
   let results: WebSearchResult[] = [];
   if (input.provider === "exa") results = await searchExa("B2B SaaS websites", key, 3);
   else if (input.provider === "tavily") results = await searchTavily("test", key, 3);

@@ -4,11 +4,11 @@ import { getActiveOwnerAiContext } from "./ai/context";
 import { addBusinessDaysIso, mapReplyClassMeta, type ReplyClassCode, type ReplySequenceAction } from "./guardrails";
 import { LLMGateway } from "./llm/gateway";
 import { cleanEmailText } from "./outreach-utils";
+import { findDeepContactsForProspect, type DeepContactProfile } from "./search/contactFinder";
+import { validateContactableLead } from "./search/contactGate";
 import {
-  inspectProspectWebsites,
   isDirectoryUrl,
   WebSearchService,
-  type InspectedWebsite,
   type WebSearchResult,
 } from "./search/webSearch";
 import type { CampaignConfig, Lead, Message, Settings } from "./types";
@@ -419,18 +419,34 @@ export async function discoverProspectsServer(input: {
     return { candidates: [], notes: emptyNote, groundingUrls: [] };
   }
 
-  // Step 2: Parallel live HTML inspection of top non-directory candidate websites (5s cap per site)
-  const websiteCandidates = searchRes.results
-    .map((r) => r.url)
-    .filter((u) => /^https?:\/\//i.test(u) && !isDirectoryUrl(u));
+  // Step 2: Deep $0 contact pipeline on non-directory / non-agency-portfolio candidates
+  const filteredResults = searchRes.results.filter(
+    (r) =>
+      !(/\/(?:portfolio|case-studies?|our-work|work\/)/i.test(r.url)) &&
+      (!isDirectoryUrl(r.url) || r.sourceProvider === "osm"),
+  );
+  const topProspectSources = (filteredResults.length > 0 ? filteredResults : searchRes.results).slice(
+    0,
+    Math.min(8, Math.max(5, input.count)),
+  );
 
-  const inspectedSites = await inspectProspectWebsites(websiteCandidates, {
-    maxSites: Math.min(8, Math.max(5, input.count)),
-    timeoutMs: 5_000,
-    checkContactPage: false,
-  });
+  const deepContacts = await Promise.all(
+    topProspectSources.map((r) =>
+      findDeepContactsForProspect({
+        business: r.businessName || r.title.split(/[|\-–—]/)[0].trim() || r.domain || r.url,
+        website: isDirectoryUrl(r.url) ? undefined : r.url,
+        location: r.address || input.location,
+        osmPhone: r.phone,
+        osmEmail: r.email,
+        osmAddress: r.address,
+        snippet: r.snippet,
+        allowTargetedSearch: false,
+        timeoutMs: 4_000,
+      }),
+    ),
+  );
 
-  const inspectedByUrl = new Map<string, InspectedWebsite>();
+  const contactByUrl = new Map<string, DeepContactProfile>();
   const verifiedEmailCorpus = new Set<string>();
   const verifiedUrlCorpus = new Set<string>();
 
@@ -438,13 +454,16 @@ export async function discoverProspectsServer(input: {
     verifiedUrlCorpus.add(r.url.toLowerCase());
     if (r.email) verifiedEmailCorpus.add(r.email.toLowerCase());
   }
-  for (const s of inspectedSites) {
-    inspectedByUrl.set(s.url.toLowerCase(), s);
-    inspectedByUrl.set(s.finalUrl.toLowerCase(), s);
-    verifiedUrlCorpus.add(s.url.toLowerCase());
-    verifiedUrlCorpus.add(s.finalUrl.toLowerCase());
-    for (const em of s.emails) verifiedEmailCorpus.add(em.toLowerCase());
-    for (const soc of s.socialLinks) verifiedUrlCorpus.add(soc.url.toLowerCase());
+  for (const dc of deepContacts) {
+    if (dc.website) contactByUrl.set(dc.website.toLowerCase(), dc);
+    if (dc.inspectedSite) {
+      contactByUrl.set(dc.inspectedSite.url.toLowerCase(), dc);
+      contactByUrl.set(dc.inspectedSite.finalUrl.toLowerCase(), dc);
+      verifiedUrlCorpus.add(dc.inspectedSite.url.toLowerCase());
+      verifiedUrlCorpus.add(dc.inspectedSite.finalUrl.toLowerCase());
+    }
+    for (const em of dc.emails) verifiedEmailCorpus.add(em.toLowerCase());
+    for (const soc of dc.socials) verifiedUrlCorpus.add(soc.url.toLowerCase());
   }
 
   // Grounding URLs always reflect real verified URLs fetched during this search
@@ -452,19 +471,12 @@ export async function discoverProspectsServer(input: {
     .slice(0, 12)
     .map((r) => ({ uri: r.url, title: r.businessName || r.title || r.url }));
 
-  const taskInstructions = `Structure and qualify ONLY the verified businesses found in the LIVE SEARCH RESULTS and INSPECTED WEBSITES below using Module 1 (Signal-Based Prospecting, Research Waterfall & Anti-Hallucination Firewall).
+  const taskInstructions = `Structure and qualify ONLY verified businesses from LIVE SEARCH RESULTS and DEEP CONTACT PROFILES below using Module 1 rules.
 
 STRICT ANTI-HALLUCINATION & VERIFICATION RULES:
-1. USE ONLY SUPPLIED EVIDENCE:
-   - Build candidates ONLY from the real businesses listed in LIVE SEARCH RESULTS and INSPECTED WEBSITES below.
-   - Do NOT invent businesses, websites, emails, phone numbers, social links, decision-makers, or website bugs not explicitly present in the supplied snippets or website inspection data.
-   - If a field (email, phone, decision_maker, social) is NOT present in the supplied evidence, leave it as "" (empty string).
-   - Assign verification_status: "Verified" when observed directly on an inspected website or OSM record, "Unverified" for search snippet only, or "Not found".
-   - Set date_found to "${today}".
-2. STRICT QUALIFICATION REVIEW:
-   - Evaluate against USER_OFFER, USER_ICP, and USER_EXCLUSIONS.
-   - Each candidate MUST include qualification_review with verdict ("qualified" | "not_qualified" | "uncertain"), criteria[], weaknesses_and_risks[], and missing_information[].
-   - Concrete website issues (e.g. "Missing mobile viewport meta tag", "Not using HTTPS", "Coming soon text", low word count) are allowed ONLY when reported verbatim in INSPECTED WEBSITES.
+1. Build candidates ONLY from verified entries below. Never invent emails, phones, handles, owner names, or website flaws. Leave missing strings as "".
+2. Assign verification_status: "Verified" when observed on website/JSON-LD/OSM, "Unverified" for snippet only, or "Not found". Date: "${today}".
+3. Include qualification_review with verdict ("qualified" | "not_qualified" | "uncertain"), criteria[], weaknesses_and_risks[], missing_information[].
 
 Output strictly valid JSON matching:
 {"candidates":[{"business":string,"website":string,"location":string,"industry":string,"why":string,"source_url":string,"research_notes":string,"contact":{"decision_maker":string,"role":string,"email":string,"phone":string,"whatsapp":string,"address":string,"socials":[{"platform":string,"url":string,"verification_status":"Verified"|"Unverified"|"Not found"}],"sources":[{"field":string,"url":string,"confidence":"high"|"medium"|"low","verification_status":"Verified"|"Unverified"|"Not found","date_found":string}]},"issues":[{"area":string,"problem":string,"evidence":string,"severity":"high"|"medium"|"low"}],"how_we_help":[{"issue":string,"service":string,"angle":string}],"qualification_review":{"verdict":"qualified"|"not_qualified"|"uncertain","criteria":[{"name":string,"status":"met"|"not_met"|"unknown","evidence":string}],"weaknesses_and_risks":[string],"missing_information":[string]}}],"notes":string}`;
@@ -476,35 +488,23 @@ Output strictly valid JSON matching:
     taskInstructions,
   });
 
-  const searchDossier = searchRes.results
-    .slice(0, 14)
+  const searchDossier = topProspectSources
     .map((r: WebSearchResult, idx: number) => {
-      const extras = [
-        r.businessName ? `Business: ${r.businessName}` : "",
-        r.address ? `Address: ${r.address}` : "",
-        r.phone ? `Phone: ${r.phone}` : "",
-        r.email ? `Email: ${r.email}` : "",
-      ]
-        .filter(Boolean)
-        .join(" | ");
-      return `[${idx + 1}] (${r.sourceProvider}) ${r.title}\nURL: ${r.url}${extras ? `\nDetails: ${extras}` : ""}\nSnippet: ${r.snippet}`;
+      return `[${idx + 1}] (${r.sourceProvider}) ${r.title} | URL: ${r.url} | ${r.snippet.slice(0, 220)}`;
+    })
+    .join("\n");
+
+  const inspectedDossier = deepContacts
+    .map((dc, idx) => {
+      const s = dc.inspectedSite;
+      return `[Site ${idx + 1}] ${dc.business} | URL: ${dc.website || "(none)"} | Reachable: ${s?.reachable ?? false} (HTTP ${s?.status ?? 0})
+Location: ${dc.location || "(unknown)"} | Platform: ${s?.platform || "unknown"} | Viewport: ${s?.hasViewport ?? false} | HTTPS: ${s?.https ?? false}
+Emails: ${dc.emails.join(", ") || "none"} (type=${dc.emailType}, mx=${dc.mxVerified}) | Phones: ${dc.phones.join(", ") || "none"}
+Owners: ${dc.decisionMakers.map((d) => `${d.name} (${d.role})`).join(", ") || "none"}
+Socials: ${dc.socials.map((l) => `${l.platform}: ${l.url}`).join(", ") || "none"}
+Hints: ${s?.statusHints.join("; ") || "none"} | Copy: ${(s?.textSummary || "").slice(0, 420)}`;
     })
     .join("\n\n");
-
-  const inspectedDossier =
-    inspectedSites.length > 0
-      ? inspectedSites
-          .map((s, idx) => {
-            return `[Site ${idx + 1}] ${s.finalUrl} (HTTP ${s.status}, Reachable: ${s.reachable})
-Title: ${s.title || "(none)"} | H1: ${s.h1 || "(none)"}
-HTTPS: ${s.https} | Mobile Viewport: ${s.hasViewport} | Contact Form: ${s.hasContactForm} | Platform: ${s.platform || "unknown"}
-Verified Emails: ${s.emails.join(", ") || "none found"} | Phones: ${s.phones.join(", ") || "none found"}
-Socials: ${s.socialLinks.map((l) => `${l.platform}: ${l.url}`).join(", ") || "none found"}
-Detected Hints: ${s.statusHints.join("; ") || "none"}
-Visible Text: ${s.textSummary.slice(0, 900)}`;
-          })
-          .join("\n\n")
-      : "(No live HTML sites were reachable or non-directory)";
 
   const user = `Extract and qualify up to ${input.count} real prospects from the verified evidence below.
 Target industry/segment: ${input.industry || "matching the active user's ICP and offer"}
@@ -514,10 +514,10 @@ Additional focus: ${input.focus || "(none)"}
 === LIVE SEARCH RESULTS (providers: ${searchRes.providersSucceeded.join(", ")}) ===
 ${searchDossier}
 
-=== LIVE INSPECTED WEBSITES ===
+=== DEEP CONTACT & WEBSITE INSPECTION ===
 ${inspectedDossier}
 
-Return ONLY valid JSON with a "candidates" array and short "notes" summarizing sources used.`;
+Return ONLY valid JSON with a "candidates" array and short "notes".`;
 
   const { data } = await LLMGateway.completeJSON<{
     candidates: unknown[];
@@ -526,65 +526,98 @@ Return ONLY valid JSON with a "candidates" array and short "notes" summarizing s
     ownerId: input.ownerId ?? getActiveOwnerAiContext()?.ownerId ?? "anonymous",
     taskType: "balanced",
     feature: "discover",
+    maxTokens: 2200,
     systemPrompt: orchestrated.system,
     messages: [{ role: "user", content: user }],
   });
 
-  // Check email text corpus across all search snippets & inspected sites to strip any LLM-guessed emails
   const fullEvidenceText = `${searchDossier}\n${inspectedDossier}`.toLowerCase();
-
   const seen = new Set<string>();
-  const candidates = (Array.isArray(data.candidates) ? data.candidates : [])
+  let skippedNoContact = 0;
+
+  const enrichedCandidates = (Array.isArray(data.candidates) ? data.candidates : [])
     .map((raw) => normalizeCandidate(raw))
     .map((candidate) => {
-      // Anti-hallucination deterministic guard on emails
       const emailLower = candidate.contact.email.toLowerCase();
-      if (
-        emailLower &&
-        !verifiedEmailCorpus.has(emailLower) &&
-        !fullEvidenceText.includes(emailLower)
-      ) {
+      if (emailLower && !verifiedEmailCorpus.has(emailLower) && !fullEvidenceText.includes(emailLower)) {
         candidate.contact.email = "";
         candidate.contact.email_status = "Not found";
       }
 
-      // Enrich missing email/phone/address from inspected site if LLM left blank
-      const siteMatch =
-        inspectedByUrl.get(candidate.website.toLowerCase()) ??
-        inspectedByUrl.get(candidate.source_url.toLowerCase());
-      if (siteMatch) {
-        if (!candidate.contact.email && siteMatch.emails[0]) {
-          candidate.contact.email = siteMatch.emails[0];
-          candidate.contact.email_status = "Verified";
+      const dc =
+        contactByUrl.get(candidate.website.toLowerCase()) ??
+        contactByUrl.get(candidate.source_url.toLowerCase()) ??
+        deepContacts.find((d) => d.business.toLowerCase() === candidate.business.toLowerCase());
+      if (dc) {
+        if (!candidate.contact.email && dc.primaryEmail) {
+          candidate.contact.email = dc.primaryEmail;
+          candidate.contact.email_status = dc.mxVerified ? "Verified" : "Unverified";
         }
-        if (!candidate.contact.phone && siteMatch.phones[0]) {
-          candidate.contact.phone = siteMatch.phones[0];
+        if (!candidate.contact.phone && dc.primaryPhone) {
+          candidate.contact.phone = dc.primaryPhone;
           candidate.contact.phone_status = "Verified";
         }
-        if (candidate.contact.socials.length === 0 && siteMatch.socialLinks.length > 0) {
-          candidate.contact.socials = siteMatch.socialLinks.map((s) => ({
+        if (!candidate.contact.decision_maker && dc.decisionMakers[0]) {
+          candidate.contact.decision_maker = dc.decisionMakers[0].name;
+          candidate.contact.role = dc.decisionMakers[0].role;
+        }
+        if (!candidate.location && dc.location) {
+          candidate.location = dc.location;
+        }
+        if (!candidate.contact.address && dc.location) {
+          candidate.contact.address = dc.location;
+        }
+        if (candidate.contact.socials.length === 0 && dc.socials.length > 0) {
+          candidate.contact.socials = dc.socials.map((s) => ({
             platform: s.platform,
             url: s.url,
             verification_status: "Verified",
           }));
         }
       }
-      return candidate;
+      return { candidate, dc };
     })
-    .filter((candidate) => {
+    .filter(({ candidate }) => {
       const key = (candidate.website || candidate.business).toLowerCase().replace(/^https?:\/\//, "").replace(/\/+$/, "");
       if (!key || seen.has(key)) return false;
       seen.add(key);
       return Boolean(candidate.business);
     })
-    .slice(0, input.count);
+    .map(({ candidate, dc }) => {
+      const verdict = validateContactableLead({
+        business: candidate.business,
+        website: candidate.website,
+        location: candidate.location,
+        email: candidate.contact.email,
+        phone: candidate.contact.phone,
+        socials: candidate.contact.socials,
+        decisionMaker: candidate.contact.decision_maker,
+        mxVerified: dc ? dc.mxVerified : true,
+      });
+      if (!verdict.contactable) {
+        skippedNoContact += 1;
+        return null;
+      }
+      return { candidate, rank: verdict.completenessRank };
+    })
+    .filter((entry): entry is { candidate: DiscoveryCandidate; rank: number } => Boolean(entry))
+    .sort((a, b) => b.rank - a.rank)
+    .slice(0, input.count)
+    .map((entry) => entry.candidate);
+
+  const inspectedCount = deepContacts.filter((d) => d.inspectedSite?.reachable).length;
+  const skipNote =
+    skippedNoContact > 0
+      ? ` Skipped ${skippedNoContact} business(es) with no publicly verifiable contact details.`
+      : "";
 
   const value = {
-    candidates,
-    notes:
+    candidates: enrichedCandidates,
+    notes: `${
       typeof data.notes === "string" && data.notes.trim()
-        ? data.notes
-        : `Sources queried: ${searchRes.providersSucceeded.join(", ")}. Inspected ${inspectedSites.length} live site(s).`,
+        ? data.notes.trim()
+        : `Sources queried: ${searchRes.providersSucceeded.join(", ")}. Inspected ${inspectedCount} live site(s).`
+    }${skipNote}`,
     groundingUrls,
   };
   discoveryCache.set(cacheKey, { at: Date.now(), value });

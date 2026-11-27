@@ -26,17 +26,8 @@ export const WORKFLOW_MODULES: Record<OrchestratorWorkflow, GlobalKnowledgeModul
     "module_1_prospecting_research_qualification",
     "module_3_routing_templates_cadence",
   ],
-  growth_advisor: [
-    "module_1_prospecting_research_qualification",
-    "module_2_copywriting_psychology_deliverability",
-    "module_3_routing_templates_cadence",
-  ],
-  assistant_chat: [
-    "module_1_prospecting_research_qualification",
-    "module_2_copywriting_psychology_deliverability",
-    "module_3_routing_templates_cadence",
-    "module_4_replies_objections_closing_compliance",
-  ],
+  growth_advisor: ["module_1_prospecting_research_qualification"],
+  assistant_chat: [],
 };
 
 /**
@@ -146,7 +137,7 @@ export async function buildOrchestratedSystemPrompt(input: {
       knowledgeDigest: input.knowledgeDigest,
     });
 
-  const digest = (input.knowledgeDigest?.trim() || loaded?.knowledgeDigest || "").slice(0, 28_000);
+  const digest = (input.knowledgeDigest?.trim() || loaded?.knowledgeDigest || "").slice(0, 3_500);
   const userKbBlock = digest
     ? `USER BUSINESS KNOWLEDGE BASE (Master Knowledge, Sources & Additional Notes):\n${digest}`
     : "USER BUSINESS KNOWLEDGE BASE:\nNot provided — do not fabricate missing company offers, prices, or case studies.";

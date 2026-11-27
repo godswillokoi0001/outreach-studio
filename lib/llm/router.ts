@@ -1,7 +1,9 @@
 import type { GatewayProviderError } from "./providers";
 import { persistAdminKeyHealth } from "./store";
 import {
+  getModelContextWindow,
   isSlowMegaModel,
+  isTinyModelId,
   type AdminAiKeyRecord,
   type AdminAiSettings,
   type GatewayModelConfig,
@@ -106,6 +108,11 @@ export function clearRouterStateForTests(): void {
   googleGroundingBlockedKeys.clear();
 }
 
+export function clearAllInMemoryModelCooldowns(): void {
+  keyModelCooldowns.clear();
+  googleGroundingBlockedKeys.clear();
+}
+
 export function isCandidateCoolingDown(key: AdminAiKeyRecord, modelId: string, now = Date.now()): boolean {
   if (!key.enabled) return true;
   if (key.healthStatus === "invalid") return true;
@@ -159,19 +166,31 @@ export function recordCandidateFailure(
     return { healthStatus: "invalid", cooldownMs: 0 };
   }
 
-  // Model missing OR unable to serve this request shape (e.g. no function calling)
-  // -> bench this (key, model) pair for an hour, but keep the key in the pool.
-  if (err.modelNotFound || err.modelUnsupported) {
-    const ms = 60 * 60_000;
+  // HTTP 400 / 413 / 422 / missing / unsupported request shapes (context overflow, tools refused):
+  // strictly per-(key, model) temporary skip — NEVER bench the entire API key in DB!
+  if (err.modelNotFound || err.modelUnsupported || err.status === 400 || err.status === 413 || err.status === 422) {
+    const ms = err.modelNotFound ? 60 * 60_000 : 10 * 60_000;
     keyModelCooldowns.set(`${key.id}:${modelId}`, {
       untilMs: now + ms,
-      step: 2,
+      step: 1,
       reason: errSummary,
     });
-    return { healthStatus: "cooldown", cooldownMs: ms };
+    return { healthStatus: "healthy", cooldownMs: 0 };
   }
 
-  // Compute escalating cooldown step (2m -> 10m -> 1h -> 24h)
+  // Timeout (504) or upstream 5xx (502/503): cool down ONLY this specific (key, model) pair for 2m.
+  // Never bench the provider's other healthy models!
+  if (!err.rateLimited && !err.creditsExhausted && !err.dailyQuotaExhausted) {
+    const ms = ESCALATION_LADDER_MS[0]; // 2m per-model cooldown
+    keyModelCooldowns.set(`${key.id}:${modelId}`, {
+      untilMs: now + ms,
+      step: 1,
+      reason: errSummary,
+    });
+    return { healthStatus: "healthy", cooldownMs: ms };
+  }
+
+  // Compute escalating cooldown step (2m -> 10m -> 1h -> 24h) strictly for real rate/quota 429/402
   const prevStep = keyModelCooldowns.get(`${key.id}:${modelId}`)?.step ?? key.cooldownStep ?? 0;
   const nextStep = Math.min(ESCALATION_LADDER_MS.length - 1, prevStep);
   let cooldownMs = ESCALATION_LADDER_MS[nextStep];
@@ -190,19 +209,17 @@ export function recordCandidateFailure(
     reason: errSummary,
   });
 
-  // Escalate key-level DB cooldown on rate-limit / credit / repeated upstream exhaustion
-  if (err.rateLimited || err.creditsExhausted || err.dailyQuotaExhausted) {
-    key.healthStatus = "cooldown";
-    key.cooldownUntil = untilIso;
-    key.cooldownStep = Math.min(ESCALATION_LADDER_MS.length - 1, nextStep + 1);
-    key.lastError = errSummary;
-    void persistAdminKeyHealth(key.id, {
-      healthStatus: "cooldown",
-      cooldownUntil: untilIso,
-      cooldownStep: key.cooldownStep,
-      lastError: errSummary,
-    }).catch(() => {});
-  }
+  // Escalate key-level DB cooldown strictly on explicit rate-limit / quota / credit exhaustion
+  key.healthStatus = "cooldown";
+  key.cooldownUntil = untilIso;
+  key.cooldownStep = Math.min(ESCALATION_LADDER_MS.length - 1, nextStep + 1);
+  key.lastError = errSummary;
+  void persistAdminKeyHealth(key.id, {
+    healthStatus: "cooldown",
+    cooldownUntil: untilIso,
+    cooldownStep: key.cooldownStep,
+    lastError: errSummary,
+  }).catch(() => {});
 
   return { healthStatus: "cooldown", cooldownMs };
 }
@@ -251,14 +268,23 @@ export function rankPoolCandidates(input: {
   requiresTools?: boolean;
   requiresVision?: boolean;
   requiresGrounding?: boolean;
+  estimatedTokens?: number;
+  feature?: string;
   now?: number;
 }): RankedPoolCandidate[] {
   const now = input.now ?? Date.now();
   const candidates: RankedPoolCandidate[] = [];
+  const isGrowthOrOperator =
+    Boolean(input.requiresTools) ||
+    input.feature === "operator_chat" ||
+    Boolean(input.feature?.startsWith("growth_"));
 
   for (const key of input.keys) {
     if (!key.enabled || key.healthStatus === "invalid") continue;
-    if (input.requiresTools && TOOL_UNSAFE_PROVIDERS.has(key.provider)) continue;
+    // Hard-exclude Cloudflare from tool-calling, operator_chat, and Growth Advisor
+    if ((input.requiresTools || isGrowthOrOperator) && TOOL_UNSAFE_PROVIDERS.has(key.provider)) {
+      continue;
+    }
     const headroom = evaluateKeyHeadroom(key);
     if (!headroom.allowed) continue;
 
@@ -266,8 +292,23 @@ export function rankPoolCandidates(input: {
       if (!model.enabled) continue;
       if (input.requiresTools && !model.capabilities.tools) continue;
       if (input.requiresTools && !isChatCapableModelId(model.id)) continue;
+      // Hard-exclude tiny <= 8B models from tool-calling, operator_chat, and Growth Advisor smart/balanced seats
+      if (
+        (input.requiresTools || (isGrowthOrOperator && input.taskType !== "fast")) &&
+        isTinyModelId(model.id)
+      ) {
+        continue;
+      }
       if (input.requiresVision && !model.capabilities.vision) continue;
       if (isCandidateCoolingDown(key, model.id, now)) continue;
+
+      // Pre-flight context window safety check (never send oversized requests to Cloudflare/small-context models)
+      if (input.estimatedTokens && input.estimatedTokens > 0) {
+        const ctxWindow = model.contextWindow ?? getModelContextWindow(key.provider, model.id);
+        if (input.estimatedTokens > ctxWindow * 0.85) {
+          continue;
+        }
+      }
 
       let score = 0;
       const slowMega = isSlowMegaModel(model.id);
@@ -275,11 +316,11 @@ export function rankPoolCandidates(input: {
       // 1. Headroom steering: healthy headroom strictly outranks keys >= 85% cap
       score += headroom.lowHeadroom ? -200 : 120 - Math.round(headroom.utilization * 40);
 
-      // 2. Penalize slow mega/preview models (400B-550B+) so interactive tasks never stall in queues
+      // 2. Strongly demote slow 400B-550B+ preview models so responsive models ALWAYS run first
       if (slowMega) {
-        score -= input.taskType === "smart" ? 95 : 220;
+        score -= isGrowthOrOperator ? 600 : input.taskType === "smart" ? 180 : 320;
       } else if (FAST_RESPONSIVE_MODEL_RE.test(model.id)) {
-        score += input.taskType === "fast" ? 55 : 35;
+        score += input.taskType === "fast" ? 55 : 45;
       }
 
       // 3. Native Google Search grounding priority only when key has not rejected free-tier grounding

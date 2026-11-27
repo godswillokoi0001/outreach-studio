@@ -27,9 +27,14 @@ import {
 import { generateTotpAt, generateTotpSecret, verifyTotpCode, encryptSecret, decryptSecret } from "./key-vault";
 import { extractErrorCode, extractErrorMessage, handleApiError } from "./api-helpers";
 import { LLMGateway, LLMGatewayError } from "./llm/gateway";
+import { executeAgentTool, clearVerifiedDiscoveryForTests } from "./agent-executor";
+import { decodeCfEmail, extractJsonLdContacts, findDeepContactsForProspect } from "./search/contactFinder";
+import { validateContactableLead, validateOperatorAddLead } from "./search/contactGate";
 import {
+  clearAllInMemoryModelCooldowns,
   clearRouterStateForTests,
   evaluateKeyHeadroom,
+  isCandidateCoolingDown,
   isChatCapableModelId,
   rankPoolCandidates,
   recordCandidateFailure,
@@ -1666,11 +1671,10 @@ test("Non-Google discovery works end-to-end with WebSearchService + live site in
     });
 
     assert.equal(groqCalled, true);
-    assert.equal(result.candidates.length, 2);
+    // Hard "No Verified Contact = Do Not Save" gate keeps Austin Family Dental and discards SmileTown (whose hallucinated email left 0 verified contacts)
+    assert.equal(result.candidates.length, 1);
     assert.equal(result.candidates[0].business, "Austin Family Dental");
     assert.equal(result.candidates[0].contact.email, "hello@austindental.example.com");
-    // Anti-hallucination guard strips LLM-guessed email absent from search & site inspection
-    assert.equal(result.candidates[1].contact.email, "");
     assert.equal(result.groundingUrls[0].uri, "https://austindental.example.com");
   } finally {
     globalThis.fetch = prevFetch;
@@ -2728,4 +2732,200 @@ test("Search 7d cache saves credits, exhausted quotas auto-skip cleanly, and ema
     clearSearchCacheAndQuotasForTests();
     clearEmailMxCacheForTests();
   }
+});
+
+test("contactFinder decodes Cloudflare cfemail, parses JSON-LD, and crawls /contact and /about subpages", async () => {
+  // Encode "dr.patel@brightdentalaustin.com" with XOR key 0x42
+  const plain = "dr.patel@brightdentalaustin.com";
+  const key = 0x42;
+  const cfHex =
+    key.toString(16).padStart(2, "0") +
+    Array.from(plain, (ch) => (ch.charCodeAt(0) ^ key).toString(16).padStart(2, "0")).join("");
+  assert.equal(decodeCfEmail(cfHex), plain);
+
+  const ldSample = `<script type="application/ld+json">{"@context":"https://schema.org","@type":"Dentist","name":"Bright Dental Austin","telephone":"+1 512-555-0192","address":{"streetAddress":"401 Congress Ave","addressLocality":"Austin","addressRegion":"TX"},"sameAs":["https://www.linkedin.com/company/bright-dental-austin"],"founder":{"@type":"Person","name":"Dr. Maya Patel","jobTitle":"Practice Owner"}}</script>`;
+  const parsedLd = extractJsonLdContacts(ldSample);
+  assert.deepEqual(parsedLd.phones, ["+1 512-555-0192"]);
+  assert.equal(parsedLd.decisionMakers[0]?.name, "Dr. Maya Patel");
+  assert.equal(parsedLd.socials[0]?.platform, "LinkedIn");
+
+  const prevFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: string | URL | Request) => {
+    const u = String(input);
+    if (u === "https://brightdentalaustin.com/" || u === "https://brightdentalaustin.com") {
+      return new Response(
+        `<html><head><title>Bright Dental Austin</title></head><body><h1>Austin Family Dentist</h1><a href="/contact">Contact Us</a><a href="/about">About Team</a>${ldSample}</body></html>`,
+        { status: 200, headers: { "content-type": "text/html" } },
+      );
+    }
+    if (u === "https://brightdentalaustin.com/contact") {
+      return new Response(
+        `<html><body><a href="/cdn-cgi/l/email-protection#${cfHex}" data-cfemail="${cfHex}">Email Us</a></body></html>`,
+        { status: 200, headers: { "content-type": "text/html" } },
+      );
+    }
+    if (u === "https://brightdentalaustin.com/about") {
+      return new Response(
+        `<html><body><p>Dr. Maya Patel, Founder & Lead Dentist</p></body></html>`,
+        { status: 200, headers: { "content-type": "text/html" } },
+      );
+    }
+    return new Response("Not found", { status: 404 });
+  }) as typeof fetch;
+
+  try {
+    // Seed offline DNS MX response by mocking verifyEmailDeliverability? Instead test subpage + JSON-LD + cfemail directly,
+    // and ensure phones, socials, decisionMakers, location, and checked pages are populated cleanly even offline.
+    const profile = await findDeepContactsForProspect({
+      business: "Bright Dental Austin",
+      website: "https://brightdentalaustin.com",
+      allowTargetedSearch: false,
+      timeoutMs: 2_000,
+    });
+    assert.ok(profile.emails.includes("dr.patel@brightdentalaustin.com"));
+    assert.ok(profile.phones.includes("+1 512-555-0192"));
+    assert.equal(profile.socials[0]?.platform, "LinkedIn");
+    assert.equal(profile.decisionMakers[0]?.name, "Dr. Maya Patel");
+    assert.ok(profile.location.includes("Austin"));
+    assert.equal(profile.hasVerifiedContact, true);
+    assert.ok(profile.contactPagesChecked.some((p) => p.includes("/contact")));
+  } finally {
+    globalThis.fetch = prevFetch;
+  }
+});
+
+test("hard contact gate & add_lead firewall block zero-contact and synthetic placeholder emails", async () => {
+  clearVerifiedDiscoveryForTests();
+
+  const zeroContact = validateContactableLead({
+    business: "Ghost LLC",
+    website: "https://ghostllc.com",
+    email: "",
+    phone: "",
+    socials: [],
+  });
+  assert.equal(zeroContact.contactable, false);
+
+  const synthetic = validateContactableLead({
+    business: "Fake Biz",
+    website: "https://fakebiz.com",
+    email: "placeholder@example.com",
+  });
+  assert.equal(synthetic.contactable, false);
+
+  const validDirect = validateContactableLead({
+    business: "Bright Dental Austin",
+    website: "https://brightdentalaustin.com",
+    location: "Austin, TX",
+    email: "dr.patel@brightdentalaustin.com",
+    decisionMaker: "Dr. Maya Patel",
+    mxVerified: true,
+  });
+  assert.equal(validDirect.contactable, true);
+  assert.ok(validDirect.completenessRank >= 150);
+
+  const opBlockedSynthetic = validateOperatorAddLead(
+    { business: "Austin Smile", website: "https://austinsmile.com", email: "info@austinsmile.com" },
+    { userTextCorpus: "find me 5 dental clinics in Austin and add them" },
+  );
+  assert.equal(opBlockedSynthetic.allowed, false);
+
+  const blockedRes = await executeAgentTool(
+    "add_lead",
+    { business: "Austin Smile", website: "https://austinsmile.com", email: "info@austinsmile.com" },
+    {
+      uid: "u-gate-test",
+      navigate: () => {},
+      onDataMutated: () => {},
+      hasWorkspaceToken: () => true,
+      userTextCorpus: "find me 5 dental clinics in Austin",
+    },
+  );
+  assert.equal(blockedRes.ok, false);
+  assert.ok(blockedRes.summary.startsWith("BLOCKED:"));
+
+  const opAllowedExplicit = validateOperatorAddLead(
+    { business: "Austin Smile", website: "https://austinsmile.com", email: "frontdesk@austinsmile.com" },
+    { userTextCorpus: "Please add Austin Smile with frontdesk@austinsmile.com" },
+  );
+  assert.equal(opAllowedExplicit.allowed, true);
+});
+
+test("router enforces pre-flight context window safety, tool-calling exclusions, and isolated 413/400 cooldowns", () => {
+  clearRouterStateForTests();
+  clearAllInMemoryModelCooldowns();
+  const now = Date.now();
+
+  const settings: AdminAiSettings = makeSampleAdminSettings({ masterMode: "auto", strategy: "balanced" });
+
+  const makeKey = (
+    id: string,
+    provider: AdminAiKeyRecord["provider"],
+    models: { id: string; tools?: boolean; contextWindow?: number }[],
+  ): AdminAiKeyRecord =>
+    makeSampleAdminKey(id, provider, `key_${id}`, {
+      models: models.map((m) => ({
+        id: m.id,
+        displayName: m.id,
+        enabled: true,
+        seats: ["fast", "balanced", "smart"],
+        isFreeTier: true,
+        contextWindow: m.contextWindow,
+        capabilities: { json: true, tools: m.tools ?? true, vision: false, reasoning: false },
+      })),
+    });
+
+  const cfKey = makeKey("k_cf", "cloudflare", [
+    { id: "@cf/meta/llama-3.1-8b-instruct-fast", tools: false, contextWindow: 24_000 },
+    { id: "@cf/meta/llama-3.3-70b-instruct-fp8-fast", tools: false, contextWindow: 24_000 },
+  ]);
+  const groqKey = makeKey("k_groq", "groq", [
+    { id: "llama-3.1-8b-instant", tools: true, contextWindow: 128_000 },
+    { id: "llama-3.3-70b-versatile", tools: true, contextWindow: 128_000 },
+    { id: "openai/gpt-oss-120b", tools: true, contextWindow: 128_000 },
+  ]);
+  const nvidiaKey = makeKey("k_nv", "nvidia", [
+    { id: "nvidia/nemotron-3-ultra-550b-a55b:free", tools: true, contextWindow: 128_000 },
+  ]);
+
+  // 1. Pre-flight context window guard skips 24k Cloudflare models when prompt estimates 25k tokens
+  const oversizedPool = rankPoolCandidates({
+    keys: [cfKey, groqKey],
+    settings,
+    taskType: "balanced",
+    estimatedTokens: 25_000,
+    now,
+  });
+  assert.ok(oversizedPool.every((c) => c.key.provider !== "cloudflare"));
+  assert.ok(oversizedPool.length > 0);
+
+  // 2. Tool-calling guard excludes Cloudflare and tiny <= 8B models, and demotes 550B slow mega-models
+  const toolPool = rankPoolCandidates({
+    keys: [cfKey, groqKey, nvidiaKey],
+    settings,
+    taskType: "balanced",
+    requiresTools: true,
+    feature: "operator_chat",
+    now,
+  });
+  assert.ok(toolPool.every((c) => c.key.provider !== "cloudflare"));
+  assert.ok(toolPool.every((c) => !c.model.id.includes("llama-3.1-8b")));
+  assert.equal(toolPool[0]?.key.provider, "groq");
+
+  // 3. HTTP 413 isolates cooldown ONLY to (k_groq, openai/gpt-oss-120b) — NOT whole k_groq key
+  recordCandidateFailure(
+    groqKey,
+    "openai/gpt-oss-120b",
+    new GatewayProviderError("Request too large for TPM", {
+      status: 413,
+      modelUnsupported: true,
+      retryable: true,
+    }),
+  );
+  assert.equal(groqKey.healthStatus, "healthy");
+  assert.equal(isCandidateCoolingDown(groqKey, "openai/gpt-oss-120b"), true);
+  assert.equal(isCandidateCoolingDown(groqKey, "llama-3.3-70b-versatile"), false);
+
+  clearAllInMemoryModelCooldowns();
+  assert.equal(isCandidateCoolingDown(groqKey, "openai/gpt-oss-120b"), false);
 });
