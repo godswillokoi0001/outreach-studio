@@ -341,11 +341,14 @@ function agentContentsToOpenAI(contents: AgentContent[]): Record<string, unknown
         const idx = openCalls.findIndex((c) => c.name === fr.name);
         id = idx >= 0 ? openCalls[idx].id : openCalls[openCalls.length - 1]?.id || "";
       }
-      const matchIdx = openCalls.findIndex((c) => c.id === id);
-      if (matchIdx >= 0) openCalls.splice(matchIdx, 1);
+      // Orphan tool results (no matching assistant tool_call) make providers
+      // reject the whole payload with a generic 400, so never send them.
+      const matchIdx = openCalls.findIndex((c) => c.id === id && id !== "");
+      if (matchIdx < 0) continue;
+      openCalls.splice(matchIdx, 1);
       messages.push({
         role: "tool",
-        tool_call_id: id || `call_${autoId++}`,
+        tool_call_id: id,
         content: JSON.stringify(fr.response ?? {}),
       });
     }
@@ -419,11 +422,12 @@ function agentContentsToAnthropic(contents: AgentContent[]): { role: "user" | "a
         const idx = openCalls.findIndex((c) => c.name === fr.name);
         id = idx >= 0 ? openCalls[idx].id : openCalls[openCalls.length - 1]?.id || "";
       }
-      const matchIdx = openCalls.findIndex((c) => c.id === id);
-      if (matchIdx >= 0) openCalls.splice(matchIdx, 1);
+      const matchIdx = openCalls.findIndex((c) => c.id === id && id !== "");
+      if (matchIdx < 0) continue;
+      openCalls.splice(matchIdx, 1);
       blocks.push({
         type: "tool_result",
-        tool_use_id: id || `toolu_${autoId++}`,
+        tool_use_id: id,
         content: JSON.stringify(fr.response ?? {}),
       });
     }

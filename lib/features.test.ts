@@ -1474,7 +1474,7 @@ test("regular non-admin owner on system_auto runs on the pooled admin key withou
       sawAdminKey = true;
     }
     return new Response(
-      JSON.stringify({ choices: [{ message: { content: "OK" } }] }),
+      JSON.stringify({ choices: [{ message: { content: JSON.stringify({ status: "ok" }) } }] }),
       { status: 200, headers: { "Content-Type": "application/json" } },
     );
   }) as typeof fetch;
@@ -1503,7 +1503,7 @@ test("regular non-admin owner on system_auto runs on the pooled admin key withou
     });
 
     const receiptResult = await LLMGateway.testActiveModel(regularOwner);
-    assert.equal(receiptResult.text, "OK");
+    assert.equal(receiptResult.text, JSON.stringify({ status: "ok" }));
     assert.equal(receiptResult.receipt.actualProvider, "groq");
     assert.equal(receiptResult.receipt.actualKeyId, "adm_pool");
     assert.equal(receiptResult.receipt.requestedMode, "system_auto");
@@ -1712,6 +1712,196 @@ test("tool-using routing skips image, transcribe, robotics and antigravity catal
   });
   assert.equal(ranked.some((c) => c.key.id === "adm_media"), false);
   assert.equal(ranked.some((c) => c.key.id === "adm_chat"), true);
+});
+
+test("system_auto ignores saved BYOK keys across repeated mode switches", async () => {
+  const prevFetch = globalThis.fetch;
+  const calls: string[] = [];
+
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = typeof input === "string" ? input : input.toString();
+    if (url.includes("openrouter.ai")) {
+      calls.push("byok");
+      return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ ok: true }) } }] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    calls.push("pool");
+    return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ ok: true }) } }] }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  }) as typeof fetch;
+
+  try {
+    resetGatewayCachesForTests();
+    clearRouterStateForTests();
+
+    const owner = "owner-mode-switch";
+    const now = new Date().toISOString();
+    const byok = encryptGatewayKey("sk-or-v1-ModeSwitchTestKey");
+
+    seedGatewayCachesForTests({
+      adminSettings: makeSampleAdminSettings(),
+      adminKeys: [makeSampleAdminKey("adm_pool", "groq", "gsk_ModeSwitchPoolKey")],
+      userSettings: {
+        [owner]: {
+          ownerId: owner,
+          mode: "system_auto",
+          activeKeyId: null,
+          activeProvider: null,
+          activeModel: null,
+          fallbackToSystemAuto: false,
+          updatedAt: now,
+        },
+      },
+      userKeys: {
+        [owner]: [
+          {
+            id: "ukey_openrouter",
+            ownerId: owner,
+            provider: "openrouter",
+            label: "OpenRouter",
+            encryptedKey: byok.encryptedKey,
+            maskedKey: byok.maskedKey,
+            models: [
+              {
+                id: "google/gemma-4-31b-it:free",
+                displayName: "Gemma",
+                enabled: true,
+                seats: ["smart", "balanced", "fast"],
+                capabilities: { json: true, tools: true, vision: false, reasoning: false },
+              },
+            ],
+            createdAt: now,
+            updatedAt: now,
+          },
+        ],
+      },
+    });
+
+    const ask = (feature: string) =>
+      LLMGateway.completeJSON<{ ok: boolean }>({
+        ownerId: owner,
+        taskType: "balanced",
+        feature,
+        messages: [{ role: "user", content: "Return ok" }],
+      });
+
+    // 1. Auto: never touches the saved personal key.
+    const auto1 = await ask("compose");
+    assert.equal(auto1.receipt.actualKeyId, "adm_pool");
+    assert.equal(auto1.receipt.requestedMode, "system_auto");
+    assert.deepEqual(calls, ["pool"]);
+
+    // 2. Switch to BYOK: the personal key is used.
+    seedGatewayCachesForTests({
+      userSettings: {
+        [owner]: {
+          ownerId: owner,
+          mode: "byok",
+          activeKeyId: "ukey_openrouter",
+          activeProvider: "openrouter",
+          activeModel: "google/gemma-4-31b-it:free",
+          fallbackToSystemAuto: false,
+          updatedAt: new Date().toISOString(),
+        },
+      },
+    });
+    const byokRes = await ask("compose");
+    assert.equal(byokRes.receipt.requestedMode, "byok");
+    assert.equal(byokRes.receipt.actualKeyId, "ukey_openrouter");
+    assert.equal(calls.at(-1), "byok");
+
+    // 3. Switch back to Auto: routing returns to the pool immediately.
+    seedGatewayCachesForTests({
+      userSettings: {
+        [owner]: {
+          ownerId: owner,
+          mode: "system_auto",
+          activeKeyId: null,
+          activeProvider: null,
+          activeModel: null,
+          fallbackToSystemAuto: false,
+          updatedAt: new Date().toISOString(),
+        },
+      },
+    });
+    calls.length = 0;
+    const auto2 = await ask("compose");
+    assert.equal(auto2.receipt.actualKeyId, "adm_pool");
+    assert.equal(auto2.receipt.requestedMode, "system_auto");
+    assert.deepEqual(calls, ["pool"]);
+  } finally {
+    globalThis.fetch = prevFetch;
+    resetGatewayCachesForTests();
+    clearRouterStateForTests();
+  }
+});
+
+test("completeJSON fails over when the first provider returns invalid JSON", async () => {
+  const prevFetch = globalThis.fetch;
+  const hits: string[] = [];
+
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = typeof input === "string" ? input : input.toString();
+    if (url.includes("api.groq.com")) {
+      hits.push("groq");
+      return new Response(JSON.stringify({ choices: [{ message: { content: "Sure! Here is the answer, no JSON at all." } }] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    hits.push("backup");
+    return new Response(
+      JSON.stringify({ choices: [{ message: { content: '```json\n{"ok":true}\n```' } }] }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    );
+  }) as typeof fetch;
+
+  try {
+    resetGatewayCachesForTests();
+    clearRouterStateForTests();
+
+    const owner = "owner-json-failover";
+    seedGatewayCachesForTests({
+      adminSettings: makeSampleAdminSettings(),
+      adminKeys: [
+        makeSampleAdminKey("adm_groq_json", "groq", "gsk_InvalidJsonKey"),
+        makeSampleAdminKey("adm_nvidia_json", "nvidia", "nvapi_ValidJsonKey"),
+      ],
+      userSettings: {
+        [owner]: {
+          ownerId: owner,
+          mode: "system_auto",
+          activeKeyId: null,
+          activeProvider: null,
+          activeModel: null,
+          fallbackToSystemAuto: false,
+          updatedAt: new Date().toISOString(),
+        },
+      },
+      userKeys: { [owner]: [] },
+    });
+
+    const res = await LLMGateway.completeJSON<{ ok: boolean }>({
+      ownerId: owner,
+      taskType: "balanced",
+      feature: "research",
+      messages: [{ role: "user", content: "Return JSON" }],
+    });
+
+    assert.equal(res.data.ok, true);
+    assert.equal(res.receipt.status, "success");
+    assert.equal(hits[0], "groq");
+    assert.equal(hits.at(-1), "backup");
+    assert.equal(res.receipt.actualKeyId, "adm_nvidia_json");
+  } finally {
+    globalThis.fetch = prevFetch;
+    resetGatewayCachesForTests();
+    clearRouterStateForTests();
+  }
 });
 
 test("getUserAiSettings resolves a default for a new account without hanging", async () => {

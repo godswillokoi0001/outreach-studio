@@ -152,17 +152,19 @@ async function runPooledAutoFailover<T>(input: {
   }
 
   let lastErr: unknown = null;
-  const maxTry = Math.min(MAX_AUTO_ATTEMPTS, ranked.length);
+  // Attempts and skips are counted separately: skipping a benched or cooling
+  // candidate must never consume the failover budget.
+  let attempts = 0;
   const triedKeys = new Set<string>();
   // Failure count per key: one key with several unusable models must not eat
   // every attempt while other healthy keys go untried.
   const keyFailures = new Map<string, number>();
   const hasMultipleKeys = new Set(ranked.map((c) => c.key.id)).size > 1;
-  const MAX_FAILURES_PER_KEY = 2;
+  const MAX_FAILURES_PER_KEY = 3;
 
-  for (let i = 0; i < maxTry; i++) {
+  for (let i = 0; i < ranked.length && attempts < MAX_AUTO_ATTEMPTS; i++) {
     const elapsed = Date.now() - input.startedAt;
-    if (i >= 2 && elapsed >= AUTO_WALL_BUDGET_MS) {
+    if (attempts >= 2 && elapsed >= AUTO_WALL_BUDGET_MS) {
       break;
     }
 
@@ -173,6 +175,7 @@ async function runPooledAutoFailover<T>(input: {
     const trySig = `${candidate.key.id}:${candidate.model.id}`;
     if (triedKeys.has(trySig)) continue;
     triedKeys.add(trySig);
+    attempts += 1;
 
     let decryptedKey = "";
     try {
@@ -500,16 +503,24 @@ export const LLMGateway = {
     };
   },
 
+  /**
+   * A real JSON completion through the exact path features use, so a passing
+   * receipt means research/compose/chat will work too - not just a text ping.
+   */
   async testActiveModel(ownerId: string): Promise<GatewayTextResult> {
-    return LLMGateway.complete({
+    const res = await LLMGateway.completeJSON<{ status?: string }>({
       ownerId,
       taskType: "fast",
       feature: "model_test",
-      systemPrompt: 'Reply concisely with the single word "OK".',
-      messages: [{ role: "user", content: "Ping" }],
-      maxTokens: 24,
+      systemPrompt: 'Return only the JSON object {"status":"ok"} with no commentary.',
+      messages: [{ role: "user", content: "Send the JSON status object now." }],
+      maxTokens: 48,
       temperature: 0,
     });
+    return {
+      text: JSON.stringify(res.data ?? { status: "ok" }),
+      receipt: res.receipt,
+    };
   },
 
   async transcribeAudio(input: {

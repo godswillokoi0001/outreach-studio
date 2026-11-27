@@ -213,6 +213,14 @@ export function isChatCapableModelId(modelId: string): boolean {
   return !NON_CHAT_MODEL_PATTERN.test(modelId.trim());
 }
 
+/**
+ * Providers whose endpoint rejects the OpenAI tool-calling payload we send.
+ * They stay in the pool for plain text/JSON work but must never be chosen for
+ * tool-using agent turns (Cloudflare Workers AI answers "invalid extraction
+ * request" for that shape).
+ */
+const TOOL_UNSAFE_PROVIDERS = new Set(["cloudflare"]);
+
 const FAST_PROVIDERS = new Set(["groq", "cerebras", "cloudflare", "google"]);
 const SMART_PROVIDERS = new Set(["google", "nvidia", "anthropic", "openai", "openrouter", "zai"]);
 
@@ -230,6 +238,7 @@ export function rankPoolCandidates(input: {
 
   for (const key of input.keys) {
     if (!key.enabled || key.healthStatus === "invalid") continue;
+    if (input.requiresTools && TOOL_UNSAFE_PROVIDERS.has(key.provider)) continue;
     const headroom = evaluateKeyHeadroom(key);
     if (!headroom.allowed) continue;
 

@@ -107,6 +107,11 @@ export async function POST(req: NextRequest) {
         existingKeys[0];
       await saveUserAiSettings(user.ownerId, {
         mode: nextMode,
+        // Managed Auto is a hard switch: clear every BYOK pointer so nothing
+        // can route through a saved personal key while the mode is system_auto.
+        ...(nextMode === "system_auto"
+          ? { activeKeyId: null, activeProvider: null, activeModel: null }
+          : {}),
         ...(nextMode === "byok" && fallbackKey
           ? {
               activeKeyId: fallbackKey.id,

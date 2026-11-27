@@ -312,7 +312,11 @@ export function AiProviderSettingsCard() {
             type="button"
             disabled={busy !== null}
             onClick={() =>
-              void postAction({ action: "set_mode", mode: "system_auto" }, "mode_auto", "Switched to Managed Free Engine (Auto)")
+              void postAction(
+                { action: "set_mode", mode: "system_auto" },
+                "mode_auto",
+                "Saved — Using Managed Auto Engine",
+              )
             }
             style={{
               textAlign: "left",
@@ -337,7 +341,11 @@ export function AiProviderSettingsCard() {
             type="button"
             disabled={busy !== null || keys.length === 0}
             onClick={() =>
-              void postAction({ action: "set_mode", mode: "byok" }, "mode_byok", "Switched to your personal API key (BYOK)")
+              void postAction(
+                { action: "set_mode", mode: "byok" },
+                "mode_byok",
+                "Saved — Using your own API key (BYOK)",
+              )
             }
             style={{
               textAlign: "left",
@@ -498,7 +506,7 @@ export function AiProviderSettingsCard() {
                         className="btn btn-sm btn-ghost"
                         disabled={busy !== null}
                         onClick={() => void handleDeletePersonalKey(k.id, meta.label)}
-                        title="Delete personal key"
+                        title="Delete this key (BYOK keys are optional; Auto keeps working)"
                       >
                         <Trash2 size={13} />
                       </button>
