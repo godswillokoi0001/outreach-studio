@@ -10,7 +10,16 @@ export type GatewayProviderId =
   | "openai"
   | "custom";
 
-export type SearchProviderId = "tavily" | "brave" | "serper";
+export type SearchProviderId =
+  | "tavily"
+  | "exa"
+  | "serper"
+  | "firecrawl"
+  | "jina"
+  | "pagespeed"
+  | "brave";
+
+export type SearchResetCycle = "monthly" | "daily" | "one_time" | "keyless";
 
 export interface SearchProviderMeta {
   id: SearchProviderId;
@@ -20,41 +29,111 @@ export interface SearchProviderMeta {
   keyPrefixes: string[];
   defaultRpmLimit: number;
   defaultRpdLimit: number;
+  defaultQuotaLimit: number;
+  resetCycle: SearchResetCycle;
+  kind: "search" | "enrichment" | "pagespeed";
 }
 
 export const SEARCH_PROVIDER_CATALOG: SearchProviderMeta[] = [
   {
+    id: "exa",
+    label: "Exa Search",
+    blurb: "Semantic web search + clean page text ($10 free credits / monthly tiers).",
+    docsUrl: "https://dashboard.exa.ai/",
+    keyPrefixes: [],
+    defaultRpmLimit: 30,
+    defaultRpdLimit: 1000,
+    defaultQuotaLimit: 1000,
+    resetCycle: "monthly",
+    kind: "search",
+  },
+  {
     id: "tavily",
     label: "Tavily Search",
-    blurb: "AI-ready web search API (1,000 free credits/month, no credit card).",
+    blurb: "AI-ready live web search (1,000 free monthly credits, no card).",
     docsUrl: "https://app.tavily.com/",
     keyPrefixes: ["tvly-"],
     defaultRpmLimit: 30,
     defaultRpdLimit: 1000,
+    defaultQuotaLimit: 1000,
+    resetCycle: "monthly",
+    kind: "search",
   },
   {
-    id: "brave",
-    label: "Brave Search",
-    blurb: "Independent live web index with generous free tier.",
-    docsUrl: "https://api.search.brave.com/",
-    keyPrefixes: ["BSA"],
+    id: "firecrawl",
+    label: "Firecrawl",
+    blurb: "Web search + JS-rendered page scraper (500 free monthly/starter credits).",
+    docsUrl: "https://www.firecrawl.dev/",
+    keyPrefixes: ["fc-"],
     defaultRpmLimit: 20,
-    defaultRpdLimit: 1000,
+    defaultRpdLimit: 500,
+    defaultQuotaLimit: 500,
+    resetCycle: "monthly",
+    kind: "search",
   },
   {
     id: "serper",
     label: "Serper (Google SERP)",
-    blurb: "Fast Google Search JSON API (2,500 free queries on signup).",
+    blurb: "Fast Google Search JSON API (2,500 one-time free queries reserve).",
     docsUrl: "https://serper.dev/",
     keyPrefixes: [],
     defaultRpmLimit: 30,
     defaultRpdLimit: 1000,
+    defaultQuotaLimit: 2500,
+    resetCycle: "one_time",
+    kind: "search",
   },
+  {
+    id: "brave",
+    label: "Brave Search",
+    blurb: "Independent web index (free monthly tier).",
+    docsUrl: "https://api.search.brave.com/",
+    keyPrefixes: ["BSA"],
+    defaultRpmLimit: 20,
+    defaultRpdLimit: 1000,
+    defaultQuotaLimit: 2000,
+    resetCycle: "monthly",
+    kind: "search",
+  },
+  {
+    id: "jina",
+    label: "Jina Reader",
+    blurb: "Clean JS-rendered Markdown extractor (r.jina.ai works keyless at 20 RPM; key unlocks higher limits).",
+    docsUrl: "https://jina.ai/reader/",
+    keyPrefixes: ["jina_"],
+    defaultRpmLimit: 60,
+    defaultRpdLimit: 2000,
+    defaultQuotaLimit: 5000,
+    resetCycle: "daily",
+    kind: "enrichment",
+  },
+  {
+    id: "pagespeed",
+    label: "PageSpeed Insights",
+    blurb: "Real Google Lighthouse mobile performance & LCP scores (optional API key boosts daily quota).",
+    docsUrl: "https://developers.google.com/speed/docs/insights/v5/get-started",
+    keyPrefixes: ["AIza"],
+    defaultRpmLimit: 60,
+    defaultRpdLimit: 25000,
+    defaultQuotaLimit: 25000,
+    resetCycle: "daily",
+    kind: "pagespeed",
+  },
+];
+
+export const ALL_SEARCH_PROVIDER_IDS: SearchProviderId[] = [
+  "exa",
+  "tavily",
+  "firecrawl",
+  "serper",
+  "brave",
+  "jina",
+  "pagespeed",
 ];
 
 export function isSearchProviderId(raw: unknown): raw is SearchProviderId {
   const clean = typeof raw === "string" ? raw.trim().toLowerCase() : "";
-  return clean === "tavily" || clean === "brave" || clean === "serper";
+  return (ALL_SEARCH_PROVIDER_IDS as string[]).includes(clean);
 }
 
 export function getSearchProviderMeta(id: SearchProviderId): SearchProviderMeta {

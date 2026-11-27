@@ -1,18 +1,35 @@
+import { randomBytes } from "node:crypto";
 import { buildOrchestratedSystemPrompt, stripUnresolvedPlaceholders } from "./ai/orchestrator";
 import { getActiveOwnerAiContext } from "./ai/context";
+import { getRegionalComplianceGuidance } from "./compliance/regionalRules";
 import { LLMGateway } from "./llm/gateway";
 import {
   type ExecutedCampaignBlueprint,
   type ExecutedProspect,
   type GrowthAdvisorReport,
+  type GrowthExecuteRunState,
+  type GrowthExecuteStage,
   type GrowthProfile,
   type GrowthRecommendation,
+  type GrowthRunCandidate,
+  type GrowthRunInspectedSite,
   type ImpactRating,
   type IntentSignal,
   type RecommendationCategory,
 } from "./growth-advisor";
 import type { PerformanceInsight } from "./intelligence";
+import { checkMobilePageSpeed } from "./search/pagespeed";
+import { verifyEmailDeliverability } from "./search/emailVerify";
+import { inspectProspectWebsites, isDirectoryUrl } from "./search/siteInspector";
+import { WebSearchService } from "./search/webSearch";
+import { supabaseServer } from "./supabase-server";
 import type { Settings } from "./types";
+
+const MAX_STAGE_SEARCH_QUERIES = 4;
+const MAX_STAGE_INSPECT_SITES = 10;
+
+// Fast in-memory fallback run store (mirrors growth_execute_runs DB table)
+const memoryRunStore = new Map<string, GrowthExecuteRunState>();
 
 function cleanStr(value: unknown, max = 500): string {
   return typeof value === "string" ? value.trim().slice(0, max) : "";
@@ -39,6 +56,96 @@ function normalizeImpact(raw: unknown): ImpactRating {
   return "medium";
 }
 
+function extractDomain(rawUrl: string): string {
+  try {
+    return new URL(rawUrl).hostname.replace(/^www\./, "").toLowerCase();
+  } catch {
+    return "";
+  }
+}
+
+async function saveRunState(state: GrowthExecuteRunState): Promise<void> {
+  const next: GrowthExecuteRunState = { ...state, updatedAt: new Date().toISOString() };
+  memoryRunStore.set(`${next.ownerId}:${next.runId}`, next);
+
+  if (!supabaseServer) return;
+  try {
+    const { error } = await supabaseServer.from("growth_execute_runs").upsert(
+      {
+        id: next.runId,
+        owner_id: next.ownerId,
+        status: next.status,
+        current_stage: next.currentStage,
+        state_json: next,
+        updated_at: next.updatedAt,
+      } as never,
+      { onConflict: "id" },
+    );
+    if (error) {
+      await supabaseServer.from("knowledge").upsert(
+        {
+          id: `system_growth_run_${next.ownerId}_${next.runId}`,
+          owner_id: next.ownerId,
+          category: "system_growth_run",
+          title: `Growth Execute Run ${next.runId}`,
+          content: JSON.stringify(next),
+          sort: 999,
+          is_master: false,
+          updated_at: next.updatedAt,
+        } as never,
+        { onConflict: "id" },
+      );
+    }
+  } catch {
+    /* non-blocking */
+  }
+}
+
+export async function loadRunState(ownerId: string, runId: string): Promise<GrowthExecuteRunState | null> {
+  const mem = memoryRunStore.get(`${ownerId}:${runId}`);
+  if (mem) return mem;
+
+  if (!supabaseServer) return null;
+  try {
+    const { data, error } = await supabaseServer
+      .from("growth_execute_runs")
+      .select("state_json")
+      .eq("id", runId)
+      .eq("owner_id", ownerId)
+      .maybeSingle();
+    if (!error && data) {
+      const st = (data as { state_json?: GrowthExecuteRunState }).state_json ?? null;
+      if (st) {
+        memoryRunStore.set(`${ownerId}:${runId}`, st);
+        return st;
+      }
+    }
+    const { data: kRow } = await supabaseServer
+      .from("knowledge")
+      .select("content")
+      .eq("id", `system_growth_run_${ownerId}_${runId}`)
+      .eq("owner_id", ownerId)
+      .maybeSingle();
+    const raw = (kRow as { content?: string } | null)?.content;
+    if (raw) {
+      const parsed = JSON.parse(raw) as GrowthExecuteRunState;
+      memoryRunStore.set(`${ownerId}:${runId}`, parsed);
+      return parsed;
+    }
+  } catch {
+    /* ignore */
+  }
+  return null;
+}
+
+export function clearGrowthRunStoreForTests(): void {
+  memoryRunStore.clear();
+}
+
+// ---------------------------------------------------------------------------
+// Growth Advisor Report Generator (Pre-fetched $0 Search + Balanced Seat)
+// ---------------------------------------------------------------------------
+
 export async function generateGrowthAdvisorReportServer(input: {
   ownerId?: string;
   profile: GrowthProfile;
@@ -51,23 +158,52 @@ export async function generateGrowthAdvisorReportServer(input: {
 }): Promise<GrowthAdvisorReport> {
   const today = new Date().toISOString().slice(0, 10);
   const hasAnalytics = Boolean(input.analyticsInsight);
+  const year = today.slice(0, 4);
+
+  const primaryIndustry =
+    input.profile.industry || input.profile.targetIndustries?.[0] || "B2B services";
+  const primaryLocation = input.profile.location || input.settings.physical_address || "";
+  const queryA = `${primaryIndustry} trends buyer pain points ${year}`;
+  const queryB = primaryLocation
+    ? `${primaryIndustry} companies in ${primaryLocation}`
+    : `${input.profile.idealCustomer || primaryIndustry} cold outreach benchmarks ${year}`;
+
+  const [webA, webB] = await Promise.all([
+    WebSearchService.search(queryA, { maxResults: 5 }).catch(() => null),
+    WebSearchService.search(queryB, { maxResults: 5, locationHint: primaryLocation }).catch(() => null),
+  ]);
+
+  const combinedSources = [...(webA?.results ?? []), ...(webB?.results ?? [])].slice(0, 10);
+  const groundingUrls = combinedSources.map((s) => ({ uri: s.url, title: s.title || s.url }));
+  const compliance = getRegionalComplianceGuidance({
+    targetLocation: primaryLocation,
+    senderLocation: input.settings.physical_address,
+    physicalAddress: input.settings.physical_address,
+  });
+
+  const liveSearchContext =
+    combinedSources.length > 0
+      ? `\nVERIFIED LIVE MARKET SOURCES (cite ONLY exact URLs from this list in sourceUrl — never invent URLs):\n${combinedSources
+          .map((s, i) => `[${i + 1}] ${s.title} (${s.url})\n${s.snippet}`)
+          .join("\n\n")}`
+      : "\nNote: No live external snippets returned; ground every recommendation strictly in the user's business profile, metrics, and regional compliance rules without fabricating URLs.";
 
   const taskInstructions = `You are a Principal B2B Growth Advisor and Market Intelligence Strategist.
 Today's date is ${today}.
-Search the live web using Google Search grounding and deliver actionable, evidence-backed growth recommendations specifically tailored to the Active User's business profile, price point, location, and past campaign performance — following Modules 1-3 strictly (signal-based WTP, copywriting psychology, and routing cadence).
+Using Modules 1-3 strictly, the VERIFIED LIVE MARKET SOURCES below, and Regional Compliance (${compliance.frameworkName}), deliver actionable growth recommendations tailored to the Active User's business profile, price point, location, and campaign metrics.
 
-MANDATORY RESEARCH RULES:
-1. Search the web for what is actually working right now in ${today.slice(0, 4)} for businesses matching the user's profile and offer.
-2. Ground every recommendation in real reasoning AND include a real, verifiable sourceUrl + sourceTitle from your search results. Never fabricate URLs.
-3. Cover ALL 5 recommendation categories: location, niche, messaging, channels_timing, offer_strategy.
-4. Rate each recommendation honestly with impact ("high" | "medium" | "low") and confidence (0-100), and assign priorityOrder.
+MANDATORY RULES:
+1. Ground recommendations in supplied user context + VERIFIED LIVE MARKET SOURCES (copy exact verifiable sourceUrl + sourceTitle; if none applies, leave sourceUrl as ""). Never fabricate URLs.
+2. Cover ALL 5 recommendation categories: location, niche, messaging, channels_timing, offer_strategy.
+3. Respect compliance rules for ${compliance.region} (${compliance.frameworkName}): ${compliance.requirements.slice(0, 2).join("; ")}.
+4. Rate each recommendation with impact ("high" | "medium" | "low"), confidence (0-100), and priorityOrder.
 5. ${
     hasAnalytics
       ? "Populate postAnalysisInsights summarizing what worked, what didn't work in the measured numbers, and concrete next moves, flagging relevant recommendations with basedOnAnalytics: true."
       : "If past campaigns exist in metricsSummary, factor them in honestly. Do not invent metrics."
   }
 
-Return ONLY valid JSON matching this exact structure (no markdown wrapper):
+Return ONLY valid JSON:
 {
   "overallStrategy": "string",
   "recommendations": [
@@ -77,9 +213,9 @@ Return ONLY valid JSON matching this exact structure (no markdown wrapper):
       "title": "Actionable recommendation headline",
       "summary": "Specific recommendation tailored to their offer and price range",
       "reason": "Short explanation of why this works right now",
-      "evidence": "Specific market signal, benchmark, or trend discovered from search",
+      "evidence": "Specific market signal, benchmark, or profile observation",
       "sourceUrl": "https://...",
-      "sourceTitle": "Source publication or page title",
+      "sourceTitle": "Source title",
       "impact": "high | medium | low",
       "confidence": 85,
       "priorityOrder": 1,
@@ -121,27 +257,28 @@ Return ONLY valid JSON matching this exact structure (no markdown wrapper):
 - Industry: ${input.profile.industry || "Not specified"}
 - Core Offer & CTA style: ${input.profile.offer || "Not specified"} · Preferred CTA: ${input.profile.offerCtaStyle || "Not specified"}
 - Price Range: ${input.profile.priceRange || "Not specified"}
-- Market reach & locations: ${input.profile.marketScope?.join(", ") || "Not specified"} · Target/Base Location: ${input.profile.location || input.settings.physical_address || "Not specified"} · Languages: ${input.profile.outreachLanguages?.join(", ") || "English"}
+- Market reach & locations: ${input.profile.marketScope?.join(", ") || "Not specified"} · Target/Base Location: ${primaryLocation || "Not specified"} · Languages: ${input.profile.outreachLanguages?.join(", ") || "English"}
 - Ideal Customer Profile: ${input.profile.idealCustomer || "Not specified"} · Target industries: ${input.profile.targetIndustries?.join(", ") || "Any"} · Decision-maker roles: ${input.profile.targetRoles?.join(", ") || "Decision makers"} · Company size: ${input.profile.targetCompanySize || "Any"}
 - Buying triggers: ${input.profile.buyingTriggers?.join(", ") || "None specified"}
 - Sales cycle & preferred channels: ${input.profile.salesCycleLength || "Not specified"} · Channels: ${input.profile.preferredChannels?.join(", ") || "Cold Email"}
 - Primary goal & capacity: ${input.profile.primaryGoal || "Qualified leads"} · Target leads/mo: ${input.profile.monthlyTargetLeads ?? "Flexible"} · Weekly outreach capacity: ${input.profile.weeklyOutreachCapacity ?? "Flexible"}
 - Proof assets & exclusions: ${input.profile.proofAssets?.join(", ") || "Standard"} · Exclusions (DO NOT target): ${input.profile.exclusions || "None"} · Voice: ${input.profile.tonePreference?.join(", ") || "Consultative"}
-${input.profile.allowComplianceSafeClaims !== false ? "- Compliance rule: Strictly avoid unverified ROI claims or hype." : ""}
+- Active Regional Compliance (${compliance.frameworkName}): ${compliance.requirements.join(" | ")}
 
 PAST CAMPAIGN & ANALYTICS METRICS:
-${JSON.stringify(input.metricsSummary, null, 2).slice(0, 4000)}
+${JSON.stringify(input.metricsSummary, null, 2).slice(0, 3500)}
 
 ${
   input.analyticsInsight
     ? `RECENT AI PERFORMANCE REVIEW:\nHeadline: ${input.analyticsInsight.headline}\nObservations: ${input.analyticsInsight.observations.join(" | ")}\nRecommendations: ${input.analyticsInsight.recommendations.map((r) => `${r.title}: ${r.detail}`).join(" | ")}`
     : ""
 }
+${liveSearchContext}
 
 Generate 6 to 8 high-precision, diverse recommendations covering location, niche, messaging, channels_timing, and offer_strategy.`;
 
   void input.model;
-  const { data, groundingUrls } = await LLMGateway.completeGroundedJSON<{
+  const { data } = await LLMGateway.completeJSON<{
     overallStrategy?: string;
     recommendations?: Record<string, unknown>[];
     postAnalysisInsights?: {
@@ -151,19 +288,24 @@ Generate 6 to 8 high-precision, diverse recommendations covering location, niche
     };
   }>({
     ownerId: input.ownerId || getActiveOwnerAiContext()?.ownerId || "anonymous",
-    taskType: "smart",
+    taskType: "balanced",
     feature: "growth_advisor",
     systemPrompt: orchestrated.system,
     messages: [{ role: "user", content: user }],
   });
 
+  const allowedSourceUrls = new Set(groundingUrls.map((g) => g.uri.toLowerCase()));
   const recs: GrowthRecommendation[] = (Array.isArray(data.recommendations) ? data.recommendations : [])
     .map((raw, idx) => {
       const actionRaw = (raw.suggestedAction && typeof raw.suggestedAction === "object"
         ? raw.suggestedAction
         : {}) as Record<string, unknown>;
-      const fallbackUrl = groundingUrls[idx % Math.max(1, groundingUrls.length)]?.uri ?? "";
-      const fallbackTitle = groundingUrls[idx % Math.max(1, groundingUrls.length)]?.title ?? "Web research";
+      const rawUrl = cleanStr(raw.sourceUrl, 400);
+      const safeUrl =
+        rawUrl && allowedSourceUrls.has(rawUrl.toLowerCase())
+          ? rawUrl
+          : groundingUrls[idx % Math.max(1, groundingUrls.length)]?.uri ?? "";
+      const fallbackTitle = groundingUrls[idx % Math.max(1, groundingUrls.length)]?.title ?? "Market intelligence";
 
       return {
         id: cleanStr(raw.id, 60) || `rec_${Date.now()}_${idx + 1}`,
@@ -172,15 +314,15 @@ Generate 6 to 8 high-precision, diverse recommendations covering location, niche
         summary: cleanStr(raw.summary, 600),
         reason: cleanStr(raw.reason, 450),
         evidence: cleanStr(raw.evidence, 450),
-        sourceUrl: cleanStr(raw.sourceUrl, 400) || fallbackUrl,
+        sourceUrl: safeUrl,
         sourceTitle: cleanStr(raw.sourceTitle, 140) || fallbackTitle,
         impact: normalizeImpact(raw.impact),
         confidence: clampNum(raw.confidence, 10, 99, 75),
         priorityOrder: clampNum(raw.priorityOrder, 1, 20, idx + 1),
         basedOnAnalytics: Boolean(raw.basedOnAnalytics),
         suggestedAction: {
-          targetIndustry: cleanStr(actionRaw.targetIndustry, 160) || input.profile.industry || "B2B Services",
-          targetLocation: cleanStr(actionRaw.targetLocation, 160) || input.profile.location || "United States",
+          targetIndustry: cleanStr(actionRaw.targetIndustry, 160) || primaryIndustry,
+          targetLocation: cleanStr(actionRaw.targetLocation, 160) || primaryLocation || "United States",
           targetAudience: cleanStr(actionRaw.targetAudience, 240) || input.profile.idealCustomer || "Decision makers",
           angle: cleanStr(actionRaw.angle, 300),
           hook: cleanStr(actionRaw.hook, 300),
@@ -196,7 +338,7 @@ Generate 6 to 8 high-precision, diverse recommendations covering location, niche
     .sort((a, b) => a.priorityOrder - b.priorityOrder);
 
   const now = new Date();
-  const expires = new Date(now.getTime() + 24 * 60 * 60 * 1000); // 24 hour refresh cycle
+  const expires = new Date(now.getTime() + 24 * 60 * 60 * 1000);
 
   const postInsights =
     hasAnalytics && data.postAnalysisInsights
@@ -226,78 +368,78 @@ Generate 6 to 8 high-precision, diverse recommendations covering location, niche
   };
 }
 
-export async function executeRecommendationServer(input: {
-  ownerId?: string;
+// ---------------------------------------------------------------------------
+// Phase 2: 4-Stage Checkpointed Zero-Timeout Growth Execute Pipeline
+// ---------------------------------------------------------------------------
+
+/** Stage 1: Offer Fit, Deterministic Regional Compliance & Search Query Strategy */
+export async function executeGrowthStageStrategy(input: {
+  runId?: string;
+  ownerId: string;
   recommendation?: GrowthRecommendation | null;
   overallStrategy?: string;
   profile: GrowthProfile;
   knowledgeDigest: string;
   settings: Settings;
-  existingEmails: string[];
-  model?: string;
-}): Promise<ExecutedCampaignBlueprint> {
-  const today = new Date().toISOString().slice(0, 10);
+}): Promise<{ runId: string; state: GrowthExecuteRunState; summary: string }> {
+  const runId = input.runId?.trim() || `grun_${Date.now().toString(36)}_${randomBytes(4).toString("hex")}`;
   const rec = input.recommendation;
 
-  const targetContext = rec
-    ? `EXECUTING RECOMMENDATION:
-Title: ${rec.title}
-Category: ${rec.category}
-Summary: ${rec.summary}
-Target Niche: ${rec.suggestedAction.targetIndustry}
-Target Location: ${rec.suggestedAction.targetLocation}
-Target Audience: ${rec.suggestedAction.targetAudience}
-Suggested Angle: ${rec.suggestedAction.angle}
-Suggested Hook: ${rec.suggestedAction.hook}
-Suggested Subject Line: ${rec.suggestedAction.subjectLine}
-Suggested Offer: ${rec.suggestedAction.offer}
-Channel: ${rec.suggestedAction.channel}
-Timing: ${rec.suggestedAction.timing}
-Goal: ${rec.suggestedAction.goal}`
-    : `EXECUTING OVERALL GROWTH STRATEGY:
-Strategy: ${input.overallStrategy || "Launch high-intent campaign tailored to business profile"}
-Target Industry: ${input.profile.industry}
-Target Location: ${input.profile.location}
-Ideal Customer: ${input.profile.idealCustomer}
-Core Offer: ${input.profile.offer}`;
+  const targetLocation =
+    rec?.suggestedAction.targetLocation || input.profile.location || input.settings.physical_address || "";
+  const targetIndustry = rec?.suggestedAction.targetIndustry || input.profile.industry || "B2B Services";
+  const compliance = getRegionalComplianceGuidance({
+    targetLocation,
+    senderLocation: input.settings.physical_address,
+    physicalAddress: input.settings.physical_address,
+  });
 
-  const taskInstructions = `Today is ${today}.
-The user clicked "Execute" on a Growth Advisor recommendation.
-Using live Google Search grounding and Modules 1-3 strictly:
-1. Build a complete, ready-to-review Campaign Plan tailored to their offer, price point (${input.profile.priceRange || "B2B"}), and target region.
-2. Search the public web right now for 5 to 8 REAL, LAWFUL, PUBLICLY LISTED B2B prospects matching this recommendation's target niche & location.
-3. For EVERY prospect:
-   - Provide ONLY factual, publicly available business details (company name, website, public email/phone if verified—never invent emails!, decision-maker name & role if publicly listed, sourceUrl, sourceDate = "${today}"). Leave missing fields as ""!
-   - Never include any of these already-existing emails: ${input.existingEmails.slice(0, 40).join(", ") || "none"}.
-   - Score **Buying Intent (0-100)** strictly per Module 1 WTP + Fit + Timing + Reachability.
-   - Include regional privacy/anti-spam complianceNote and complianceChecklist.
-4. Draft short, personalized Module 2/3 emails (45-95 words, plain text, zero AI slop, zero unresolved {{...}} tags when specific prospect details exist, explicit opt-out note).
+  const taskInstructions = `Execute Growth Advisor STAGE 1 (Offer Fit, Compliance & Campaign Search Strategy).
+Design the campaign plan AND produce 3 to 4 crisp public web search queries that locate real operating businesses/organizations needing the user's offer.
 
-Return ONLY valid JSON matching the ExecutedCampaignBlueprint schema.`;
+Return ONLY valid JSON:
+{
+  "offerFitDiagnosis": "2-sentence diagnosis of how user offer solves target segment's immediate pain",
+  "campaignName": "short specific campaign name",
+  "targetAudience": "decision-maker roles and organization profile",
+  "targetLocation": "city/region",
+  "targetIndustry": "niche/industry",
+  "messagingAngle": "core outreach angle",
+  "hook": "1-sentence observation pattern to check on live prospect websites",
+  "subjectLine": "2-5 word lowercase email subject line",
+  "sampleEmailBody": "short 55-85 word Module 2 plain-text template example with opt-out line",
+  "channel": "Cold Email",
+  "schedule": { "sendDays": "mon,tue,wed,thu,fri", "windowStart": 9, "windowEnd": 17, "followupDays": [3, 7], "dailyLimit": 25 },
+  "goal": "measurable outcome",
+  "searchQueries": ["3-4 concise web queries e.g. dental clinics in Austin", "..."]
+}`;
 
   const orchestrated = await buildOrchestratedSystemPrompt({
     workflow: "growth_advisor",
-    ownerId: input.ownerId ?? null,
+    ownerId: input.ownerId,
     settings: input.settings,
     knowledgeDigest: input.knowledgeDigest,
     taskInstructions,
   });
 
   const user = `USER PROFILE:
-Company/Sender: ${input.profile.whoYouAre || input.settings.sender_company || input.settings.sender_name || "Operator"} (${input.settings.sender_role || "Founder"})
-What They Sell: ${input.profile.whatYouSell || "See knowledge base"}
-Core Offer: ${input.profile.offer || "See knowledge base"}
-Price Range: ${input.profile.priceRange || "Not specified"}
-Base Location: ${input.profile.location || input.settings.physical_address || "Not specified"}
-Sender Physical Address (for compliance footer): ${input.settings.physical_address || "Required before sending"}
-Unsubscribe Email: ${input.settings.unsubscribe_email || input.settings.sender_email || "reply to opt out"}
+Who: ${input.profile.whoYouAre || input.settings.sender_company || input.settings.sender_name} (${input.settings.sender_role || "Founder"})
+What They Sell: ${input.profile.whatYouSell || "See Knowledge Base"}
+Offer: ${input.profile.offer || "See Knowledge Base"}
+Price Range: ${input.profile.priceRange || "B2B"}
+Target Industries: ${targetIndustry}
+Target Location: ${targetLocation || "United States"}
+Ideal Customer: ${input.profile.idealCustomer || rec?.suggestedAction.targetAudience || "Decision makers"}
+Exclusions: ${input.profile.exclusions || "None"}
 
-${targetContext}
+RECOMMENDATION / STRATEGY:
+Title: ${rec?.title || "Overall Growth Strategy"}
+Summary: ${rec?.summary || input.overallStrategy || "Build high-intent campaign"}
+Suggested Angle: ${rec?.suggestedAction.angle || ""}
+Regional Compliance (${compliance.frameworkName}): ${compliance.requirements.join("; ")}`;
 
-Output strictly JSON with keys: campaignName, targetAudience, targetLocation, targetIndustry, messagingAngle, hook, subjectLine, sampleEmailBody, channel, schedule { sendDays, windowStart, windowEnd, followupDays, dailyLimit }, goal, complianceChecklist[], prospects[].`;
-
-  void input.model;
-  const { data, groundingUrls } = await LLMGateway.completeGroundedJSON<{
+  const { data } = await LLMGateway.completeJSON<{
+    offerFitDiagnosis?: string;
     campaignName?: string;
     targetAudience?: string;
     targetLocation?: string;
@@ -315,107 +457,558 @@ Output strictly JSON with keys: campaignName, targetAudience, targetLocation, ta
       dailyLimit?: number;
     };
     goal?: string;
-    complianceChecklist?: unknown[];
-    prospects?: Record<string, unknown>[];
+    searchQueries?: unknown[];
   }>({
-    ownerId: input.ownerId || getActiveOwnerAiContext()?.ownerId || "anonymous",
-    taskType: "smart",
-    feature: "growth_execute",
+    ownerId: input.ownerId,
+    taskType: "balanced",
+    feature: "growth_execute_strategy",
     systemPrompt: orchestrated.system,
     messages: [{ role: "user", content: user }],
   });
 
-  const existingSet = new Set(input.existingEmails.map((e) => e.trim().toLowerCase()).filter(Boolean));
+  const defaultQuery = `${targetIndustry}${targetLocation ? ` in ${targetLocation}` : ""}`.trim();
+  const queries = (Array.isArray(data.searchQueries) ? data.searchQueries : [])
+    .map((q) => cleanStr(q, 140))
+    .filter(Boolean)
+    .slice(0, MAX_STAGE_SEARCH_QUERIES);
+  if (queries.length === 0 && defaultQuery) {
+    queries.push(defaultQuery);
+  }
+
+  const state: GrowthExecuteRunState = {
+    runId,
+    ownerId: input.ownerId,
+    status: "in_progress",
+    currentStage: "discover",
+    completedStages: ["strategy"],
+    recommendationTitle: rec?.title || "Growth Strategy Campaign",
+    strategy: {
+      offerFitDiagnosis: cleanStr(data.offerFitDiagnosis, 400) || "Aligned with active offer & ICP.",
+      campaignName:
+        cleanStr(data.campaignName, 160) ||
+        (rec ? `${rec.title.slice(0, 55)} Campaign` : "Growth Priority Campaign"),
+      targetAudience: cleanStr(data.targetAudience, 240) || rec?.suggestedAction.targetAudience || input.profile.idealCustomer,
+      targetLocation: cleanStr(data.targetLocation, 160) || targetLocation || "Target Region",
+      targetIndustry: cleanStr(data.targetIndustry, 140) || targetIndustry,
+      messagingAngle: cleanStr(data.messagingAngle, 320) || rec?.suggestedAction.angle || "",
+      hook: cleanStr(data.hook, 260) || rec?.suggestedAction.hook || "",
+      subjectLine: cleanStr(data.subjectLine, 140) || rec?.suggestedAction.subjectLine || "Quick question",
+      sampleEmailBody: stripUnresolvedPlaceholders(cleanStr(data.sampleEmailBody, 2500)),
+      channel: cleanStr(data.channel, 80) || rec?.suggestedAction.channel || "Cold Email",
+      schedule: {
+        sendDays: cleanStr(data.schedule?.sendDays, 40) || input.settings.send_days || "mon,tue,wed,thu,fri",
+        windowStart: clampNum(data.schedule?.windowStart, 0, 23, input.settings.send_window_start || 9),
+        windowEnd: clampNum(data.schedule?.windowEnd, 1, 23, input.settings.send_window_end || 17),
+        followupDays: Array.isArray(data.schedule?.followupDays)
+          ? data.schedule!.followupDays.map((d) => clampNum(d, 1, 30, 3)).slice(0, 5)
+          : [3, 7],
+        dailyLimit: clampNum(data.schedule?.dailyLimit, 1, 100, input.settings.daily_limit || 25),
+      },
+      goal: cleanStr(data.goal, 220) || rec?.suggestedAction.goal || "Generate qualified conversations",
+      complianceChecklist: [
+        `${compliance.frameworkName} (${compliance.region})`,
+        ...compliance.requirements,
+      ],
+      complianceFramework: compliance.frameworkName,
+      searchQueries: queries,
+    },
+    updatedAt: new Date().toISOString(),
+  };
+
+  await saveRunState(state);
+  return {
+    runId,
+    state,
+    summary: `Strategy & ${compliance.frameworkName} checks ready · ${queries.length} live search queries prepared`,
+  };
+}
+
+/** Stage 2: Execute Search Cascade (Hard Cap 4 Queries) + Deduplicate Against Existing Leads */
+export async function executeGrowthStageDiscover(input: {
+  runId: string;
+  ownerId: string;
+  existingEmails?: string[];
+  existingWebsites?: string[];
+}): Promise<{ runId: string; state: GrowthExecuteRunState; summary: string }> {
+  const existingState = await loadRunState(input.ownerId, input.runId);
+  if (!existingState?.strategy) {
+    throw new Error("Stage 1 strategy state not found for this run. Start from Stage 1.");
+  }
+
+  const queries = existingState.strategy.searchQueries.slice(0, MAX_STAGE_SEARCH_QUERIES);
+  const responses = await Promise.all(
+    queries.map((q) =>
+      WebSearchService.search(q, {
+        maxResults: 8,
+        locationHint: existingState.strategy!.targetLocation,
+        nicheHint: existingState.strategy!.targetIndustry,
+      }).catch(() => null),
+    ),
+  );
+
+  const existingEmailSet = new Set((input.existingEmails ?? []).map((e) => e.trim().toLowerCase()).filter(Boolean));
+  const existingDomainSet = new Set(
+    (input.existingWebsites ?? []).map((w) => extractDomain(w)).filter(Boolean),
+  );
+
+  const candidates: GrowthRunCandidate[] = [];
+  const seenDomains = new Set<string>();
+  const providersUsed = new Set<string>();
+  let totalRaw = 0;
+  let duplicatesRemoved = 0;
+
+  for (const res of responses) {
+    if (!res) continue;
+    for (const p of res.providersSucceeded) providersUsed.add(p);
+
+    for (const r of res.results) {
+      totalRaw += 1;
+      if (r.email && existingEmailSet.has(r.email.toLowerCase())) {
+        duplicatesRemoved += 1;
+        continue;
+      }
+      const dom = r.domain || extractDomain(r.url);
+      if (dom && existingDomainSet.has(dom)) {
+        duplicatesRemoved += 1;
+        continue;
+      }
+      // Filter out aggregator directory links from primary candidate websites unless OSM entity has real data
+      if (isDirectoryUrl(r.url) && r.sourceProvider !== "osm") continue;
+      if (dom && seenDomains.has(dom)) continue;
+      if (dom) seenDomains.add(dom);
+
+      candidates.push({
+        business: r.businessName || r.title.split(/[|\-–—]/)[0].trim() || dom || "Unknown Business",
+        website: isDirectoryUrl(r.url) ? "" : r.url,
+        domain: dom,
+        sourceUrl: r.url,
+        snippet: r.snippet,
+        address: r.address,
+        phone: r.phone,
+        email: r.email,
+        sourceProvider: r.sourceProvider,
+      });
+
+      if (candidates.length >= MAX_STAGE_INSPECT_SITES) break;
+    }
+    if (candidates.length >= MAX_STAGE_INSPECT_SITES) break;
+  }
+
+  const nextState: GrowthExecuteRunState = {
+    ...existingState,
+    currentStage: "inspect",
+    completedStages: Array.from(new Set([...existingState.completedStages, "discover"])) as GrowthExecuteStage[],
+    discovered: {
+      candidates,
+      totalFound: totalRaw,
+      duplicatesRemoved,
+      providersUsed: Array.from(providersUsed),
+    },
+    updatedAt: new Date().toISOString(),
+  };
+
+  await saveRunState(nextState);
+  return {
+    runId: input.runId,
+    state: nextState,
+    summary: `Found ${candidates.length} unique prospect candidates (${duplicatesRemoved} duplicates skipped)`,
+  };
+}
+
+/** Stage 3: Live Parallel Site Verification + Jina Fallback + DNS MX Email Guard */
+export async function executeGrowthStageInspect(input: {
+  runId: string;
+  ownerId: string;
+  checkPageSpeed?: boolean;
+}): Promise<{ runId: string; state: GrowthExecuteRunState; summary: string }> {
+  const existingState = await loadRunState(input.ownerId, input.runId);
+  if (!existingState?.discovered) {
+    throw new Error("Stage 2 discovery results not found for this run.");
+  }
+
+  const candidates = existingState.discovered.candidates.slice(0, MAX_STAGE_INSPECT_SITES);
+  const urlsToInspect = candidates.map((c) => c.website).filter(Boolean);
+
+  // Batch into 2 mini-batches of max 5 to stay crisp & parallel under attempt deadlines
+  const batchA = urlsToInspect.slice(0, 5);
+  const batchB = urlsToInspect.slice(5, 10);
+  const inspectedA = await inspectProspectWebsites(batchA, {
+    maxSites: 5,
+    timeoutMs: 5_000,
+    checkContactPage: false,
+  });
+  const inspectedB =
+    batchB.length > 0
+      ? await inspectProspectWebsites(batchB, {
+          maxSites: 5,
+          timeoutMs: 5_000,
+          checkContactPage: false,
+        })
+      : [];
+
+  const inspectedMap = new Map([...inspectedA, ...inspectedB].map((s) => [s.url.toLowerCase(), s]));
+
+  // Verify DNS MX records in parallel for all discovered emails
+  const sites: GrowthRunInspectedSite[] = await Promise.all(
+    candidates.map(async (c): Promise<GrowthRunInspectedSite> => {
+      const site = c.website ? inspectedMap.get(c.website.toLowerCase()) : undefined;
+      const mergedEmails = Array.from(
+        new Set([...(c.email ? [c.email.toLowerCase()] : []), ...(site?.emails ?? [])]),
+      );
+
+      let mxVerified = false;
+      let emailType: "direct" | "role_inbox" | "invalid" = "invalid";
+      const validEmails: string[] = [];
+
+      for (const em of mergedEmails.slice(0, 3)) {
+        const ver = await verifyEmailDeliverability(em);
+        if (ver.syntaxValid && !ver.disposable) {
+          validEmails.push(ver.email);
+          if (ver.mxVerified) mxVerified = true;
+          if (emailType === "invalid" || ver.emailType === "direct") {
+            emailType = ver.emailType;
+          }
+        }
+      }
+
+      let mobileScore: number | null = null;
+      if (input.checkPageSpeed && site?.reachable && sitesCountIndex(candidates, c) < 3) {
+        const ps = await checkMobilePageSpeed(site.finalUrl, { timeoutMs: 5_000 }).catch(() => null);
+        mobileScore = ps?.mobileScore ?? null;
+      }
+
+      return {
+        business: c.business,
+        url: c.website || c.sourceUrl,
+        finalUrl: site?.finalUrl || c.website || c.sourceUrl,
+        reachable: site?.reachable ?? false,
+        httpStatus: site?.httpStatus ?? 0,
+        isHttps: site?.isHttps ?? (c.website || "").startsWith("https://"),
+        hasViewport: site?.hasViewport ?? false,
+        hasContactForm: site?.hasContactForm ?? false,
+        platform: site?.platform ?? null,
+        title: site?.title || c.business,
+        h1: site?.h1 || "",
+        statusHints: site?.statusHints ?? [],
+        verifiedEmails: validEmails,
+        mxVerified,
+        emailType,
+        verifiedPhones: Array.from(new Set([...(c.phone ? [c.phone] : []), ...(site?.phones ?? [])])).slice(0, 3),
+        socialLinks: site?.socialLinks ?? [],
+        snippet: c.snippet,
+        textSummary: site?.textSummary?.slice(0, 1200) || c.snippet,
+        sourceUrl: c.sourceUrl,
+        mobileScore,
+      };
+    }),
+  );
+
+  const reachableCount = sites.filter((s) => s.reachable).length;
+  const verifiedEmailsCount = sites.filter((s) => s.verifiedEmails.length > 0).length;
+
+  const nextState: GrowthExecuteRunState = {
+    ...existingState,
+    currentStage: "score_and_build",
+    completedStages: Array.from(new Set([...existingState.completedStages, "inspect"])) as GrowthExecuteStage[],
+    inspected: {
+      sites,
+      inspectedCount: sites.length,
+      reachableCount,
+      verifiedEmailsCount,
+    },
+    updatedAt: new Date().toISOString(),
+  };
+
+  await saveRunState(nextState);
+  return {
+    runId: input.runId,
+    state: nextState,
+    summary: `Verified ${reachableCount}/${sites.length} live sites · ${verifiedEmailsCount} public contact emails checked`,
+  };
+}
+
+function sitesCountIndex<T>(arr: T[], item: T): number {
+  return arr.indexOf(item);
+}
+
+/** Stage 4: Score Buying Intent, Generate Personalized First-Line Hooks & Build Blueprint */
+export async function executeGrowthStageScoreAndBuild(input: {
+  runId: string;
+  ownerId: string;
+  profile: GrowthProfile;
+  knowledgeDigest: string;
+  settings: Settings;
+  existingEmails?: string[];
+}): Promise<{ runId: string; state: GrowthExecuteRunState; blueprint: ExecutedCampaignBlueprint; summary: string }> {
+  const existingState = await loadRunState(input.ownerId, input.runId);
+  if (!existingState?.strategy || !existingState.inspected) {
+    throw new Error("Earlier Growth Advisor stages missing. Run Stages 1–3 before Stage 4.");
+  }
+
+  const today = new Date().toISOString().slice(0, 10);
+  const strat = existingState.strategy;
+  const sites = existingState.inspected.sites;
+
+  if (sites.length === 0) {
+    const emptyBlueprint: ExecutedCampaignBlueprint = {
+      campaignName: strat.campaignName,
+      targetAudience: strat.targetAudience,
+      targetLocation: strat.targetLocation,
+      targetIndustry: strat.targetIndustry,
+      messagingAngle: strat.messagingAngle,
+      hook: strat.hook,
+      subjectLine: strat.subjectLine,
+      sampleEmailBody: strat.sampleEmailBody,
+      channel: strat.channel,
+      schedule: strat.schedule,
+      goal: strat.goal,
+      complianceChecklist: strat.complianceChecklist,
+      prospects: [],
+      groundingUrls: [],
+    };
+    const nextState: GrowthExecuteRunState = {
+      ...existingState,
+      status: "completed",
+      currentStage: "score_and_build",
+      completedStages: Array.from(new Set([...existingState.completedStages, "score_and_build"])) as GrowthExecuteStage[],
+      blueprint: emptyBlueprint,
+    };
+    await saveRunState(nextState);
+    return { runId: input.runId, state: nextState, blueprint: emptyBlueprint, summary: "No verified prospects to score" };
+  }
+
+  const verifiedEmailCorpus = new Set(sites.flatMap((s) => s.verifiedEmails.map((e) => e.toLowerCase())));
+  const verifiedUrlCorpus = new Set(sites.flatMap((s) => [s.url.toLowerCase(), s.finalUrl.toLowerCase(), s.sourceUrl.toLowerCase()]));
+
+  const siteDossier = sites
+    .map((s, idx) => {
+      return `[${idx + 1}] Business: ${s.business}
+URL: ${s.finalUrl} (Source: ${s.sourceUrl}, HTTP ${s.httpStatus}, Reachable: ${s.reachable})
+Title/H1: ${s.title} / ${s.h1 || "(none)"}
+HTTPS: ${s.isHttps} | Viewport: ${s.hasViewport} | Contact Form: ${s.hasContactForm} | Platform: ${s.platform || "unknown"}${s.mobileScore !== null && s.mobileScore !== undefined ? ` | Mobile PageSpeed: ${s.mobileScore}/100` : ""}
+Verified Emails: ${s.verifiedEmails.join(", ") || "(none found)"} (MX Verified: ${s.mxVerified}, Type: ${s.emailType})
+Verified Phones: ${s.verifiedPhones.join(", ") || "(none found)"}
+Signals/Hints: ${s.statusHints.join("; ") || "(none)"}
+Visible Site Copy: ${s.textSummary.slice(0, 700)}`;
+    })
+    .join("\n\n");
+
+  const taskInstructions = `Execute Growth Advisor STAGE 4 (Buying-Intent Scoring + Personalized First Lines).
+Evaluate ONLY the verified prospects listed in VERIFIED SITE DOSSIER below using Modules 1-3 strictly:
+1. Never invent businesses, emails, URLs, or technical defects absent from VERIFIED SITE DOSSIER. If Verified Emails is "(none found)", set "email": "".
+2. Score Buying Intent (0-100) using Module 1 Fit + WTP Proof + Trigger Timing + Reachability.
+3. For each prospect, select recommendedTemplateId ("T1"-"T12"; use "T10" if emailType is "role_inbox"), write a sharp 1-2 sentence verified firstLine citing ONLY real facts observed on their site/listing, plus concise Module 2 plain-text draftSubject (2-5 words) and draftBody (45-85 words, zero {{...}} placeholders, with plain opt-out line).
+
+Return ONLY valid JSON:
+{
+  "prospects": [
+    {
+      "business": "exact name from dossier",
+      "contactName": "name if observed else empty string",
+      "role": "role if observed else empty string",
+      "email": "exact verified email from dossier or empty string",
+      "phone": "exact verified phone or empty string",
+      "website": "exact URL from dossier",
+      "location": "city/region",
+      "industry": "industry",
+      "sourceUrl": "exact source URL from dossier",
+      "buyingIntentScore": 82,
+      "buyingIntentReasoning": "transparent Module 1 evidence-backed reasoning",
+      "signals": [{ "signal": "short signal name", "strength": "strong | moderate | weak", "evidence": "verified observation from dossier" }],
+      "recommendedTemplateId": "T1",
+      "firstLine": "verified personalized opening line",
+      "draftSubject": "2-5 word lowercase subject",
+      "draftBody": "complete plain-text cold email body"
+    }
+  ]
+}`;
+
+  const orchestrated = await buildOrchestratedSystemPrompt({
+    workflow: "growth_advisor",
+    ownerId: input.ownerId,
+    settings: input.settings,
+    knowledgeDigest: input.knowledgeDigest,
+    taskInstructions,
+  });
+
+  const user = `CAMPAIGN STRATEGY:
+Name: ${strat.campaignName}
+Angle: ${strat.messagingAngle}
+Core Offer: ${input.profile.offer || "See KB"}
+Sender: ${input.settings.sender_name || "Founder"} (${input.settings.sender_company || input.profile.whoYouAre})
+Physical Address: ${input.settings.physical_address || "Required before sending"}
+Regional Compliance: ${strat.complianceFramework}
+
+VERIFIED SITE DOSSIER (${sites.length} candidates):
+${siteDossier}
+
+Score, prioritize highest buying intent first, and draft non-hallucinated outreach JSON.`;
+
+  const { data } = await LLMGateway.completeJSON<{ prospects?: Record<string, unknown>[] }>({
+    ownerId: input.ownerId,
+    taskType: "balanced",
+    feature: "growth_execute_score",
+    systemPrompt: orchestrated.system,
+    messages: [{ role: "user", content: user }],
+  });
+
+  const existingSet = new Set((input.existingEmails ?? []).map((e) => e.trim().toLowerCase()).filter(Boolean));
   const seenKeys = new Set<string>();
 
   const prospects: ExecutedProspect[] = (Array.isArray(data.prospects) ? data.prospects : [])
     .map((raw, idx) => {
-      const email = cleanStr(raw.email, 200).toLowerCase();
-      const validEmail = email.includes("@") && !email.includes(" ") && !existingSet.has(email) ? email : "";
+      const siteRef =
+        sites.find(
+          (s) =>
+            s.finalUrl.toLowerCase() === cleanStr(raw.website, 300).toLowerCase() ||
+            s.business.toLowerCase() === cleanStr(raw.business, 200).toLowerCase(),
+        ) ?? sites[idx];
+
+      // Strict anti-hallucination guard on emails
+      const rawEmail = cleanStr(raw.email, 200).toLowerCase();
+      const verifiedEmail =
+        rawEmail && verifiedEmailCorpus.has(rawEmail) && !existingSet.has(rawEmail)
+          ? rawEmail
+          : siteRef?.verifiedEmails.find((e) => !existingSet.has(e)) ?? "";
+
+      const rawUrl = cleanStr(raw.sourceUrl, 400);
+      const safeSourceUrl =
+        rawUrl && verifiedUrlCorpus.has(rawUrl.toLowerCase()) ? rawUrl : siteRef?.sourceUrl ?? "";
+
+      const rawWebsite = cleanStr(raw.website, 300);
+      const safeWebsite =
+        rawWebsite && verifiedUrlCorpus.has(rawWebsite.toLowerCase()) ? rawWebsite : siteRef?.finalUrl ?? "";
+
+      const intentScore = clampNum(raw.buyingIntentScore, 5, 99, 65);
+      const intentLevel: ExecutedProspect["buyingIntentLevel"] =
+        intentScore >= 78 ? "high" : intentScore >= 55 ? "medium" : "low";
+
       const signals: IntentSignal[] = Array.isArray(raw.signals)
         ? raw.signals
             .map((s) => {
               const obj = (s && typeof s === "object" ? s : {}) as Record<string, unknown>;
-              const rawStrength = cleanStr(obj.strength, 20).toLowerCase();
-              const strength: IntentSignal["strength"] =
-                rawStrength === "strong" || rawStrength === "moderate" || rawStrength === "weak"
-                  ? rawStrength
-                  : "moderate";
+              const st = cleanStr(obj.strength, 20).toLowerCase();
               return {
                 signal: cleanStr(obj.signal, 200),
-                strength,
+                strength: (st === "strong" || st === "moderate" || st === "weak" ? st : "moderate") as IntentSignal["strength"],
                 evidence: cleanStr(obj.evidence, 300),
               };
             })
             .filter((s) => s.signal)
         : [];
 
-      const intentScore = clampNum(raw.buyingIntentScore, 5, 99, 65);
-      const intentLevel: ExecutedProspect["buyingIntentLevel"] =
-        intentScore >= 78 ? "high" : intentScore >= 55 ? "medium" : "low";
-
       return {
         id: `exec_p_${Date.now()}_${idx}`,
-        selected: intentScore >= 55, // Auto-select medium/high intent; let user review all
-        business: cleanStr(raw.business, 200),
+        selected: intentScore >= 55 && Boolean(verifiedEmail || safeWebsite),
+        business: cleanStr(raw.business, 200) || siteRef?.business || "",
         contactName: cleanStr(raw.contactName, 140),
         role: cleanStr(raw.role, 120),
-        email: validEmail,
-        phone: cleanStr(raw.phone, 60),
-        website: cleanStr(raw.website, 300),
-        location: cleanStr(raw.location, 180) || rec?.suggestedAction.targetLocation || input.profile.location,
-        industry: cleanStr(raw.industry, 140) || rec?.suggestedAction.targetIndustry || input.profile.industry,
-        sourceUrl: cleanStr(raw.sourceUrl, 400) || groundingUrls[0]?.uri || "",
-        sourceDate: cleanStr(raw.sourceDate, 30) || today,
+        email: verifiedEmail,
+        phone: cleanStr(raw.phone, 60) || siteRef?.verifiedPhones[0] || "",
+        website: safeWebsite,
+        location: cleanStr(raw.location, 180) || strat.targetLocation,
+        industry: cleanStr(raw.industry, 140) || strat.targetIndustry,
+        sourceUrl: safeSourceUrl,
+        sourceDate: today,
         buyingIntentScore: intentScore,
         buyingIntentLevel: intentLevel,
-        buyingIntentReasoning: cleanStr(raw.buyingIntentReasoning, 450) || "Matches target segment criteria.",
+        buyingIntentReasoning: cleanStr(raw.buyingIntentReasoning, 450) || "Verified against Module 1 criteria.",
         signals,
-        complianceNote:
-          cleanStr(raw.complianceNote, 240) || "Publicly listed B2B directory / official website; include opt-out link.",
-        draftSubject: stripUnresolvedPlaceholders(cleanStr(raw.draftSubject, 180)),
+        complianceNote: `${strat.complianceFramework}: verified public B2B source.`,
+        firstLine: stripUnresolvedPlaceholders(cleanStr(raw.firstLine, 320)),
+        recommendedTemplateId: cleanStr(raw.recommendedTemplateId, 10) || (siteRef?.emailType === "role_inbox" ? "T10" : "T1"),
+        mxVerified: siteRef?.mxVerified ?? false,
+        emailType: siteRef?.emailType ?? "invalid",
+        draftSubject: stripUnresolvedPlaceholders(cleanStr(raw.draftSubject, 180)) || strat.subjectLine,
         draftBody: stripUnresolvedPlaceholders(cleanStr(raw.draftBody, 3000)),
       };
     })
     .filter((p) => {
       if (!p.business) return false;
-      const key = (p.website || p.business).toLowerCase().replace(/^https?:\/\//, "").replace(/\/+$/, "");
-      if (seenKeys.has(key)) return false;
-      seenKeys.add(key);
+      const k = (p.website || p.business).toLowerCase().replace(/^https?:\/\//, "").replace(/\/+$/, "");
+      if (seenKeys.has(k)) return false;
+      seenKeys.add(k);
       return true;
     })
-    .sort((a, b) => b.buyingIntentScore - a.buyingIntentScore); // Prioritise highest buying intent first!
+    .sort((a, b) => b.buyingIntentScore - a.buyingIntentScore);
 
-  return {
-    campaignName:
-      cleanStr(data.campaignName, 180) ||
-      (rec ? `${rec.title.slice(0, 60)} Campaign` : "Growth Advisor Priority Campaign"),
-    targetAudience: cleanStr(data.targetAudience, 300) || rec?.suggestedAction.targetAudience || input.profile.idealCustomer,
-    targetLocation: cleanStr(data.targetLocation, 200) || rec?.suggestedAction.targetLocation || input.profile.location,
-    targetIndustry: cleanStr(data.targetIndustry, 160) || rec?.suggestedAction.targetIndustry || input.profile.industry,
-    messagingAngle: cleanStr(data.messagingAngle, 400) || rec?.suggestedAction.angle || "",
-    hook: cleanStr(data.hook, 300) || rec?.suggestedAction.hook || "",
-    subjectLine: cleanStr(data.subjectLine, 180) || rec?.suggestedAction.subjectLine || "Quick question for {{company}}",
-    sampleEmailBody: cleanStr(data.sampleEmailBody, 4000) || "",
-    channel: cleanStr(data.channel, 120) || rec?.suggestedAction.channel || "Cold Email",
-    schedule: {
-      sendDays: cleanStr(data.schedule?.sendDays, 40) || input.settings.send_days || "mon,tue,wed,thu,fri",
-      windowStart: clampNum(data.schedule?.windowStart, 0, 23, input.settings.send_window_start || 9),
-      windowEnd: clampNum(data.schedule?.windowEnd, 1, 23, input.settings.send_window_end || 17),
-      followupDays: Array.isArray(data.schedule?.followupDays)
-        ? data.schedule!.followupDays.map((d) => clampNum(d, 1, 30, 3)).slice(0, 5)
-        : [3, 7],
-      dailyLimit: clampNum(data.schedule?.dailyLimit, 1, 100, input.settings.daily_limit || 25),
-    },
-    goal: cleanStr(data.goal, 250) || rec?.suggestedAction.goal || "Convert high-intent leads into qualified meetings",
-    complianceChecklist: Array.isArray(data.complianceChecklist)
-      ? data.complianceChecklist.map((c) => cleanStr(c, 220)).filter(Boolean)
-      : [
-          "Only public B2B corporate contact details sourced lawfully",
-          "Include clear opt-out / unsubscribe instructions in every email",
-          "Respect regional B2B electronic communication & suppression list rules",
-        ],
+  const blueprint: ExecutedCampaignBlueprint = {
+    campaignName: strat.campaignName,
+    targetAudience: strat.targetAudience,
+    targetLocation: strat.targetLocation,
+    targetIndustry: strat.targetIndustry,
+    messagingAngle: strat.messagingAngle,
+    hook: strat.hook,
+    subjectLine: strat.subjectLine,
+    sampleEmailBody: strat.sampleEmailBody,
+    channel: strat.channel,
+    schedule: strat.schedule,
+    goal: strat.goal,
+    complianceChecklist: strat.complianceChecklist,
     prospects,
-    groundingUrls: groundingUrls.slice(0, 12),
+    groundingUrls: sites.slice(0, 12).map((s) => ({ uri: s.finalUrl, title: s.title || s.business })),
   };
+
+  const nextState: GrowthExecuteRunState = {
+    ...existingState,
+    status: "completed",
+    currentStage: "score_and_build",
+    completedStages: Array.from(new Set([...existingState.completedStages, "score_and_build"])) as GrowthExecuteStage[],
+    blueprint,
+    updatedAt: new Date().toISOString(),
+  };
+
+  await saveRunState(nextState);
+  return {
+    runId: input.runId,
+    state: nextState,
+    blueprint,
+    summary: `Scored & prioritized ${prospects.length} verified buyers (${prospects.filter((p) => p.buyingIntentLevel === "high").length} high intent)`,
+  };
+}
+
+/** Backwards-compatible wrapper composing Stages 1 -> 2 -> 3 -> 4 cleanly. */
+export async function executeRecommendationServer(input: {
+  ownerId?: string;
+  recommendation?: GrowthRecommendation | null;
+  overallStrategy?: string;
+  profile: GrowthProfile;
+  knowledgeDigest: string;
+  settings: Settings;
+  existingEmails: string[];
+  model?: string;
+}): Promise<ExecutedCampaignBlueprint> {
+  void input.model;
+  const ownerId = input.ownerId || getActiveOwnerAiContext()?.ownerId || "anonymous";
+
+  const s1 = await executeGrowthStageStrategy({
+    ownerId,
+    recommendation: input.recommendation,
+    overallStrategy: input.overallStrategy,
+    profile: input.profile,
+    knowledgeDigest: input.knowledgeDigest,
+    settings: input.settings,
+  });
+
+  await executeGrowthStageDiscover({
+    runId: s1.runId,
+    ownerId,
+    existingEmails: input.existingEmails,
+  });
+
+  await executeGrowthStageInspect({
+    runId: s1.runId,
+    ownerId,
+  });
+
+  const s4 = await executeGrowthStageScoreAndBuild({
+    runId: s1.runId,
+    ownerId,
+    profile: input.profile,
+    knowledgeDigest: input.knowledgeDigest,
+    settings: input.settings,
+    existingEmails: input.existingEmails,
+  });
+
+  return s4.blueprint;
 }

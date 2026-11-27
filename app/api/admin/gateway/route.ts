@@ -36,17 +36,23 @@ import {
 } from "@/lib/llm/types";
 import { requireAdmin } from "@/lib/platform/admin-auth";
 import { appendAdminAuditLog } from "@/lib/platform/store-server";
+import {
+  getSearchQuotaMonitorSnapshot,
+  resetSearchProviderQuota,
+  type QuotaTrackedProviderId,
+} from "@/lib/search/quotaAndCache";
 import { verifySearchKey } from "@/lib/search/webSearch";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
 async function buildAdminGatewayPayload() {
-  const [settings, keys, searchKeys, executionLogs] = await Promise.all([
+  const [settings, keys, searchKeys, executionLogs, quotaSnap] = await Promise.all([
     getAdminAiSettings(),
     listAdminAiKeys(),
     listAdminSearchKeysPublic(),
     listAiExecutionLogs({ limit: 35 }),
+    getSearchQuotaMonitorSnapshot(),
   ]);
 
   const enrichedKeys = keys.map((k) => {
@@ -65,7 +71,9 @@ async function buildAdminGatewayPayload() {
     catalog: PROVIDER_CATALOG,
     searchKeys,
     searchCatalog: SEARCH_PROVIDER_CATALOG,
-    builtInSearchStatus: "Built-in Keyless Fallback: Ready ($0 Forever · DuckDuckGo + OpenStreetMap Overpass)",
+    searchQuotas: quotaSnap.quotas,
+    totalCacheHitsSaved: quotaSnap.totalCacheHitsSaved,
+    builtInSearchStatus: "Built-in Keyless Fallback: DuckDuckGo + OpenStreetMap + DNS MX Ready",
     executionLogs,
   };
 }
@@ -96,7 +104,8 @@ export async function POST(req: NextRequest) {
         | "add_search_key"
         | "toggle_search_key"
         | "test_search_key"
-        | "delete_search_key";
+        | "delete_search_key"
+        | "reset_search_quota";
       masterMode?: "auto" | "manual";
       strategy?: RoutingStrategy;
       fallbackChain?: { provider: GatewayProviderId; model: string }[];
@@ -140,9 +149,27 @@ export async function POST(req: NextRequest) {
       });
     }
 
+    if (body.action === "reset_search_quota") {
+      const target = String(body.provider ?? "").trim().toLowerCase();
+      if (!isSearchProviderId(target) && target !== "duckduckgo" && target !== "osm") {
+        return NextResponse.json({ error: "Invalid search provider." }, { status: 400 });
+      }
+      await resetSearchProviderQuota(target as QuotaTrackedProviderId);
+      await appendAdminAuditLog({
+        actorId: ctx.admin.id,
+        actorEmail: ctx.admin.email,
+        actorRole: ctx.admin.role,
+        action: "search_quota_reset",
+        targetType: "search_provider_quotas",
+        targetId: target,
+        req,
+      });
+      return NextResponse.json(await buildAdminGatewayPayload());
+    }
+
     if (body.action === "add_search_key") {
       if (!isSearchProviderId(body.provider)) {
-        return NextResponse.json({ error: "Select Tavily, Brave, or Serper." }, { status: 400 });
+        return NextResponse.json({ error: "Select Exa, Tavily, Firecrawl, Serper, Brave, Jina, or PageSpeed." }, { status: 400 });
       }
       const check = validateApiKeyInput(body.apiKey);
       if (!check.ok) {

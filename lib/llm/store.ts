@@ -1,6 +1,7 @@
 import { decryptSecret, encryptSecret, maskSecret } from "../key-vault";
 import { supabaseServer } from "../supabase-server";
 import {
+  ALL_SEARCH_PROVIDER_IDS,
   getProviderMeta,
   getSearchProviderMeta,
   isSearchProviderId,
@@ -637,9 +638,13 @@ export function toAdminAiKeyPublic(rec: AdminAiKeyRecord): AdminAiKeyPublic {
 function readEnvSearchKeys(): DecryptedAdminSearchKey[] {
   const now = new Date().toISOString();
   const defs: { provider: SearchProviderId; envVar: string }[] = [
+    { provider: "exa", envVar: "EXA_API_KEY" },
     { provider: "tavily", envVar: "TAVILY_API_KEY" },
-    { provider: "brave", envVar: "BRAVE_SEARCH_API_KEY" },
+    { provider: "firecrawl", envVar: "FIRECRAWL_API_KEY" },
     { provider: "serper", envVar: "SERPER_API_KEY" },
+    { provider: "brave", envVar: "BRAVE_SEARCH_API_KEY" },
+    { provider: "jina", envVar: "JINA_API_KEY" },
+    { provider: "pagespeed", envVar: "PAGESPEED_API_KEY" },
   ];
   const out: DecryptedAdminSearchKey[] = [];
   for (const d of defs) {
@@ -673,7 +678,7 @@ export async function listAdminSearchKeys(): Promise<DecryptedAdminSearchKey[]> 
     const { data, error } = await supabaseServer
       .from("admin_ai_keys")
       .select("*")
-      .in("provider", ["tavily", "brave", "serper"])
+      .in("provider", ALL_SEARCH_PROVIDER_IDS)
       .order("created_at", { ascending: true });
 
     const rows =
@@ -728,7 +733,7 @@ export async function listAdminSearchKeysPublic(): Promise<AdminSearchKeyPublic[
     const { data, error } = await supabaseServer
       .from("admin_ai_keys")
       .select("*")
-      .in("provider", ["tavily", "brave", "serper"])
+      .in("provider", ALL_SEARCH_PROVIDER_IDS)
       .order("created_at", { ascending: true });
 
     const rows =

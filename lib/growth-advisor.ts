@@ -161,6 +161,88 @@ export interface ExecutedProspect {
   complianceNote: string;
   draftSubject?: string;
   draftBody?: string;
+  firstLine?: string;
+  recommendedTemplateId?: string;
+  mxVerified?: boolean;
+  emailType?: "direct" | "role_inbox" | "invalid";
+}
+
+export type GrowthExecuteStage = "strategy" | "discover" | "inspect" | "score_and_build";
+
+export interface GrowthRunCandidate {
+  business: string;
+  website: string;
+  domain: string;
+  sourceUrl: string;
+  snippet: string;
+  address?: string;
+  phone?: string;
+  email?: string;
+  sourceProvider: string;
+}
+
+export interface GrowthRunInspectedSite {
+  business: string;
+  url: string;
+  finalUrl: string;
+  reachable: boolean;
+  httpStatus: number;
+  isHttps: boolean;
+  hasViewport: boolean;
+  hasContactForm: boolean;
+  platform: string | null;
+  title: string;
+  h1: string;
+  statusHints: string[];
+  verifiedEmails: string[];
+  mxVerified: boolean;
+  emailType: "direct" | "role_inbox" | "invalid";
+  verifiedPhones: string[];
+  socialLinks: { platform: string; url: string }[];
+  snippet: string;
+  textSummary: string;
+  sourceUrl: string;
+  mobileScore?: number | null;
+}
+
+export interface GrowthExecuteRunState {
+  runId: string;
+  ownerId: string;
+  status: "in_progress" | "completed" | "failed";
+  currentStage: GrowthExecuteStage;
+  completedStages: GrowthExecuteStage[];
+  recommendationTitle: string;
+  strategy?: {
+    offerFitDiagnosis: string;
+    campaignName: string;
+    targetAudience: string;
+    targetLocation: string;
+    targetIndustry: string;
+    messagingAngle: string;
+    hook: string;
+    subjectLine: string;
+    sampleEmailBody: string;
+    channel: string;
+    schedule: ExecutedCampaignBlueprint["schedule"];
+    goal: string;
+    complianceChecklist: string[];
+    complianceFramework: string;
+    searchQueries: string[];
+  };
+  discovered?: {
+    candidates: GrowthRunCandidate[];
+    totalFound: number;
+    duplicatesRemoved: number;
+    providersUsed: string[];
+  };
+  inspected?: {
+    sites: GrowthRunInspectedSite[];
+    inspectedCount: number;
+    reachableCount: number;
+    verifiedEmailsCount: number;
+  };
+  blueprint?: ExecutedCampaignBlueprint;
+  updatedAt: string;
 }
 
 export interface ExecutedCampaignBlueprint {

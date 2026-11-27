@@ -35,7 +35,7 @@ import {
 } from "./types";
 
 const MAX_AUTO_ATTEMPTS = 8;
-const AUTO_WALL_BUDGET_MS = 45_000;
+const AUTO_WALL_BUDGET_MS = 42_000;
 
 export class LLMGatewayError extends Error {
   status: number;
@@ -194,8 +194,12 @@ async function runPooledAutoFailover<T>(input: {
     recordKeyUsageHit(candidate.key.id);
 
     const remainingMs = Math.max(4_000, AUTO_WALL_BUDGET_MS - (Date.now() - input.startedAt));
-    const targetAttemptTimeout =
-      input.req.responseFormat === "json" && input.req.taskType === "smart" ? 12_000 : 10_000;
+    const heavyScoringJson =
+      input.req.responseFormat === "json" &&
+      (input.req.feature === "growth_execute_score" ||
+        input.req.feature === "growth_advisor" ||
+        input.req.taskType === "smart");
+    const targetAttemptTimeout = heavyScoringJson ? 14_000 : 10_000;
     const attemptTimeout = Math.min(remainingMs, targetAttemptTimeout);
 
     // Non-Google providers cannot run Google Search grounding natively; also skip keys where free-tier rejected grounding

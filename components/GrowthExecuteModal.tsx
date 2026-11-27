@@ -21,6 +21,7 @@ import { authedPost, errorMessage } from "@/lib/client";
 import type {
   ExecutedCampaignBlueprint,
   ExecutedProspect,
+  GrowthExecuteStage,
   GrowthProfile,
   GrowthRecommendation,
 } from "@/lib/growth-advisor";
@@ -39,11 +40,11 @@ interface GrowthExecuteModalProps {
   onCampaignCreated?: (campaignId: string) => void;
 }
 
-const PROGRESS_STEPS = [
-  "Analysing offer fit & regional compliance requirements",
-  "Designing campaign strategy, angle, channel & schedule",
-  "Searching public sources for verified matching prospects",
-  "Scoring buying intent & prioritising likely buyers",
+const PROGRESS_STEPS: { key: GrowthExecuteStage; label: string }[] = [
+  { key: "strategy", label: "Offer fit, regional compliance & search queries" },
+  { key: "discover", label: "Searching public web & local directories" },
+  { key: "inspect", label: "Inspecting live websites & DNS MX records" },
+  { key: "score_and_build", label: "Scoring buying intent & drafting first lines" },
 ];
 
 export function GrowthExecuteModal({
@@ -61,7 +62,11 @@ export function GrowthExecuteModal({
   const toast = useToast();
 
   const [generating, setGenerating] = useState(false);
-  const [stepIdx, setStepIdx] = useState(0);
+  const [activeStage, setActiveStage] = useState<GrowthExecuteStage>("strategy");
+  const [completedStages, setCompletedStages] = useState<GrowthExecuteStage[]>([]);
+  const [stepSummaries, setStepSummaries] = useState<Partial<Record<GrowthExecuteStage, string>>>({});
+  const [failedStage, setFailedStage] = useState<GrowthExecuteStage | null>(null);
+  const [runId, setRunId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [blueprint, setBlueprint] = useState<ExecutedCampaignBlueprint | null>(null);
   const [saving, setSaving] = useState(false);
@@ -73,32 +78,55 @@ export function GrowthExecuteModal({
   } | null>(null);
   const [activeTab, setActiveTab] = useState<"prospects" | "plan">("prospects");
 
-  const runGeneration = async () => {
+  const runPipeline = async (startFrom: GrowthExecuteStage = "strategy") => {
     setGenerating(true);
     setError(null);
-    setBlueprint(null);
-    setSavedResult(null);
-    setStepIdx(0);
+    setFailedStage(null);
+    if (startFrom === "strategy") {
+      setBlueprint(null);
+      setSavedResult(null);
+      setCompletedStages([]);
+      setStepSummaries({});
+      setRunId(null);
+    }
 
-    const timer = window.setInterval(() => {
-      setStepIdx((prev) => (prev < PROGRESS_STEPS.length - 1 ? prev + 1 : prev));
-    }, 2400);
+    const startIndex = Math.max(0, PROGRESS_STEPS.findIndex((s) => s.key === startFrom));
+    let currentRunId = startFrom === "strategy" ? null : runId;
 
     try {
-      const res = await authedPost<{ blueprint: ExecutedCampaignBlueprint }>("/api/ai/growth-execute", {
-        recommendation: recommendation ?? null,
-        overallStrategy,
-        profile,
-        knowledgeDigest,
-        settings,
-        existingEmails,
-        model: settings.model,
-      });
-      setBlueprint(res.blueprint);
+      for (let i = startIndex; i < PROGRESS_STEPS.length; i++) {
+        const stage = PROGRESS_STEPS[i].key;
+        setActiveStage(stage);
+
+        const res = await authedPost<{
+          runId: string;
+          summary: string;
+          blueprint?: ExecutedCampaignBlueprint;
+        }>("/api/ai/growth-execute", {
+          stage,
+          runId: currentRunId ?? undefined,
+          recommendation: recommendation ?? null,
+          overallStrategy,
+          profile,
+          knowledgeDigest,
+          settings,
+          existingEmails,
+        });
+
+        currentRunId = res.runId || currentRunId;
+        if (currentRunId) setRunId(currentRunId);
+
+        setStepSummaries((prev) => ({ ...prev, [stage]: res.summary }));
+        setCompletedStages((prev) => (prev.includes(stage) ? prev : [...prev, stage]));
+
+        if (stage === "score_and_build" && res.blueprint) {
+          setBlueprint(res.blueprint);
+        }
+      }
     } catch (err) {
+      setFailedStage(PROGRESS_STEPS.find((s) => s.key === activeStage)?.key ?? startFrom);
       setError(errorMessage(err));
     } finally {
-      window.clearInterval(timer);
       setGenerating(false);
     }
   };
@@ -108,11 +136,13 @@ export function GrowthExecuteModal({
     const t = window.setTimeout(() => {
       if (cancelled) return;
       if (open) {
-        void runGeneration();
+        void runPipeline("strategy");
       } else {
         setBlueprint(null);
         setError(null);
         setSavedResult(null);
+        setFailedStage(null);
+        setRunId(null);
       }
     }, 0);
     return () => {
@@ -210,29 +240,34 @@ export function GrowthExecuteModal({
               </div>
             </div>
             <div className="stack" style={{ gap: 8 }}>
-              {PROGRESS_STEPS.map((label, idx) => {
-                const done = idx < stepIdx;
-                const active = idx === stepIdx;
+              {PROGRESS_STEPS.map((st, idx) => {
+                const done = completedStages.includes(st.key);
+                const active = !done && activeStage === st.key;
+                const activeIdx = PROGRESS_STEPS.findIndex((x) => x.key === activeStage);
+                const summary = stepSummaries[st.key];
                 return (
                   <div
-                    key={label}
+                    key={st.key}
                     className="row"
                     style={{
                       gap: 8,
                       fontSize: 12.5,
-                      opacity: idx > stepIdx ? 0.45 : 1,
+                      opacity: !done && idx > activeIdx ? 0.45 : 1,
                       color: active ? "var(--ink)" : "var(--muted)",
                       fontWeight: active ? 600 : 400,
+                      justifyContent: "space-between",
                     }}
                   >
-                    {done ? (
-                      <CheckCircle2 size={14} style={{ color: "var(--teal-deep)", flexShrink: 0 }} />
-                    ) : active ? (
-                      <Loader2 size={14} className="spin" style={{ color: "var(--teal-deep)", flexShrink: 0 }} />
-                    ) : (
-                      <span style={{ width: 14, height: 14, borderRadius: "50%", border: "1px solid var(--line)" }} />
-                    )}
-                    <span>{label}</span>
+                    <div className="row" style={{ gap: 8 }}>
+                      {done ? (
+                        <CheckCircle2 size={14} style={{ color: "var(--teal-deep)", flexShrink: 0 }} />
+                      ) : active ? (
+                        <Loader2 size={14} className="spin" style={{ color: "var(--teal-deep)", flexShrink: 0 }} />
+                      ) : (
+                        <span style={{ width: 14, height: 14, borderRadius: "50%", border: "1px solid var(--line)" }} />
+                      )}
+                      <span>{summary || st.label}</span>
+                    </div>
                   </div>
                 );
               })}
@@ -244,10 +279,16 @@ export function GrowthExecuteModal({
           <Banner tone="bad">
             <div className="stack" style={{ gap: 8 }}>
               <div>{error}</div>
-              <div>
-                <button type="button" className="btn btn-sm" onClick={() => void runGeneration()}>
+              <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
+                {failedStage && runId && (
+                  <button type="button" className="btn btn-sm btn-primary" onClick={() => void runPipeline(failedStage)}>
+                    <RotateCcw size={13} />
+                    Retry This Step
+                  </button>
+                )}
+                <button type="button" className="btn btn-sm" onClick={() => void runPipeline("strategy")}>
                   <RotateCcw size={13} />
-                  Retry build & prospect search
+                  Start Over
                 </button>
               </div>
             </div>
@@ -564,7 +605,7 @@ export function GrowthExecuteModal({
                 <button
                   type="button"
                   className="btn"
-                  onClick={() => void runGeneration()}
+                  onClick={() => void runPipeline("strategy")}
                   disabled={saving || generating}
                 >
                   <RotateCcw size={13} />

@@ -33,6 +33,7 @@ import {
   type TaskSeat,
 } from "@/lib/llm/types";
 import type { AdminRole } from "@/lib/platform/types";
+import type { SearchQuotaRecord } from "@/lib/search/quotaAndCache";
 import { Badge, Banner, Card, Empty, Field, Modal } from "../ui";
 import { BrandLoader } from "../BrandLoader";
 import { useConfirm, useToast } from "../Feedback";
@@ -44,6 +45,8 @@ interface GatewayAdminPayload {
   catalog: ProviderCatalogMeta[];
   searchKeys?: AdminSearchKeyPublic[];
   searchCatalog?: SearchProviderMeta[];
+  searchQuotas?: SearchQuotaRecord[];
+  totalCacheHitsSaved?: number;
   builtInSearchStatus?: string;
   executionLogs: AiExecutionLogRecord[];
 }
@@ -711,13 +714,13 @@ export function AdminProvidersTab({
         )}
       </Card>
 
-      {/* Web Search (Discovery & Research) */}
+      {/* Web Search & Enrichment Keys */}
       <Card
-        title="Web Search (Prospect Discovery & Live Research)"
+        title="Web Search & Enrichment Keys (Optional — Keyless Backup Always Active)"
         sub="Decoupled from paid Gemini grounding so discovery & research run across EVERY LLM provider at $0."
         actions={
           <Badge tone="ok">
-            {data?.builtInSearchStatus || "Built-in Keyless Fallback: Ready ($0 Forever)"}
+            {data?.builtInSearchStatus || "Built-in Keyless Fallback: DuckDuckGo + OpenStreetMap + DNS MX Ready"}
           </Badge>
         }
       >
@@ -726,8 +729,7 @@ export function AdminProvidersTab({
             <div className="row" style={{ gap: 6, flexWrap: "wrap" }}>
               <Globe size={14} />
               <span>
-                <strong>Built-in Keyless Fallback is always active</strong> (DuckDuckGo Search + OpenStreetMap Overpass local business lookup + parallel live site inspection). Optionally add a free{" "}
-                <strong>Tavily</strong> (1,000/mo free, no card), <strong>Brave</strong>, or <strong>Serper</strong> key for faster &amp; richer SERP snippets.
+                <strong>Smart Zero-Cost Priority:</strong> OpenStreetMap (0 credits) + plain HTML inspection run first. Monthly-refilling search keys (<strong>Exa</strong>, <strong>Tavily</strong>, <strong>Firecrawl</strong>) run before reserve keys (<strong>Serper</strong>) and keyless fallbacks (<strong>DuckDuckGo</strong>, <strong>Jina Reader</strong>, <strong>PageSpeed Insights</strong>).
               </span>
             </div>
           </Banner>
@@ -869,7 +871,7 @@ export function AdminProvidersTab({
                     autoComplete="off"
                     value={searchApiKeyInput}
                     onChange={(e) => setSearchApiKeyInput(e.target.value)}
-                    placeholder="tvly-... / BSA... / Serper key"
+                    placeholder="tvly-... / exa-... / fc-... / jina_..."
                   />
                 </Field>
               </div>
@@ -884,6 +886,117 @@ export function AdminProvidersTab({
             </form>
           )}
         </div>
+      </Card>
+
+      {/* Search & Enrichment Quota Monitor */}
+      <Card
+        title="Search & Enrichment Quota Monitor"
+        sub="7-day search & 14-day site caches stretch free tiers 5–10x. Providers at ≥ 95% auto-skip until reset."
+        actions={
+          <Badge tone="ok">
+            Cache Hits Saved: {data?.totalCacheHitsSaved ?? 0}
+          </Badge>
+        }
+      >
+        {(data?.searchQuotas ?? []).length === 0 ? (
+          <Empty title="No quota counters recorded yet">
+            <p className="tiny muted">Run a prospect discovery or Growth Advisor research stage to view live usage.</p>
+          </Empty>
+        ) : (
+          <div className="grid grid-2" style={{ gap: 10 }}>
+            {(data?.searchQuotas ?? []).map((q) => {
+              const cycleLabel =
+                q.resetCycle === "monthly"
+                  ? "Monthly"
+                  : q.resetCycle === "daily"
+                    ? "Daily"
+                    : q.resetCycle === "one_time"
+                      ? "One-Time"
+                      : "Keyless";
+              const pct =
+                q.quotaLimit > 0 ? Math.min(100, Math.round((q.usedCount / q.quotaLimit) * 100)) : 0;
+              return (
+                <div
+                  key={q.provider}
+                  style={{
+                    padding: 12,
+                    borderRadius: 10,
+                    border: "1px solid var(--line)",
+                    background: "var(--surface)",
+                  }}
+                >
+                  <div className="row" style={{ justifyContent: "space-between", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                    <div className="row" style={{ gap: 6, alignItems: "center" }}>
+                      <span className="strong tiny">{q.label}</span>
+                      <Badge>{cycleLabel}</Badge>
+                    </div>
+                    <Badge
+                      tone={
+                        q.status === "exhausted"
+                          ? "bad"
+                          : q.status === "near_limit"
+                            ? "warn"
+                            : q.status === "keyless"
+                              ? "info"
+                              : "ok"
+                      }
+                    >
+                      {q.status === "exhausted"
+                        ? "Exhausted — Auto-Skipped"
+                        : q.status === "near_limit"
+                          ? "Near Limit"
+                          : q.status === "keyless"
+                            ? "Keyless Always On"
+                            : "Healthy"}
+                    </Badge>
+                  </div>
+
+                  {q.quotaLimit > 0 ? (
+                    <div style={{ marginTop: 8 }}>
+                      <div className="row tiny muted" style={{ justifyContent: "space-between" }}>
+                        <span>{q.usedCount} / {q.quotaLimit} used</span>
+                        <span>{pct}%</span>
+                      </div>
+                      <div style={{ height: 5, borderRadius: 4, background: "var(--line)", overflow: "hidden", marginTop: 3 }}>
+                        <div
+                          style={{
+                            height: "100%",
+                            width: `${pct}%`,
+                            background: q.status === "exhausted" ? "#dc2626" : q.status === "near_limit" ? "#d97706" : "var(--teal-deep, #0f766e)",
+                          }}
+                        />
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="tiny muted" style={{ marginTop: 6 }}>
+                      {q.usedCount} free requests served ($0 credit cost)
+                    </div>
+                  )}
+
+                  {isSuper && q.usedCount > 0 && (
+                    <div className="row" style={{ justifyContent: "flex-end", marginTop: 8 }}>
+                      <button
+                        type="button"
+                        className="btn btn-sm"
+                        disabled={busy !== null}
+                        onClick={() =>
+                          void mutateGateway(
+                            `Reset ${q.label} counter`,
+                            { action: "reset_search_quota", provider: q.provider },
+                            `reset_quota_${q.provider}`,
+                          )
+                        }
+                      >
+                        <RotateCcw size={11} />
+                        Reset Counter
+                      </button>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
       </Card>
 
       {/* Live Execution Receipts Log */}

@@ -64,6 +64,9 @@ export type Database = {
       user_ai_settings: LooseTable;
       user_ai_keys: LooseTable;
       ai_execution_logs: LooseTable;
+      search_enrichment_cache: LooseTable;
+      search_provider_quotas: LooseTable;
+      growth_execute_runs: LooseTable;
     };
     views: Record<string, unknown>;
     functions: Record<string, unknown>;

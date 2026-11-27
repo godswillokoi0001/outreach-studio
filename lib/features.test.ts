@@ -47,9 +47,25 @@ import {
   discoverProspectsServer,
 } from "./intelligence";
 import {
+  clearGrowthRunStoreForTests,
+  executeGrowthStageDiscover,
+  executeGrowthStageInspect,
+  executeGrowthStageScoreAndBuild,
+  executeGrowthStageStrategy,
+} from "./growth-advisor-server";
+import { getRegionalComplianceGuidance } from "./compliance/regionalRules";
+import { classifyEmailType, clearEmailMxCacheForTests, verifyEmailDeliverability } from "./search/emailVerify";
+import {
+  clearSearchCacheAndQuotasForTests,
+  getSearchQuotaMonitorSnapshot,
+  resetSearchProviderQuota,
+} from "./search/quotaAndCache";
+import { inspectProspectWebsite } from "./search/siteInspector";
+import {
   parseDuckDuckGoHtml,
   WebSearchService,
 } from "./search/webSearch";
+import { DEFAULT_SETTINGS } from "./types";
 import type { AdminAiKeyRecord, AdminAiSettings, UserAiKeyRecord } from "./llm/types";
 import { DEFAULT_ONBOARDING_ANSWERS } from "./onboarding";
 import { requireAdmin } from "./platform/admin-auth";
@@ -2334,4 +2350,382 @@ test("getUserAiSettings resolves a default for a new account without hanging", a
   assert.equal(settings.mode, "system_auto");
   assert.equal(settings.activeKeyId, null);
   resetGatewayCachesForTests();
+});
+
+// ---------------------------------------------------------------------------
+// Next-Level Growth Advisor 4-Stage Pipeline + $0 Cache/Quota/MX/Jina Tests
+// ---------------------------------------------------------------------------
+
+test("Staged Growth Advisor runs Stages 1->4 cleanly without Google grounding and blocks hallucinated emails", async () => {
+  const prevFetch = globalThis.fetch;
+  let groqCalls = 0;
+
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = typeof input === "string" ? input : input.toString();
+
+    if (url.includes("api.tavily.com/search")) {
+      return new Response(
+        JSON.stringify({
+          results: [
+            {
+              title: "Austin Smiles Dental",
+              url: "https://austinsmiles.example.com",
+              content: "Family dentist in North Austin, TX",
+            },
+            {
+              title: "SPA Blank Dental Studio",
+              url: "https://spadental.example.com",
+              content: "Modern cosmetic clinic in Austin, TX",
+            },
+            {
+              title: "Already Contacted Dental",
+              url: "https://existing.example.com",
+              content: "Existing dental office",
+            },
+          ],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }
+
+    if (url.includes("austinsmiles.example.com")) {
+      return new Response(
+        `<html><head><title>Austin Smiles Dental</title></head><body><h1>Austin Smiles Dental</h1><a href="mailto:hello@austinsmiles.example.com">Contact</a><p>Serving Austin families since 2019.</p></body></html>`,
+        { status: 200, headers: { "Content-Type": "text/html" } },
+      );
+    }
+
+    // SPA page with <250 chars triggers Jina Reader keyless fallback
+    if (url.startsWith("https://spadental.example.com")) {
+      return new Response(`<html><head><title>SPA Dental</title></head><body><div id="root"></div></body></html>`, {
+        status: 200,
+        headers: { "Content-Type": "text/html" },
+      });
+    }
+    if (url.startsWith("https://r.jina.ai/https://spadental.example.com")) {
+      return new Response(
+        "SPA Blank Dental Studio - Cosmetic and Implant Dentistry in Austin, TX. Reach our patient care coordinator at dr.patel@spadental.example.com for consultation bookings and dental smile makeovers.",
+        { status: 200, headers: { "Content-Type": "text/plain" } },
+      );
+    }
+
+    if (url.includes("existing.example.com")) {
+      return new Response(`<html><body>Already contacted</body></html>`, {
+        status: 200,
+        headers: { "Content-Type": "text/html" },
+      });
+    }
+
+    if (url.includes("api.groq.com")) {
+      groqCalls += 1;
+      const bodyStr = typeof init?.body === "string" ? init.body : "";
+      if (bodyStr.includes("STAGE 1")) {
+        return new Response(
+          JSON.stringify({
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify({
+                    offerFitDiagnosis: "Local clinics without mobile viewports lose booking conversions.",
+                    campaignName: "Austin Dental Mobile UX Sprint",
+                    targetAudience: "Practice Owners & Clinic Directors",
+                    targetLocation: "Austin, TX",
+                    targetIndustry: "Dental Clinics",
+                    messagingAngle: "Mobile booking & patient speed",
+                    hook: "Missing mobile viewport tag on booking page",
+                    subjectLine: "quick mobile site note",
+                    sampleEmailBody: "Saw your site lacks a mobile viewport tag. Want a 2-minute fix walkthrough? Reply stop to opt out.",
+                    channel: "Cold Email",
+                    schedule: { sendDays: "mon,tue,wed", windowStart: 9, windowEnd: 17, followupDays: [3, 7], dailyLimit: 20 },
+                    goal: "Book 5 clinic audits",
+                    searchQueries: ["dental clinics in Austin TX"],
+                  }),
+                },
+              },
+            ],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+
+      // STAGE 4 scoring & drafts (intentionally includes a fake email on prospect #1 to verify anti-hallucination!)
+      return new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  prospects: [
+                    {
+                      business: "SPA Blank Dental Studio",
+                      contactName: "Dr. Patel",
+                      role: "Lead Dentist",
+                      email: "dr.patel@spadental.example.com",
+                      phone: "",
+                      website: "https://spadental.example.com",
+                      location: "Austin, TX",
+                      industry: "Dental Clinics",
+                      sourceUrl: "https://spadental.example.com",
+                      buyingIntentScore: 86,
+                      buyingIntentReasoning: "Active cosmetic dentistry practice with direct doctor inbox.",
+                      signals: [{ signal: "Direct email found", strength: "strong", evidence: "dr.patel@spadental.example.com verified via Jina fallback" }],
+                      recommendedTemplateId: "T1",
+                      firstLine: "Noticed SPA Blank Dental Studio highlights cosmetic smile makeovers in Austin.",
+                      draftSubject: "smile makeover booking flow",
+                      draftBody: "Hi Dr. Patel, noticed SPA Blank Dental Studio highlights cosmetic smile makeovers in Austin. Happy to send a brief note on mobile conversions if helpful. Reply stop to opt out.",
+                    },
+                    {
+                      business: "Austin Smiles Dental",
+                      contactName: "",
+                      role: "",
+                      email: "totally.fake.invented@hallucinated-domain.org",
+                      phone: "",
+                      website: "https://austinsmiles.example.com",
+                      location: "Austin, TX",
+                      industry: "Dental Clinics",
+                      sourceUrl: "https://austinsmiles.example.com",
+                      buyingIntentScore: 72,
+                      buyingIntentReasoning: "Homepage lacks mobile viewport meta tag.",
+                      signals: [{ signal: "Missing viewport", strength: "moderate", evidence: "No mobile viewport tag in homepage HTML" }],
+                      recommendedTemplateId: "T10",
+                      firstLine: "Checked Austin Smiles Dental and spotted a missing mobile viewport meta tag.",
+                      draftSubject: "austin smiles mobile view",
+                      draftBody: "Hi team, spotted that Austin Smiles Dental is missing a mobile viewport tag. Want a 2-step fix list? Reply stop to opt out.",
+                    },
+                  ],
+                }),
+              },
+            },
+          ],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }
+
+    return new Response("", { status: 404 });
+  }) as typeof fetch;
+
+  try {
+    resetGatewayCachesForTests();
+    clearRouterStateForTests();
+    clearGrowthRunStoreForTests();
+    clearSearchCacheAndQuotasForTests();
+    clearEmailMxCacheForTests();
+
+    const now = new Date().toISOString();
+    const ownerId = "owner-ga-staged";
+    seedGatewayCachesForTests({
+      adminSettings: makeSampleAdminSettings({ masterMode: "auto", strategy: "balanced" }),
+      adminKeys: [
+        makeSampleAdminKey("adm_google_off_ga", "google", "AIzaOff", { enabled: false }),
+        makeSampleAdminKey("adm_groq_ga", "groq", "gsk_GroqStaged", {
+          models: [
+            {
+              id: "llama-3.3-70b-versatile",
+              displayName: "Llama 3.3 70B Versatile",
+              enabled: true,
+              seats: ["balanced", "fast", "smart"],
+              capabilities: { json: true, tools: true, vision: false, reasoning: false },
+            },
+          ],
+        }),
+      ],
+      searchKeys: [
+        {
+          id: "srch_tavily_ga",
+          provider: "tavily",
+          label: "Tavily GA",
+          apiKey: "tvly-ga-test",
+          maskedKey: "tvly••••test",
+          enabled: true,
+          healthStatus: "healthy",
+          createdAt: now,
+          updatedAt: now,
+        },
+      ],
+      userSettings: {
+        [ownerId]: {
+          ownerId,
+          mode: "system_auto",
+          fallbackToSystemAuto: false,
+          updatedAt: now,
+        },
+      },
+      userKeys: { [ownerId]: [] },
+    });
+
+    const profile = {
+      ...EMPTY_GROWTH_PROFILE,
+      whoYouAre: "Apex Web Studio",
+      whatYouSell: "Mobile UX & Conversion Audits",
+      industry: "Dental Clinics",
+      offer: "Free 2-minute mobile UX audit",
+      priceRange: "$2,500",
+      location: "Austin, TX",
+      idealCustomer: "Clinic Owners",
+    };
+
+    // Stage 1: Strategy & Compliance
+    const s1 = await executeGrowthStageStrategy({
+      ownerId,
+      profile,
+      knowledgeDigest: "Apex Web Studio fixes mobile conversion bottlenecks for local clinics.",
+      settings: { ...DEFAULT_SETTINGS, physical_address: "100 Congress Ave, Austin, TX" },
+    });
+    assert.ok(s1.runId.startsWith("grun_"));
+    assert.ok(s1.state.strategy?.complianceFramework.includes("CAN-SPAM"));
+    assert.ok((s1.state.strategy?.searchQueries.length ?? 0) >= 1);
+
+    // Stage 2: Discovery & Deduplication
+    const s2 = await executeGrowthStageDiscover({
+      runId: s1.runId,
+      ownerId,
+      existingWebsites: ["https://existing.example.com"],
+    });
+    assert.equal(s2.state.discovered?.duplicatesRemoved, 1);
+    assert.equal(s2.state.discovered?.candidates.length, 2);
+
+    // Stage 3: Live Site Inspection (direct HTML + Jina Reader JS fallback) + MX guard
+    const spaInspected = await inspectProspectWebsite("https://spadental.example.com", { bypassCache: true });
+    assert.equal(spaInspected?.enrichmentSource, "jina_reader");
+    assert.ok(spaInspected?.emails.includes("dr.patel@spadental.example.com"));
+
+    const s3 = await executeGrowthStageInspect({
+      runId: s1.runId,
+      ownerId,
+    });
+    assert.equal(s3.state.inspected?.reachableCount, 2);
+    assert.equal(s3.state.inspected?.verifiedEmailsCount, 2);
+
+    // Stage 4: Scoring & Anti-hallucination guard
+    const s4 = await executeGrowthStageScoreAndBuild({
+      runId: s1.runId,
+      ownerId,
+      profile,
+      knowledgeDigest: "",
+      settings: DEFAULT_SETTINGS,
+    });
+    assert.equal(groqCalls, 2);
+    assert.equal(s4.blueprint.prospects.length, 2);
+    // Ordered highest buying intent first
+    assert.equal(s4.blueprint.prospects[0].business, "SPA Blank Dental Studio");
+    assert.equal(s4.blueprint.prospects[0].buyingIntentScore, 86);
+    assert.equal(s4.blueprint.prospects[0].email, "dr.patel@spadental.example.com");
+    // Prospect #2 had invented email stripped cleanly and replaced by verified homepage email (never the hallucinated one)
+    assert.equal(s4.blueprint.prospects[1].email, "hello@austinsmiles.example.com");
+    assert.notEqual(s4.blueprint.prospects[1].email, "totally.fake.invented@hallucinated-domain.org");
+  } finally {
+    globalThis.fetch = prevFetch;
+    resetGatewayCachesForTests();
+    clearRouterStateForTests();
+    clearGrowthRunStoreForTests();
+    clearSearchCacheAndQuotasForTests();
+    clearEmailMxCacheForTests();
+  }
+});
+
+test("Search 7d cache saves credits, exhausted quotas auto-skip cleanly, and emailVerify classifies direct vs role inboxes", async () => {
+  const prevFetch = globalThis.fetch;
+  let exaAttempts = 0;
+  let tavilyCalls = 0;
+
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = typeof input === "string" ? input : input.toString();
+    if (url.includes("api.exa.ai/search")) {
+      exaAttempts += 1;
+      // Exa returns HTTP 402 credits exhausted -> auto-benched silently!
+      return new Response(JSON.stringify({ error: "Out of credits" }), { status: 402 });
+    }
+    if (url.includes("api.tavily.com/search")) {
+      tavilyCalls += 1;
+      return new Response(
+        JSON.stringify({
+          results: [
+            { title: "Oakwood Accounting", url: "https://oakwoodcpa.example.com", content: "CPA firm in Chicago" },
+          ],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }
+    return new Response("", { status: 404 });
+  }) as typeof fetch;
+
+  try {
+    resetGatewayCachesForTests();
+    clearSearchCacheAndQuotasForTests();
+    clearEmailMxCacheForTests();
+
+    const now = new Date().toISOString();
+    seedGatewayCachesForTests({
+      searchKeys: [
+        {
+          id: "srch_exa_402",
+          provider: "exa",
+          label: "Exa 402",
+          apiKey: "exa-test-402",
+          maskedKey: "exa••••402",
+          enabled: true,
+          healthStatus: "healthy",
+          createdAt: now,
+          updatedAt: now,
+        },
+        {
+          id: "srch_tavily_ok",
+          provider: "tavily",
+          label: "Tavily OK",
+          apiKey: "tvly-ok",
+          maskedKey: "tvly••••ok",
+          enabled: true,
+          healthStatus: "healthy",
+          createdAt: now,
+          updatedAt: now,
+        },
+      ],
+    });
+
+    // 1. Call #1 hits Exa (402 exhausted) -> silently fails over to Tavily
+    const r1 = await WebSearchService.search("CPA firms Chicago", { maxResults: 5 });
+    assert.equal(r1.results.length, 1);
+    assert.equal(r1.results[0].sourceProvider, "tavily");
+    assert.equal(exaAttempts, 1);
+    assert.equal(tavilyCalls, 1);
+
+    // 2. Call #2 with same query hits 7-day search cache at 0 credits (Tavily NOT called again)
+    const r2 = await WebSearchService.search("CPA firms Chicago", { maxResults: 5 });
+    assert.equal(r2.cacheHit, true);
+    assert.equal(tavilyCalls, 1);
+
+    // 3. Call #3 with NEW query skips exhausted Exa completely (exaAttempts stays 1!)
+    await WebSearchService.search("Tax advisors Boston", { maxResults: 5 });
+    assert.equal(exaAttempts, 1);
+    assert.equal(tavilyCalls, 2);
+
+    const snap = await getSearchQuotaMonitorSnapshot();
+    const exaQuota = snap.quotas.find((q) => q.provider === "exa");
+    assert.equal(exaQuota?.status, "exhausted");
+    assert.ok(snap.totalCacheHitsSaved >= 1);
+
+    const resetExa = await resetSearchProviderQuota("exa");
+    assert.equal(resetExa.status, "healthy");
+
+    // 4. Email MX & role/direct classification + Regional compliance checks
+    assert.equal(classifyEmailType("sarah.chen@oakwoodcpa.com"), "direct");
+    assert.equal(classifyEmailType("info@oakwoodcpa.com"), "role_inbox");
+    assert.equal(classifyEmailType("not-an-email"), "invalid");
+
+    const disposableCheck = await verifyEmailDeliverability("spam@mailinator.com", { skipDnsLookup: false });
+    assert.equal(disposableCheck.deliverable, false);
+    assert.equal(disposableCheck.disposable, true);
+
+    const ukRules = getRegionalComplianceGuidance({ targetLocation: "London, UK" });
+    assert.equal(ukRules.region, "UK");
+    assert.ok(ukRules.frameworkName.includes("PECR"));
+    const deRules = getRegionalComplianceGuidance({ targetLocation: "Berlin, Germany" });
+    assert.equal(deRules.region, "EU");
+  } finally {
+    globalThis.fetch = prevFetch;
+    resetGatewayCachesForTests();
+    clearSearchCacheAndQuotasForTests();
+    clearEmailMxCacheForTests();
+  }
 });

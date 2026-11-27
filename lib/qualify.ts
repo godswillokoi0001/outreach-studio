@@ -2,6 +2,7 @@ import { Type, type Schema } from "@google/genai";
 import { buildOrchestratedSystemPrompt } from "./ai/orchestrator";
 import { getActiveOwnerAiContext } from "./ai/context";
 import { LLMGateway } from "./llm/gateway";
+import { verifyEmailDeliverability } from "./search/emailVerify";
 import type { CampaignConfig, Lead, QualificationResult, ResearchResult } from "./types";
 
 const SCHEMA: Schema = {
@@ -89,10 +90,15 @@ Opportunities: ${research.opportunities.map((o) => `${o.opportunity} -> ${o.serv
 Recommended angle: ${research.recommended_angle}`
     : "RESEARCH: none yet.";
 
+  const emailCheck = lead.email ? await verifyEmailDeliverability(lead.email).catch(() => null) : null;
+  const emailBlock = emailCheck
+    ? `Email Verification: mxVerified=${emailCheck.mxVerified}, emailType=${emailCheck.emailType}${emailCheck.reason ? ` (${emailCheck.reason})` : ""}`
+    : "Email Verification: none";
+
   const user = `PROSPECT
 Business: ${lead.business ?? "(unknown)"}
 Contact: ${lead.contact_name ?? "(unknown)"} ${lead.role ?? ""}
-Email: ${lead.email ?? "(none)"}
+Email: ${lead.email ?? "(none)"} (${emailBlock})
 Website: ${lead.website ?? "(none known)"}
 Location: ${lead.location ?? "(unknown)"}
 Industry: ${lead.industry ?? "(unknown)"}
@@ -112,7 +118,7 @@ The campaign minimum score is ${minScore}. Always return an honest score; never 
   const ownerId = options?.ownerId ?? lead.ownerId ?? getActiveOwnerAiContext()?.ownerId ?? "anonymous";
   const { data: raw } = await LLMGateway.completeJSON<QualificationResult>({
     ownerId,
-    taskType: "smart",
+    taskType: "balanced",
     feature: "qualify",
     systemPrompt: orchestrated.system,
     messages: [{ role: "user", content: user }],
