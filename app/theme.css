@@ -772,6 +772,11 @@ button.nav-link {
 .check input {
   accent-color: var(--color-navy);
 }
+/* Standalone checkboxes/radios outside a .check label (admin panels, forms). */
+input[type="checkbox"],
+input[type="radio"] {
+  accent-color: var(--color-navy);
+}
 
 /* ---------------------------------------------------------------------------
    Tables

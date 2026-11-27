@@ -415,6 +415,7 @@ export function AdminProvidersTab({
               hint={STRATEGY_DESCRIPTIONS[strategyDraft].desc}
             >
               <select
+                className="select"
                 value={strategyDraft}
                 disabled={!isSuper || busy !== null}
                 onChange={(e) => setStrategyDraft(e.target.value as RoutingStrategy)}
@@ -775,6 +776,7 @@ export function AdminProvidersTab({
           <div className="grid grid-2" style={{ gap: 10 }}>
             <Field label="Provider">
               <select
+                className="select"
                 value={newProvider}
                 onChange={(e) => {
                   const pid = e.target.value as GatewayProviderId;
@@ -798,6 +800,7 @@ export function AdminProvidersTab({
 
             <Field label="Key Label (optional)" hint="e.g. Google Key #2 or NVIDIA NIM Free">
               <input
+                className="input"
                 type="text"
                 value={newLabel}
                 onChange={(e) => setNewLabel(e.target.value)}
@@ -811,6 +814,7 @@ export function AdminProvidersTab({
             hint={`Encrypted with AES-256-GCM before storage. Get a key at ${selectedProviderMeta.docsLabel}.`}
           >
             <input
+              className="input"
               type="password"
               required
               autoComplete="off"
@@ -823,6 +827,7 @@ export function AdminProvidersTab({
           {selectedProviderMeta.requiresAccountId && (
             <Field label="Cloudflare Account ID" hint="Required for Workers AI (/accounts/<id>/ai/v1).">
               <input
+                className="input"
                 type="text"
                 required
                 value={newAccountId}
@@ -835,6 +840,7 @@ export function AdminProvidersTab({
           {(selectedProviderMeta.requiresBaseUrl || newProvider === "zai" || newProvider === "custom") && (
             <Field label="API Base URL" hint="Public https:// endpoint URL.">
               <input
+                className="input"
                 type="url"
                 required={Boolean(selectedProviderMeta.requiresBaseUrl)}
                 value={newBaseUrl}
@@ -847,6 +853,7 @@ export function AdminProvidersTab({
           <div className="grid grid-2" style={{ gap: 10 }}>
             <Field label="RPM Limit (Requests / Min)" hint="Router steers away proactively at 85%.">
               <input
+                className="input"
                 type="number"
                 min={1}
                 max={10000}
@@ -856,6 +863,7 @@ export function AdminProvidersTab({
             </Field>
             <Field label="RPD Limit (Requests / Day)">
               <input
+                className="input"
                 type="number"
                 min={1}
                 max={1000000}
@@ -936,6 +944,7 @@ export function AdminProvidersTab({
             <div className="grid grid-2" style={{ gap: 10 }}>
               <Field label="Label">
                 <input
+                  className="input"
                   type="text"
                   value={editLabel}
                   onChange={(e) => setEditLabel(e.target.value)}
@@ -944,6 +953,7 @@ export function AdminProvidersTab({
               <div className="grid grid-2" style={{ gap: 8 }}>
                 <Field label="RPM Limit">
                   <input
+                    className="input"
                     type="number"
                     min={1}
                     max={10000}
@@ -953,6 +963,7 @@ export function AdminProvidersTab({
                 </Field>
                 <Field label="RPD Limit">
                   <input
+                    className="input"
                     type="number"
                     min={1}
                     max={1000000}

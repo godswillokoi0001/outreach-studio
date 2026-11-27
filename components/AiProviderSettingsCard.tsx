@@ -424,6 +424,7 @@ export function AiProviderSettingsCard() {
 
                     <div className="row" style={{ gap: 8, flexWrap: "wrap", alignItems: "center" }}>
                       <select
+                        className="select"
                         aria-label={`Model for ${meta.label}`}
                         value={currentModelForKey}
                         disabled={busy !== null}
@@ -546,6 +547,7 @@ export function AiProviderSettingsCard() {
           <div className="grid grid-2" style={{ gap: 10 }}>
             <Field label="AI Provider">
               <select
+                className="select"
                 value={provider}
                 onChange={(e) => {
                   const val = e.target.value as GatewayProviderId | "auto";
@@ -574,6 +576,7 @@ export function AiProviderSettingsCard() {
 
             <Field label="API Key" hint="Encrypted on server with AES-256-GCM. Never exposed back to the browser.">
               <input
+                className="input"
                 type="password"
                 autoComplete="off"
                 value={apiKeyInput}
@@ -586,6 +589,7 @@ export function AiProviderSettingsCard() {
           {provider === "cloudflare" && (
             <Field label="Cloudflare Account ID" hint="Required by Cloudflare Workers AI.">
               <input
+                className="input"
                 type="text"
                 value={accountIdInput}
                 onChange={(e) => setAccountIdInput(e.target.value)}
@@ -597,6 +601,7 @@ export function AiProviderSettingsCard() {
           {(provider === "custom" || provider === "zai") && (
             <Field label="API Base URL" hint="Public https:// endpoint URL.">
               <input
+                className="input"
                 type="url"
                 value={baseUrlInput}
                 onChange={(e) => setBaseUrlInput(e.target.value)}
@@ -643,6 +648,7 @@ export function AiProviderSettingsCard() {
             <div className="grid grid-2" style={{ gap: 10 }}>
               <Field label="Exact Model">
                 <select
+                  className="select"
                   value={selectedModelInput}
                   onChange={(e) => setSelectedModelInput(e.target.value)}
                 >
@@ -655,6 +661,7 @@ export function AiProviderSettingsCard() {
               </Field>
               <Field label="Or Custom Model ID (optional)">
                 <input
+                  className="input"
                   type="text"
                   value={customModelInput}
                   onChange={(e) => setCustomModelInput(e.target.value)}
