@@ -7,7 +7,7 @@ export const ADMIN_SESSION_COOKIE = "os_admin_session";
 export const ADMIN_REAUTH_COOKIE = "os_admin_reauth";
 
 export const ADMIN_CHALLENGE_TTL_SECONDS = 10 * 60; // 10 minutes to finish TOTP
-export const ADMIN_SESSION_TTL_SECONDS = 30 * 60; // 30 minutes strict/sliding session
+export const ADMIN_SESSION_TTL_SECONDS = 30 * 24 * 60 * 60; // 30 days sliding session
 export const ADMIN_REAUTH_TTL_SECONDS = 5 * 60; // 5 minutes for sensitive actions
 
 export interface AdminCookiePayload {

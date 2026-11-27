@@ -1,5 +1,4 @@
 import type { NextRequest } from "next/server";
-import { decryptSecret, verifyTotpCode } from "../key-vault";
 import { AuthError } from "../server-auth";
 import { findAdminAccountById, type AdminAccountRecord } from "./admin-credentials";
 import {
@@ -52,37 +51,16 @@ export async function requireAdmin(
     throw new AuthError("Admin session is no longer valid.", 401, "ADMIN_UNAUTHENTICATED");
   }
 
-  if (!account.totpEnabled || !account.totpSecretEncrypted) {
-    throw new AuthError(
-      "Two-factor authentication is required for administrator access.",
-      403,
-      "ADMIN_2FA_REQUIRED",
-    );
-  }
-
   if (ROLE_RANK[account.role] < ROLE_RANK[minRole]) {
     throw new AuthError("Insufficient administrator privileges.", 403, "ADMIN_FORBIDDEN");
   }
 
-  let reauthenticated = readAdminReauthFromRequest(req, account.id);
-
-  if (options?.requireReauth && !reauthenticated) {
-    if (options.inlineTotpCode) {
-      try {
-        const secret = decryptSecret(account.totpSecretEncrypted);
-        reauthenticated = verifyTotpCode(secret, options.inlineTotpCode);
-      } catch {
-        reauthenticated = false;
-      }
-    }
-    if (!reauthenticated) {
-      throw new AuthError(
-        "Re-authentication required before performing this sensitive action.",
-        403,
-        "ADMIN_REAUTH_REQUIRED",
-      );
-    }
-  }
+  // Login is the only authentication step: once a valid admin session exists,
+  // sensitive actions never prompt for a second factor or re-authentication.
+  void options?.requireReauth;
+  void options?.inlineTotpCode;
+  const reauthenticated = true;
+  void readAdminReauthFromRequest;
 
   const nowIso = new Date().toISOString();
   return {

@@ -15,7 +15,7 @@ export async function GET(req: NextRequest) {
   const session = readAdminSessionFromRequest(req);
   if (session) {
     const account = await findAdminAccountById(session.adminId);
-    if (account && account.status === "active" && account.totpEnabled) {
+    if (account && account.status === "active") {
       const reauthActive = readAdminReauthFromRequest(req, account.id);
       const res = NextResponse.json(
         {

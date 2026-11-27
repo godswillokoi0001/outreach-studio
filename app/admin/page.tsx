@@ -221,7 +221,7 @@ export default function AdminPage() {
           </Badge>
           <Badge tone="info">
             <Lock size={11} style={{ marginRight: 4 }} />
-            2FA Active
+            Session Active
           </Badge>
 
           <ThemeToggle compact />

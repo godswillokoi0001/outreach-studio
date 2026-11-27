@@ -20,6 +20,7 @@ const PLATFORM_LLM_OWNER = "__platform_llm__";
 const DOC_ADMIN_SETTINGS = "system_llm_admin_settings";
 const DOC_ADMIN_KEYS = "system_llm_admin_keys";
 const DOC_EXEC_LOGS = "system_llm_exec_logs";
+const DOC_ADMIN_DELETED_KEYS = "system_llm_admin_deleted_keys";
 
 const CACHE_TTL_MS = 15_000;
 
@@ -230,6 +231,27 @@ function mapSqlAdminKeyRow(r: Record<string, unknown>): AdminAiKeyRecord {
   };
 }
 
+async function readDeletedAdminKeyIds(): Promise<Set<string>> {
+  const stored = await readKnowledgeDoc<{ ids?: string[] } | string[]>(
+    PLATFORM_LLM_OWNER,
+    DOC_ADMIN_DELETED_KEYS,
+  );
+  const ids = Array.isArray(stored) ? stored : Array.isArray(stored?.ids) ? stored.ids : [];
+  return new Set(ids.filter((x): x is string => typeof x === "string" && Boolean(x)));
+}
+
+async function rememberDeletedAdminKeyId(id: string): Promise<void> {
+  const ids = await readDeletedAdminKeyIds();
+  ids.add(id);
+  await writeKnowledgeDoc(
+    PLATFORM_LLM_OWNER,
+    DOC_ADMIN_DELETED_KEYS,
+    "system_llm_gateway",
+    "Deleted Admin Gateway Keys",
+    { ids: [...ids] },
+  );
+}
+
 async function readLegacyPlatformKeys(): Promise<AdminAiKeyRecord[]> {
   if (!supabaseServer) return [];
   const legacy = await readKnowledgeDoc<{
@@ -354,7 +376,9 @@ export async function listAdminAiKeys(): Promise<AdminAiKeyRecord[]> {
   }
 
   if (list.length === 0) {
-    list = await readLegacyPlatformKeys();
+    // Legacy/env auto-bootstrap must never resurrect a key the admin deleted.
+    const deletedIds = await readDeletedAdminKeyIds();
+    list = (await readLegacyPlatformKeys()).filter((k) => !deletedIds.has(k.id));
     for (const k of list) {
       await upsertAdminAiKeyRaw(k, !error);
     }
@@ -414,10 +438,10 @@ export async function saveAdminAiKey(rec: AdminAiKeyRecord): Promise<AdminAiKeyR
 }
 
 export async function deleteAdminAiKey(id: string): Promise<void> {
-  if (!supabaseServer) return;
-  const { error } = await supabaseServer.from("admin_ai_keys").delete().eq("id", id);
-  if (error) {
-    const existing = (await readKnowledgeDoc<AdminAiKeyRecord[]>(PLATFORM_LLM_OWNER, DOC_ADMIN_KEYS)) ?? [];
+  await rememberDeletedAdminKeyId(id);
+
+  const existing = (await readKnowledgeDoc<AdminAiKeyRecord[]>(PLATFORM_LLM_OWNER, DOC_ADMIN_KEYS)) ?? [];
+  if (existing.some((x) => x.id === id)) {
     await writeKnowledgeDoc(
       PLATFORM_LLM_OWNER,
       DOC_ADMIN_KEYS,
@@ -426,7 +450,24 @@ export async function deleteAdminAiKey(id: string): Promise<void> {
       existing.filter((x) => x.id !== id),
     );
   }
+
   invalidateAdminAiCaches();
+  if (!supabaseServer) return;
+
+  const { error } = await supabaseServer.from("admin_ai_keys").delete().eq("id", id);
+  if (error) {
+    throw new Error(`Pooled key could not be deleted: ${error.message}`);
+  }
+
+  // Never report success when the row survived the delete.
+  const { data: still } = await supabaseServer
+    .from("admin_ai_keys")
+    .select("id")
+    .eq("id", id)
+    .maybeSingle();
+  if (still) {
+    throw new Error("Pooled key could not be deleted. Please try again.");
+  }
 }
 
 export async function persistAdminKeyHealth(
