@@ -32,6 +32,8 @@ interface EmailRewriteWorkspaceProps {
   selectedIds: string[];
   preflightTrigger?: { scope: RewriteScope; selectedIds?: string[]; nonce: number } | null;
   onAcceptedChanges: () => Promise<void> | void;
+  /** Saves the accepted rewrite and moves the email to "Approved, ready to send". */
+  onApproveMessage?: (messageId: string) => Promise<void> | void;
 }
 
 type StatusFilter = "all" | "rewritten" | "accepted" | "needs_attention" | "failed";
@@ -40,6 +42,7 @@ export function EmailRewriteWorkspace({
   selectedIds,
   preflightTrigger,
   onAcceptedChanges,
+  onApproveMessage,
 }: EmailRewriteWorkspaceProps) {
   const toast = useToast();
 
@@ -196,7 +199,7 @@ export function EmailRewriteWorkspace({
       instruction?: string;
       versionId?: string;
     },
-  ) => {
+  ): Promise<boolean> => {
     setBusyAction(`${action}:${payload?.messageId ?? "bulk"}`);
     setError(null);
     try {
@@ -223,8 +226,10 @@ export function EmailRewriteWorkspace({
         setHistoryOpen(false);
         toast.success("Version restored");
       }
+      return true;
     } catch (err) {
       setError(errorMessage(err));
+      return false;
     } finally {
       setBusyAction(null);
     }
@@ -258,6 +263,31 @@ export function EmailRewriteWorkspace({
 
   const activeRunning = job && (job.status === "running" || job.status === "queued");
   const showPanel = Boolean(activeRunning || items.length > 0 || workspace?.pausedForQuota);
+
+  /**
+   * "Accept" used to leave the user unsure whether anything was saved. These
+   * two explicit actions either save + approve (moves to Ready to Send) or save
+   * the rewrite and keep it awaiting approval.
+   */
+  const acceptRewrite = async (opts: { approve: boolean }) => {
+    if (!activeItem) return;
+    const ok = await runItemAction("accept", {
+      messageId: activeItem.messageId,
+      subject: editing ? editSubject : activeItem.rewrittenSubject,
+      body: editing ? editBody : activeItem.rewrittenBody,
+    });
+    if (!ok) return;
+    setEditing(false);
+    if (!opts.approve) {
+      toast.success("Saved as draft", "It stays under Awaiting approval.");
+      return;
+    }
+    if (onApproveMessage) {
+      await onApproveMessage(activeItem.messageId);
+    } else {
+      toast.success("Rewrite saved");
+    }
+  };
 
   return (
     <>
@@ -582,16 +612,26 @@ export function EmailRewriteWorkspace({
                           activeItem.status === "pending" ||
                           (activeItem.status === "needs_attention" && !activeItem.check?.passed)
                         }
-                        onClick={() =>
-                          void runItemAction("accept", {
-                            messageId: activeItem.messageId,
-                            subject: editing ? editSubject : activeItem.rewrittenSubject,
-                            body: editing ? editBody : activeItem.rewrittenBody,
-                          })
-                        }
+                        onClick={() => void acceptRewrite({ approve: true })}
+                        title="Saves the rewrite and moves it to Approved, ready to send"
                       >
                         <Check size={12} />
-                        {activeItem.status === "accepted" ? "Accepted" : "Accept"}
+                        {busyAction === `accept:${activeItem.messageId}`
+                          ? "Saving…"
+                          : "Save & Approve (Ready to Send)"}
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn-sm"
+                        disabled={
+                          busyAction !== null ||
+                          activeItem.status === "pending" ||
+                          (activeItem.status === "needs_attention" && !activeItem.check?.passed)
+                        }
+                        onClick={() => void acceptRewrite({ approve: false })}
+                        title="Saves the rewrite and keeps it in Awaiting approval"
+                      >
+                        Save Draft Only
                       </button>
                       <button
                         type="button"
@@ -639,7 +679,7 @@ export function EmailRewriteWorkspace({
                     </button>
                   </div>
 
-                  {/* Side-by-side Original vs Rewritten */}
+                  {/* Rewritten email, with the original diff tucked away */}
                   <div className="grid grid-2" style={{ gap: 12 }}>
                     <div
                       style={{

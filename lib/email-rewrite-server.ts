@@ -1,6 +1,7 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { Type, type Schema } from "@google/genai";
 import { buildOrchestratedSystemPrompt, stripUnresolvedPlaceholders } from "./ai/orchestrator";
+import { normalizeEmailGreeting } from "./outreach-utils";
 import {
   advanceBackgroundJobStep,
   completeBackgroundJob,
@@ -35,7 +36,11 @@ import type { OnboardingState, StructuredKnowledgeBase } from "./onboarding";
 import { supabaseServer } from "./supabase-server";
 import type { Campaign, EmailOpen, Lead, Message, Reply, Settings } from "./types";
 
-const MAX_SELF_CHECK_ATTEMPTS = 3;
+/**
+ * One draft plus at most one corrective pass. Every attempt is a single fast
+ * LLM call now that quality checks are deterministic.
+ */
+const MAX_SELF_CHECK_ATTEMPTS = 2;
 export const REWRITE_JOB_STALL_MS = 90_000;
 
 export interface RewriteOwnerSnapshot {
@@ -659,16 +664,6 @@ const ANALYSIS_AND_WRITE_SCHEMA: Schema = {
   required: ["analysis", "subject", "subjectOptions", "body"],
 };
 
-const SELF_CHECK_LLM_SCHEMA: Schema = {
-  type: Type.OBJECT,
-  properties: {
-    kbGroundedOnly: { type: Type.BOOLEAN },
-    matchesBrandVoice: { type: Type.BOOLEAN },
-    issues: { type: Type.ARRAY, items: { type: Type.STRING } },
-  },
-  required: ["kbGroundedOnly", "matchesBrandVoice", "issues"],
-};
-
 function buildLeadDossier(input: {
   lead: Lead;
   messages: Message[];
@@ -869,7 +864,11 @@ Step 2: Write a tailored subject (plus 2-3 subjectOptions) and complete human em
     });
 
     candidateSubject = stripUnresolvedPlaceholders(String(generated.subject ?? "")).split("\n")[0].trim();
-    candidateBody = stripUnresolvedPlaceholders(String(generated.body ?? ""));
+    candidateBody = normalizeEmailGreeting(
+      stripUnresolvedPlaceholders(String(generated.body ?? "")),
+      lead.contact_name,
+      lead.role,
+    );
     subjectOptions = Array.from(
       new Set(
         [
@@ -932,7 +931,7 @@ Step 2: Write a tailored subject (plus 2-3 subjectOptions) and complete human em
       },
     };
 
-    await input.onProgressStep?.(`Self-checking ${lead.business ?? lead.email ?? "lead"} (${attempt}/${MAX_SELF_CHECK_ATTEMPTS})`);
+    await input.onProgressStep?.(`Checking ${lead.business ?? lead.email ?? "lead"} (${attempt}/${MAX_SELF_CHECK_ATTEMPTS})`);
 
     const detAudit = runDeterministicRewriteAudit({
       subject: candidateSubject,
@@ -945,42 +944,16 @@ Step 2: Write a tailored subject (plus 2-3 subjectOptions) and complete human em
       otherLeadBusinesses,
       sampleEmails: kb.sampleEmails,
       includeOptOutFooter: snap.settings.include_opt_out_footer === true,
+      groundingText: `${kb.groundedKbDossier}\n${dossier}`,
     });
 
-    const { data: llmCheck } = await LLMGateway.completeJSON<{
-      kbGroundedOnly?: boolean;
-      matchesBrandVoice?: boolean;
-      issues?: unknown[];
-    }>({
-      ownerId,
-      taskType: "fast",
-      feature: "email_rewrite_check",
-      systemPrompt:
-        "You are an uncompromising verification auditor. Verify that EVERY claim, offer, price, testimonial, or hook in the rewritten email comes strictly from the Knowledge Base or Lead Verified Record, matches brand voice, and fabricates nothing.",
-      messages: [
-        {
-          role: "user",
-          content: `KNOWLEDGE BASE:\n${kb.groundedKbDossier.slice(0, 2_500)}\n\n${dossier.slice(0, 1_800)}\n\nREWRITTEN SUBJECT: ${candidateSubject}\nREWRITTEN BODY:\n${candidateBody}\n\nReturn JSON judging kbGroundedOnly, matchesBrandVoice, and exact issues[].`,
-        },
-      ],
-      schema: SELF_CHECK_LLM_SCHEMA,
-      maxTokens: 700,
-    });
+    // Quality is judged deterministically (zero extra LLM calls). Each rewrite
+    // used to cost 2 calls per attempt and up to 6 calls per email, which is
+    // what burned the free quota and slowed every email to 20-40s.
+    const kbGroundedOnly = detAudit.noPlaceholdersOrWrongNames;
+    const matchesBrandVoice = detAudit.clearCtaAndLengthFit;
 
-    const llmIssues = Array.isArray(llmCheck.issues)
-      ? llmCheck.issues.map((i) => String(i).trim()).filter(Boolean)
-      : [];
-    const kbGroundedOnly = llmCheck.kbGroundedOnly === true;
-    const matchesBrandVoice = llmCheck.matchesBrandVoice === true;
-
-    lastCheckIssues = Array.from(
-      new Set([
-        ...detAudit.issues,
-        ...(!kbGroundedOnly ? ["Email contains claim, offer, proof, or hook missing from Knowledge Base or verified research."] : []),
-        ...(!matchesBrandVoice ? ["Tone/voice drifts from Knowledge Base brand voice guidelines."] : []),
-        ...llmIssues,
-      ]),
-    );
+    lastCheckIssues = Array.from(new Set(detAudit.issues));
 
     criteriaPassed = {
       kbGroundedOnly,

@@ -16,6 +16,7 @@ import {
   recordCandidateFailure,
   recordCandidateSuccess,
   recordKeyUsageHit,
+  getSoonestCooldownRemainingMs,
 } from "./router";
 import { WebSearchService } from "../search/webSearch";
 import {
@@ -36,6 +37,7 @@ import {
 } from "./types";
 
 const AUTO_WALL_BUDGET_MS = 42_000;
+const MAX_TRANSIENT_COOLDOWN_MS = 120_000;
 
 export class LLMGatewayError extends Error {
   status: number;
@@ -136,12 +138,18 @@ async function runPooledAutoFailover<T>(input: {
   });
 
   if (ranked.length === 0) {
+    // A short RPM/TPM cooldown is not an outage: answer once with the exact
+    // wait instead of letting the caller retry into a burst of failures.
+    const soonestMs = adminKeys.length > 0 ? getSoonestCooldownRemainingMs() : null;
+    const shortWait = soonestMs !== null && soonestMs <= MAX_TRANSIENT_COOLDOWN_MS;
     const errMsg =
       adminKeys.length === 0
         ? "No platform AI provider keys are configured yet. Ask an administrator to add free-tier or paid keys in Admin → AI Engine, or add your own key in Settings."
-        : input.req.tools && input.req.tools.length > 0
-          ? "No tool-capable AI model with sufficient context capacity is currently available. Enable Google Gemini Flash, Groq Llama 3.3 70B, NVIDIA NIM, or reset cooldowns in Admin."
-          : "All pooled AI provider keys are currently cooling down or at capacity limits. Try again shortly or use your own API key in Settings.";
+        : shortWait
+          ? `Free AI rate limit resets in ~${Math.max(1, Math.ceil((soonestMs ?? 0) / 1000))}s — retrying shortly.`
+          : input.req.tools && input.req.tools.length > 0
+            ? "No tool-capable AI model with sufficient context capacity is currently available. Enable Google Gemini Flash, Groq Llama 3.3 70B, NVIDIA NIM, or reset cooldowns in Admin."
+            : "All pooled AI provider keys are currently cooling down or at capacity limits. Try again shortly or use your own API key in Settings.";
 
     const failReceipt: GatewayReceipt = {
       ownerId: input.req.ownerId,
@@ -162,7 +170,7 @@ async function runPooledAutoFailover<T>(input: {
     void appendAiExecutionLog(failReceipt).catch(() => {});
     throw new LLMGatewayError(errMsg, {
       status: adminKeys.length === 0 ? 503 : 429,
-      code: adminKeys.length === 0 ? "NO_PLATFORM_KEYS" : "ALL_KEYS_EXHAUSTED",
+      code: adminKeys.length === 0 ? "NO_PLATFORM_KEYS" : shortWait ? "RATE_LIMIT_RESETS_SHORTLY" : "ALL_KEYS_EXHAUSTED",
       receipt: failReceipt,
     });
   }

@@ -48,6 +48,12 @@ import {
   isSearchProviderSelectable,
 } from "./search/providerStatus";
 import { SEARCH_PROVIDER_CATALOG, type AiExecutionLogRecord } from "./llm/types";
+import { normalizeSearchProviderId } from "./llm/types";
+import { readFileSync } from "node:fs";
+import { composeInitialServer, validateEmailQuality } from "./compose";
+import { isUsableContactName, normalizeEmailGreeting } from "./outreach-utils";
+import { hasSendableEmail, MAX_REWRITE_BATCH, prospectDisplayName } from "./review-queue";
+import type { CampaignConfig, Lead, ResearchResult, Settings } from "./types";
 import { GatewayProviderError } from "./llm/providers";
 import {
   encryptGatewayKey,
@@ -1264,7 +1270,7 @@ test("BYOK mode switches models immediately across task seats and enforces stric
   }
 });
 
-test("Admin AUTO mode fails over silently on 429 and escalates cooldowns (2m -> 10m -> 1h -> 24h)", async () => {
+test("Admin AUTO mode fails over silently on a burst 429 without multi-hour lockouts", async () => {
   const prevFetch = globalThis.fetch;
   const hitProviders: string[] = [];
 
@@ -1343,7 +1349,11 @@ test("Admin AUTO mode fails over silently on 429 and escalates cooldowns (2m -> 
     assert.equal(res1.receipt.fallbackUsed, true);
     assert.equal(res1.receipt.fallbackHops, 1);
     assert.deepEqual(hitProviders, ["groq", "cerebras"]);
-    assert.equal(groqKey.healthStatus, "cooldown");
+    // A transient RPM 429 benches only that (key, model) pair: the key itself
+    // must stay healthy so other models on the same key keep answering.
+    assert.equal(groqKey.healthStatus, "healthy");
+    assert.equal(groqKey.cooldownUntil, null);
+    assert.equal(isCandidateCoolingDown(groqKey, groqKey.models[0].id), true);
 
     // Call #2 skips groq completely because it is now in cooldown
     hitProviders.length = 0;
@@ -1356,17 +1366,35 @@ test("Admin AUTO mode fails over silently on 429 and escalates cooldowns (2m -> 
     assert.equal(res2.receipt.actualProvider, "cerebras");
     assert.deepEqual(hitProviders, ["cerebras"]);
 
-    // Verify escalating cooldown ladder: 2m -> 10m -> 1h -> 24h
+    // A burst 429 (no daily wording) cools the pair for at most a minute, no
+    // matter how many times it repeats. This is the "5h left at RPM 0/15" bug.
     const testKey = makeSampleAdminKey("adm_ladder", "openai", "sk-LadderTest123");
-    const rateErr = new GatewayProviderError("429 busy", { status: 429, rateLimited: true });
+    const rateErr = new GatewayProviderError("429 Rate limit exceeded", { status: 429, rateLimited: true });
     const f1 = recordCandidateFailure(testKey, "m1", rateErr);
     const f2 = recordCandidateFailure(testKey, "m1", rateErr);
-    const f3 = recordCandidateFailure(testKey, "m1", rateErr);
-    const f4 = recordCandidateFailure(testKey, "m1", rateErr);
-    assert.equal(f1.cooldownMs, 2 * 60_000);
-    assert.equal(f2.cooldownMs, 10 * 60_000);
-    assert.equal(f3.cooldownMs, 60 * 60_000);
-    assert.equal(f4.cooldownMs, 24 * 60 * 60_000);
+    assert.ok(f1.cooldownMs >= 45_000 && f1.cooldownMs <= 60_000, `burst cooldown was ${f1.cooldownMs}ms`);
+    assert.ok(f2.cooldownMs >= 45_000 && f2.cooldownMs <= 60_000, `repeat cooldown was ${f2.cooldownMs}ms`);
+    assert.equal(testKey.healthStatus, "healthy");
+    assert.equal(testKey.cooldownUntil, null);
+
+    // Upstream Retry-After is honoured, but capped at two minutes.
+    const slowBurst = new GatewayProviderError("429 slow down", {
+      status: 429,
+      rateLimited: true,
+      retryAfterMs: 900_000,
+    });
+    assert.equal(recordCandidateFailure(testKey, "m2", slowBurst).cooldownMs, 120_000);
+
+    // Only explicit daily exhaustion earns the long bench.
+    const dailyErr = new GatewayProviderError("429 quota exceeded for per day limit", {
+      status: 429,
+      rateLimited: true,
+      dailyQuotaExhausted: true,
+    });
+    const fDaily = recordCandidateFailure(testKey, "m3", dailyErr);
+    assert.equal(fDaily.cooldownMs, 24 * 60 * 60_000);
+    assert.equal(testKey.healthStatus, "cooldown");
+    assert.ok(testKey.cooldownUntil !== null);
 
     // 401 benches the key as invalid immediately
     const authErr = new GatewayProviderError("Invalid key", { status: 401, authFailed: true });
@@ -3189,7 +3217,7 @@ test("AI Rewrite: KB preflight gap detection, diff highlighting, deterministic s
   assert.ok(emptyKb.gaps.some((g) => g.key === "proof_credibility"));
 });
 
-test("AI Rewrite E2E: multi-lead pipeline, sample style prompt, 3x self-check retry, Needs attention, Accept/Reject/History, job persistence & tenant isolation", async () => {
+test("AI Rewrite E2E: multi-lead pipeline, sample style prompt, deterministic retry, Needs attention, Accept/Reject/History, job persistence & tenant isolation", async () => {
   const { clearBackgroundJobsForTests } = await import("./background-jobs");
   const {
     __configureEmailRewriteStoreForTests,
@@ -3831,10 +3859,11 @@ test("AI Rewrite E2E: multi-lead pipeline, sample style prompt, 3x self-check re
     assert.equal(itemA2.status, "rewritten");
     assert.equal(itemA2.analysis?.verifiedHooks.length, 0);
 
-    // Bad Claim Biz hallucinated ROI -> regenerated 3x -> flagged "needs_attention" (NEVER dropped or marked ready!)
+    // Bad Claim Biz hallucinated ROI -> deterministic gate catches it -> one
+    // corrective retry -> flagged "needs_attention" (NEVER marked ready!)
     const itemA3 = finishedWs.itemsByMessageId["msg_a3"];
     assert.equal(itemA3.status, "needs_attention");
-    assert.equal(itemA3.check?.attempts, 3);
+    assert.equal(itemA3.check?.attempts, 2);
     assert.equal(itemA3.check?.passed, false);
     assert.ok((itemA3.statusReason ?? "").includes("500% guaranteed ROI"));
 
@@ -4849,4 +4878,193 @@ test("key analytics aggregates real receipts per key (calls, success rate, laten
   const byProvider = summarizeKeyAnalytics({ logs, provider: "groq", now });
   assert.equal(byProvider.totalCalls, 1);
   assert.equal(byProvider.avgLatencyMs, 200);
+});
+
+test("placeholder stripping can never leave an empty greeting in a draft", () => {
+  assert.equal(normalizeEmailGreeting("Hi {{first_name}},\n\nBody here.", null, null), "Hi there,\n\nBody here.");
+  assert.equal(normalizeEmailGreeting("Hi ,\n\nBody.", null, null).startsWith("Hi there,"), true);
+  assert.equal(normalizeEmailGreeting("Hi N/A,\n\nBody.", null, null).startsWith("Hi there,"), true);
+  assert.equal(normalizeEmailGreeting("Hi Church Office,\n\nBody.", null, "Church Office").startsWith("Hi there,"), true);
+  assert.equal(normalizeEmailGreeting("Hi ,\n\nBody.", null, "Senior Pastor").startsWith("Hi Pastor,"), true);
+  assert.equal(normalizeEmailGreeting("Hi ,\n\nBody.", "Dana Whitfield", "Pastor").startsWith("Hi Dana,"), true);
+  assert.equal(normalizeEmailGreeting("Hi Dana,\n\nBody.", "Dana Whitfield", null), "Hi Dana,\n\nBody.");
+
+  assert.equal(isUsableContactName("jbw2xmu5GVR"), false);
+  assert.equal(isUsableContactName("Church Office"), false);
+  assert.equal(isUsableContactName("Pastor/Church Office"), false);
+  assert.equal(isUsableContactName("Dana"), true);
+
+  const report = validateEmailQuality({
+    subject: "quick mobile check",
+    body: `Hi ,\n\n${"Worth a quick look at the booking flow? ".repeat(8)}`,
+    kind: "initial",
+  });
+  assert.equal(report.passed, false);
+  assert.ok(report.issues.some((issue) => issue.toLowerCase().includes("greeting")));
+});
+
+test("email drafting still runs exactly ONE LLM call when the deterministic gate passes", async () => {
+  const prevFetch = globalThis.fetch;
+  let llmCalls = 0;
+
+  globalThis.fetch = (async () => {
+    llmCalls += 1;
+    return new Response(
+      JSON.stringify({
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({
+                template_id: "T1",
+                subject: "quick mobile check",
+                body: "Hi there,\n\nI pulled up Harbor Dental on my phone this morning and noticed the booking page takes six taps before a visitor can pick a time. On mobile that is usually where most appointment requests stop.\n\nI fix that exact drop-off for dental practices and can send over a short teardown of your booking flow, no strings attached.\n\nWorth a look?\n\nAlex",
+                angle: "mobile booking friction",
+                rationale: "Verified mobile observation from the site audit.",
+                service: "site audit",
+                evidence: ["booking page takes six taps"],
+              }),
+            },
+          },
+        ],
+      }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    );
+  }) as typeof fetch;
+
+  try {
+    resetGatewayCachesForTests();
+    clearRouterStateForTests();
+    const owner = "compose-single-pass-owner";
+    seedGatewayCachesForTests({
+      adminSettings: makeSampleAdminSettings(),
+      adminKeys: [makeSampleAdminKey("adm_compose", "groq", "gsk_ComposeSinglePass")],
+      userSettings: {
+        [owner]: {
+          ownerId: owner,
+          mode: "system_auto",
+          activeKeyId: null,
+          activeProvider: null,
+          activeModel: null,
+          fallbackToSystemAuto: false,
+          updatedAt: new Date().toISOString(),
+        },
+      },
+      userKeys: { [owner]: [] },
+    });
+
+    const lead = {
+      id: "compose-lead",
+      ownerId: owner,
+      campaign_id: "compose-campaign",
+      business: "Harbor Dental",
+      contact_name: null,
+      role: "Office Manager",
+      email: "office@harbordental.com",
+      website: "https://harbordental.com",
+      status: "qualified",
+      score: 78,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    } as unknown as Lead;
+    const research = {
+      summary: "Dental practice with a slow mobile booking page.",
+      website_status: "live",
+      awareness_level: "problem_aware",
+      recommended_template_id: "T1",
+      personalized_hook_candidates: ["booking page takes six taps"],
+      verified_facts: [{ fact: "Six taps to book on mobile", source: "site check" }],
+      website_facts: ["No viewport meta tag"],
+      verified_site_issues: ["missing viewport"],
+      findings: [],
+      missing_data: [],
+      opportunities: [{ opportunity: "mobile booking friction", service: "site audit" }],
+      recommended_angle: "mobile booking friction",
+      confidence: 82,
+      insufficient_data: false,
+    } as unknown as ResearchResult;
+    const campaign = {
+      id: "compose-campaign",
+      name: "Dental",
+      objective: "Book site audits",
+      services: ["site audit"],
+      tone: "direct",
+      extra_instructions: "",
+      identity: "personal",
+    } as unknown as CampaignConfig;
+    const settings = {
+      sender_name: "Alex Rivera",
+      sender_role: "Founder",
+      sender_company: "",
+      include_opt_out_footer: false,
+      physical_address: "",
+    } as unknown as Settings;
+
+    const composed = await composeInitialServer(
+      lead,
+      research,
+      campaign,
+      settings,
+      "We fix mobile booking drop-off for dental practices.",
+      undefined,
+      { ownerId: owner },
+    );
+
+    assert.equal(llmCalls, 1, "a passing draft must not trigger a second review call");
+    assert.equal(composed.check?.passed, true);
+    assert.equal(composed.check?.regenerated, false);
+    assert.equal(composed.body.startsWith("Hi there,"), true);
+  } finally {
+    globalThis.fetch = prevFetch;
+    resetGatewayCachesForTests();
+    clearRouterStateForTests();
+  }
+});
+
+test("no per-email review LLM step remains in drafting or rewriting", () => {
+  const composeSrc = readFileSync(new URL("./compose.ts", import.meta.url), "utf8");
+  const rewriteSrc = readFileSync(new URL("./email-rewrite-server.ts", import.meta.url), "utf8");
+  assert.equal(composeSrc.includes('feature: "compose_review"'), false);
+  assert.equal(rewriteSrc.includes('feature: "email_rewrite_check"'), false);
+  assert.equal(/MAX_SELF_CHECK_ATTEMPTS = 2/.test(rewriteSrc), true);
+});
+
+test("email review queue shows a real name and quarantines leads without an address", () => {
+  assert.equal(
+    prospectDisplayName({ business: "Uptown Dental", contactName: "N/A", email: null }),
+    "Uptown Dental",
+  );
+  assert.equal(
+    prospectDisplayName({
+      business: "N/A",
+      contactName: "Verified Google listing",
+      email: "jbw2xmu5gvr@example.com",
+      website: "https://harbordental.com",
+    }),
+    "harbordental.com",
+  );
+  assert.equal(
+    prospectDisplayName({ business: null, contactName: "Info", email: "dana.whitfield@clinic.com" }),
+    "Dana Whitfield",
+  );
+  assert.equal(hasSendableEmail("no email"), false);
+  assert.equal(hasSendableEmail(null), false);
+  assert.equal(hasSendableEmail("office@harbordental.com"), true);
+  assert.ok(MAX_REWRITE_BATCH <= 20);
+});
+
+test("a saved PageSpeed key resolves as active even under legacy provider ids", () => {
+  assert.equal(normalizeSearchProviderId("google_pagespeed"), "pagespeed");
+  assert.equal(normalizeSearchProviderId("Google-PageSpeed"), "pagespeed");
+  assert.equal(normalizeSearchProviderId("page_speed_insights"), "pagespeed");
+  assert.equal(normalizeSearchProviderId("pagespeed"), "pagespeed");
+  assert.equal(normalizeSearchProviderId("definitely-not-a-provider"), null);
+
+  const states = buildSearchProviderStates({
+    keys: [makeSearchKeyPublic("google_pagespeed" as never, true)],
+    quotas: [],
+  });
+  const pagespeed = states.find((state) => state.provider === "pagespeed");
+  assert.equal(pagespeed?.hasKey, true);
+  assert.equal(pagespeed?.status, "active");
+  assert.equal(isSearchProviderSelectable(pagespeed?.status ?? "not_configured"), true);
 });

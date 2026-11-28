@@ -19,12 +19,18 @@ import {
  */
 export const MAX_AUTO_ATTEMPTS = 6;
 
-const ESCALATION_LADDER_MS = [
-  2 * 60_000, // 2 minutes
-  10 * 60_000, // 10 minutes
-  60 * 60_000, // 1 hour
-  24 * 60 * 60_000, // 24 hours
-];
+/**
+ * Burst rate limits (RPM/TPM) clear on their own within a minute. Benching a
+ * key for hours because of one burst 429 is what produced the observed
+ * "5h left" spiral while the key still read RPM 0/15.
+ */
+const TRANSIENT_COOLDOWN_MS = 60_000;
+const MIN_TRANSIENT_COOLDOWN_MS = 45_000;
+const MAX_TRANSIENT_COOLDOWN_MS = 120_000;
+/** A stall/timeout on one model: retry it in two minutes, keep the key healthy. */
+const TRANSIENT_PAIR_COOLDOWN_MS = 2 * 60_000;
+/** Only explicit daily/monthly exhaustion or an empty balance earns this. */
+const DAILY_EXHAUSTION_COOLDOWN_MS = 24 * 60 * 60_000;
 
 const HEADROOM_STEER_THRESHOLD = 0.85; // Proactively steer away once key hits >= 85% of RPM or RPD
 
@@ -120,6 +126,21 @@ export function clearAllInMemoryModelCooldowns(): void {
   googleGroundingBlockedKeys.clear();
 }
 
+/**
+ * Shortest remaining per-(key, model) cooldown, in milliseconds. The gateway
+ * answers with one friendly "resets in ~Xs" message instead of firing a burst
+ * of zero-millisecond failures while every key is briefly rate limited.
+ */
+export function getSoonestCooldownRemainingMs(now = Date.now()): number | null {
+  let soonest: number | null = null;
+  for (const entry of keyModelCooldowns.values()) {
+    const left = entry.untilMs - now;
+    if (left <= 0) continue;
+    if (soonest === null || left < soonest) soonest = left;
+  }
+  return soonest;
+}
+
 export function isCandidateCoolingDown(key: AdminAiKeyRecord, modelId: string, now = Date.now()): boolean {
   if (!key.enabled) return true;
   if (key.healthStatus === "invalid") return true;
@@ -188,7 +209,7 @@ export function recordCandidateFailure(
   // Timeout (504) or upstream 5xx (502/503): cool down ONLY this specific (key, model) pair for 2m.
   // Never bench the provider's other healthy models!
   if (!err.rateLimited && !err.creditsExhausted && !err.dailyQuotaExhausted) {
-    const ms = ESCALATION_LADDER_MS[0]; // 2m per-model cooldown
+    const ms = TRANSIENT_PAIR_COOLDOWN_MS;
     keyModelCooldowns.set(`${key.id}:${modelId}`, {
       untilMs: now + ms,
       step: 1,
@@ -197,29 +218,34 @@ export function recordCandidateFailure(
     return { healthStatus: "healthy", cooldownMs: ms };
   }
 
-  // Compute escalating cooldown step (2m -> 10m -> 1h -> 24h) strictly for real rate/quota 429/402
-  const prevStep = keyModelCooldowns.get(`${key.id}:${modelId}`)?.step ?? key.cooldownStep ?? 0;
-  const nextStep = Math.min(ESCALATION_LADDER_MS.length - 1, prevStep);
-  let cooldownMs = ESCALATION_LADDER_MS[nextStep];
-
-  if (err.creditsExhausted || err.dailyQuotaExhausted) {
-    cooldownMs = ESCALATION_LADDER_MS[3]; // 24h bench
+  // A plain burst 429 (RPM/TPM, with no explicit daily or balance signal)
+  // clears within a minute: cool ONLY this (key, model) pair briefly and keep
+  // the key healthy. It must never write a multi-hour key-level cooldown.
+  if (!err.creditsExhausted && !err.dailyQuotaExhausted) {
+    const hint = err.retryAfterMs && err.retryAfterMs > 0 ? err.retryAfterMs : TRANSIENT_COOLDOWN_MS;
+    const cooldownMs = Math.min(MAX_TRANSIENT_COOLDOWN_MS, Math.max(MIN_TRANSIENT_COOLDOWN_MS, hint));
+    keyModelCooldowns.set(`${key.id}:${modelId}`, {
+      untilMs: now + cooldownMs,
+      step: 0,
+      reason: errSummary,
+    });
+    return { healthStatus: "healthy", cooldownMs };
   }
-  if (err.retryAfterMs && err.retryAfterMs > 0) {
-    cooldownMs = Math.max(cooldownMs, err.retryAfterMs);
-  }
 
+  // Only an explicit daily/monthly exhaustion or an empty balance benches the
+  // whole key, until its real reset window.
+  const cooldownMs = DAILY_EXHAUSTION_COOLDOWN_MS;
   const untilIso = new Date(now + cooldownMs).toISOString();
   keyModelCooldowns.set(`${key.id}:${modelId}`, {
     untilMs: now + cooldownMs,
-    step: Math.min(ESCALATION_LADDER_MS.length - 1, nextStep + 1),
+    step: 1,
     reason: errSummary,
   });
 
   // Escalate key-level DB cooldown strictly on explicit rate-limit / quota / credit exhaustion
   key.healthStatus = "cooldown";
   key.cooldownUntil = untilIso;
-  key.cooldownStep = Math.min(ESCALATION_LADDER_MS.length - 1, nextStep + 1);
+  key.cooldownStep = 1;
   key.lastError = errSummary;
   void persistAdminKeyHealth(key.id, {
     healthStatus: "cooldown",

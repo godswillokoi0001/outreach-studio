@@ -28,6 +28,7 @@ import {
   getProviderMeta,
   getSearchProviderMeta,
   isSearchProviderId,
+  normalizeSearchProviderId,
   normalizeGatewayProviderId,
   PROVIDER_CATALOG,
   SEARCH_PROVIDER_CATALOG,
@@ -51,21 +52,39 @@ export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
 async function buildAdminGatewayPayload() {
-  const [settings, keys, searchKeys, executionLogs, quotaSnap] = await Promise.all([
+  const [settings, keys, searchKeys, executionLogs, usageLogs, quotaSnap] = await Promise.all([
     getAdminAiSettings(),
     listAdminAiKeys(),
     listAdminSearchKeysPublic(),
     listAiExecutionLogs({ limit: 35 }),
+    listAiExecutionLogs({ limit: 300 }),
     getSearchQuotaMonitorSnapshot(),
   ]);
+
+  // RPM/RPD are computed from real receipts as well as the per-instance
+  // counters, so the admin card stops reading 0/15 while a key is clearly
+  // being called (each serverless instance has its own memory).
+  const minuteAgo = Date.now() - 60_000;
+  const now = new Date();
+  const utcDayStart = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+  const rpmByKey = new Map<string, number>();
+  const rpdByKey = new Map<string, number>();
+  for (const log of usageLogs) {
+    const keyId = log.actualKeyId ?? "";
+    if (!keyId) continue;
+    const at = Date.parse(log.createdAt);
+    if (Number.isNaN(at)) continue;
+    if (at >= minuteAgo) rpmByKey.set(keyId, (rpmByKey.get(keyId) ?? 0) + 1);
+    if (at >= utcDayStart) rpdByKey.set(keyId, (rpdByKey.get(keyId) ?? 0) + 1);
+  }
 
   const enrichedKeys = keys.map((k) => {
     const pub = toAdminAiKeyPublic(k);
     const headroom = evaluateKeyHeadroom(k);
     return {
       ...pub,
-      rpmUsed: headroom.rpmUsed,
-      rpdUsed: headroom.rpdUsed,
+      rpmUsed: Math.max(headroom.rpmUsed, rpmByKey.get(k.id) ?? 0),
+      rpdUsed: Math.max(headroom.rpdUsed, rpdByKey.get(k.id) ?? 0),
     };
   });
 
@@ -196,7 +215,7 @@ export async function POST(req: NextRequest) {
     });
 
     if (body.action === "test_search_key") {
-      let provider = isSearchProviderId(body.provider) ? body.provider : "tavily";
+      let provider = normalizeSearchProviderId(body.provider) ?? "tavily";
       let apiKey = (body.apiKey ?? "").trim();
       if (body.keyId && !apiKey) {
         const found = (await listAdminSearchKeys()).find((k) => k.id === body.keyId);
@@ -213,7 +232,8 @@ export async function POST(req: NextRequest) {
     }
 
     if (body.action === "reset_search_quota") {
-      const target = String(body.provider ?? "").trim().toLowerCase();
+      const rawTarget = String(body.provider ?? "").trim().toLowerCase();
+      const target = normalizeSearchProviderId(rawTarget) ?? rawTarget;
       if (!isSearchProviderId(target) && target !== "duckduckgo" && target !== "osm") {
         return NextResponse.json({ error: "Invalid search provider." }, { status: 400 });
       }
@@ -231,21 +251,22 @@ export async function POST(req: NextRequest) {
     }
 
     if (body.action === "update_search_quota") {
-      if (!isSearchProviderId(body.provider)) {
+      const quotaProvider = normalizeSearchProviderId(body.provider);
+      if (!quotaProvider) {
         return NextResponse.json({ error: "Invalid search provider." }, { status: 400 });
       }
       const limit = Number(body.quotaLimit);
       if (!Number.isFinite(limit) || limit < 0) {
         return NextResponse.json({ error: "A non-negative quota limit is required." }, { status: 400 });
       }
-      const rec = await setSearchProviderQuotaLimit(body.provider, limit);
+      const rec = await setSearchProviderQuotaLimit(quotaProvider, limit);
       await appendAdminAuditLog({
         actorId: ctx.admin.id,
         actorEmail: ctx.admin.email,
         actorRole: ctx.admin.role,
         action: "search_quota_limit_updated",
         targetType: "search_provider_quotas",
-        targetId: body.provider,
+        targetId: quotaProvider,
         details: { quotaLimit: rec.quotaLimit },
         req,
       });
@@ -253,20 +274,21 @@ export async function POST(req: NextRequest) {
     }
 
     if (body.action === "add_search_key") {
-      if (!isSearchProviderId(body.provider)) {
+      const provider = normalizeSearchProviderId(body.provider);
+      if (!provider) {
         return NextResponse.json({ error: "Select Exa, Tavily, Firecrawl, Serper, Brave, Jina, PageSpeed, Hunter, or CUFinder." }, { status: 400 });
       }
       const check = validateApiKeyInput(body.apiKey);
       if (!check.ok) {
         return NextResponse.json({ error: check.error }, { status: 400 });
       }
-      const meta = getSearchProviderMeta(body.provider);
+      const meta = getSearchProviderMeta(provider);
       const { encryptedKey, maskedKey } = encryptGatewayKey(check.value);
       const id = `srch_${Date.now().toString(36)}_${randomBytes(4).toString("hex")}`;
       const label = (body.label ?? "").trim() || `${meta.label} (${maskedKey})`;
       await saveAdminSearchKey({
         id,
-        provider: body.provider,
+        provider,
         label,
         encryptedKey,
         maskedKey,
@@ -279,7 +301,7 @@ export async function POST(req: NextRequest) {
         action: "search_key_added",
         targetType: "admin_ai_keys",
         targetId: id,
-        details: { provider: body.provider, maskedKey, label },
+        details: { provider, maskedKey, label },
         req,
       });
       return NextResponse.json(await buildAdminGatewayPayload(), { status: 201 });

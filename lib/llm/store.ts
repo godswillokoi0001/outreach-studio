@@ -5,6 +5,7 @@ import {
   getProviderMeta,
   getSearchProviderMeta,
   isSearchProviderId,
+  normalizeSearchProviderId,
   normalizeGatewayProviderId,
   type AdminAiKeyPublic,
   type AdminAiKeyRecord,
@@ -695,6 +696,20 @@ export function mergeSearchKeySources(
   return out;
 }
 
+/**
+ * Search/audit keys live in `admin_ai_keys`, but a failed SQL write falls back
+ * to a knowledge document. Reading only one source made a saved key invisible
+ * ("Not Configured" right after saving), so both sources are merged by id.
+ */
+async function mergeSearchKeyRows(sqlRows: Record<string, unknown>[]): Promise<Record<string, unknown>[]> {
+  const docRows = (
+    (await readKnowledgeDoc<Record<string, unknown>[]>(PLATFORM_LLM_OWNER, DOC_ADMIN_KEYS)) ?? []
+  ).filter((r) => Boolean(normalizeSearchProviderId(r?.provider)));
+  if (sqlRows.length === 0) return docRows;
+  const seen = new Set(sqlRows.map((r) => String(r.id ?? "")));
+  return [...sqlRows, ...docRows.filter((r) => !seen.has(String(r.id ?? "")))];
+}
+
 export async function listAdminSearchKeys(): Promise<DecryptedAdminSearchKey[]> {
   if (adminSearchKeysCache && Date.now() < adminSearchKeysCache.exp) {
     return adminSearchKeysCache.value.filter((k) => k.enabled);
@@ -710,26 +725,24 @@ export async function listAdminSearchKeys(): Promise<DecryptedAdminSearchKey[]> 
       .in("provider", ALL_SEARCH_PROVIDER_IDS)
       .order("created_at", { ascending: true });
 
-    const rows =
-      !error && Array.isArray(data)
-        ? (data as Record<string, unknown>[])
-        : (
-            (await readKnowledgeDoc<Record<string, unknown>[]>(PLATFORM_LLM_OWNER, DOC_ADMIN_KEYS)) ?? []
-          ).filter((r) => isSearchProviderId(r.provider));
+    const rows = await mergeSearchKeyRows(
+      !error && Array.isArray(data) ? (data as Record<string, unknown>[]) : [],
+    );
 
     for (const r of rows) {
-      if (!isSearchProviderId(r.provider)) continue;
-      configuredProviders.add(r.provider);
+      const provider = normalizeSearchProviderId(r.provider);
+      if (!provider) continue;
+      configuredProviders.add(provider);
       if (r.enabled === false) continue;
       const enc = String(r.encrypted_key ?? r.encryptedKey ?? "");
       if (!enc) continue;
       try {
         const apiKey = decryptSecret(enc);
         if (!apiKey) continue;
-        const meta = getSearchProviderMeta(r.provider);
+        const meta = getSearchProviderMeta(provider);
         out.push({
           id: String(r.id ?? ""),
-          provider: r.provider,
+          provider,
           label: String(r.label ?? meta.label),
           apiKey,
           maskedKey: String(r.masked_key ?? r.maskedKey ?? maskSecret(apiKey)),
@@ -761,19 +774,17 @@ export async function listAdminSearchKeysPublic(): Promise<AdminSearchKeyPublic[
       .in("provider", ALL_SEARCH_PROVIDER_IDS)
       .order("created_at", { ascending: true });
 
-    const rows =
-      !error && Array.isArray(data)
-        ? (data as Record<string, unknown>[])
-        : (
-            (await readKnowledgeDoc<Record<string, unknown>[]>(PLATFORM_LLM_OWNER, DOC_ADMIN_KEYS)) ?? []
-          ).filter((r) => isSearchProviderId(r.provider));
+    const rows = await mergeSearchKeyRows(
+      !error && Array.isArray(data) ? (data as Record<string, unknown>[]) : [],
+    );
 
     for (const r of rows) {
-      if (!isSearchProviderId(r.provider)) continue;
-      const meta = getSearchProviderMeta(r.provider);
+      const provider = normalizeSearchProviderId(r.provider);
+      if (!provider) continue;
+      const meta = getSearchProviderMeta(provider);
       list.push({
         id: String(r.id ?? ""),
-        provider: r.provider,
+        provider,
         label: String(r.label ?? meta.label),
         maskedKey: String(r.masked_key ?? r.maskedKey ?? "••••"),
         enabled: r.enabled !== false,
@@ -805,10 +816,13 @@ export async function saveAdminSearchKey(input: {
 }): Promise<void> {
   if (!supabaseServer) return;
   const now = new Date().toISOString();
+  // Store the canonical id so the runtime lookup and the admin card agree
+  // (a legacy "google_pagespeed" row used to read as Not Configured forever).
+  const provider = normalizeSearchProviderId(input.provider) ?? input.provider;
   const { error } = await supabaseServer.from("admin_ai_keys").upsert(
     {
       id: input.id,
-      provider: input.provider,
+      provider,
       label: input.label,
       encrypted_key: input.encryptedKey,
       masked_key: input.maskedKey,
@@ -832,7 +846,7 @@ export async function saveAdminSearchKey(input: {
       ...existing.filter((x) => x.id !== input.id),
       {
         id: input.id,
-        provider: input.provider,
+        provider,
         label: input.label,
         encrypted_key: input.encryptedKey,
         masked_key: input.maskedKey,

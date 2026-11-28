@@ -8,6 +8,7 @@ import {
   maskSecret,
 } from "../key-vault";
 import { supabaseServer } from "../supabase-server";
+import { listAdminAiKeys, listAiExecutionLogs } from "../llm/store";
 import {
   DEFAULT_PLATFORM_QUOTAS,
   type AdminAuditEntry,
@@ -898,6 +899,70 @@ export async function listAdminUsersDirectory(): Promise<AdminUserSummary[]> {
   return users;
 }
 
+/**
+ * Overview used to render the legacy `system_platform_policy` providers, so it
+ * kept showing retired rows ("Numes", "Google Gemini") long after the routed
+ * gateway pool had changed. Providers & Models and Overview must tell the same
+ * truth, so this aggregates the live pool and the last 24h of receipts.
+ */
+async function buildLiveProviderStatus(): Promise<
+  {
+    provider: string;
+    label: string;
+    enabled: boolean;
+    hasKey: boolean;
+    requests: number;
+    errors: number;
+    avgLatencyMs: number;
+    status: "healthy" | "degraded" | "unconfigured";
+  }[]
+> {
+  try {
+    const [keys, logs] = await Promise.all([listAdminAiKeys(), listAiExecutionLogs({ limit: 300 })]);
+    const cutoff = Date.now() - 24 * 60 * 60_000;
+    const recent = logs.filter((log) => {
+      const at = Date.parse(log.createdAt);
+      return !Number.isNaN(at) && at >= cutoff;
+    });
+
+    const providerIds = new Set<string>();
+    for (const key of keys) if (key.enabled) providerIds.add(key.provider);
+    for (const log of recent) if (log.actualProvider) providerIds.add(log.actualProvider);
+
+    const rows = [...providerIds].map((provider) => {
+      const providerKeys = keys.filter((k) => k.provider === provider);
+      const events = recent.filter((log) => log.actualProvider === provider);
+      const errors = events.filter((log) => log.status === "failed").length;
+      const avgLatencyMs =
+        events.length > 0
+          ? Math.round(events.reduce((sum, log) => sum + (log.latencyMs || 0), 0) / events.length)
+          : 0;
+      const hasKey = providerKeys.some((k) => Boolean(k.encryptedKey));
+      const status: "healthy" | "degraded" | "unconfigured" = !hasKey
+        ? "unconfigured"
+        : events.length >= 5 && errors / events.length > 0.25
+          ? "degraded"
+          : "healthy";
+
+      return {
+        provider,
+        label: providerKeys[0]?.label ?? provider,
+        enabled: providerKeys.some((k) => k.enabled),
+        hasKey,
+        requests: events.length,
+        errors,
+        avgLatencyMs,
+        status,
+      };
+    });
+
+    rows.sort((a, b) => b.requests - a.requests);
+    return rows;
+  } catch {
+    return [];
+  }
+}
+
 export async function computePlatformHealthAndAlerts(
   users: AdminUserSummary[],
   usageEvents: AiUsageEvent[],
@@ -907,7 +972,7 @@ export async function computePlatformHealthAndAlerts(
   avgLatencyMs: number;
   failedJobsCount: number;
   providerStatus: {
-    provider: AiProviderId;
+    provider: string;
     label: string;
     enabled: boolean;
     hasKey: boolean;
@@ -924,29 +989,33 @@ export async function computePlatformHealthAndAlerts(
   const avgLatencyMs =
     totalReq > 0 ? Math.round(usageEvents.reduce((s, e) => s + (e.latencyMs || 0), 0) / totalReq) : 0;
 
-  const providerStatus = policy.providers.map((p) => {
-    const pEvents = usageEvents.filter((e) => e.provider === p.id);
-    const pErrors = pEvents.filter((e) => !e.success).length;
-    const pLatency =
-      pEvents.length > 0 ? Math.round(pEvents.reduce((s, e) => s + e.latencyMs, 0) / pEvents.length) : 0;
-    const hasKey = Boolean(p.encryptedKey || (p.id === "gemini" && process.env.GEMINI_API_KEY?.trim()));
-    const status: "healthy" | "degraded" | "unconfigured" = !hasKey
-      ? "unconfigured"
-      : pEvents.length >= 5 && pErrors / pEvents.length > 0.25
-        ? "degraded"
-        : "healthy";
+  const liveProviderStatus = await buildLiveProviderStatus();
+  const providerStatus =
+    liveProviderStatus.length > 0
+      ? liveProviderStatus
+      : policy.providers.map((p) => {
+          const pEvents = usageEvents.filter((e) => e.provider === p.id);
+          const pErrors = pEvents.filter((e) => !e.success).length;
+          const pLatency =
+            pEvents.length > 0 ? Math.round(pEvents.reduce((s, e) => s + e.latencyMs, 0) / pEvents.length) : 0;
+          const hasKey = Boolean(p.encryptedKey || (p.id === "gemini" && process.env.GEMINI_API_KEY?.trim()));
+          const status: "healthy" | "degraded" | "unconfigured" = !hasKey
+            ? "unconfigured"
+            : pEvents.length >= 5 && pErrors / pEvents.length > 0.25
+              ? "degraded"
+              : "healthy";
 
-    return {
-      provider: p.id,
-      label: p.label,
-      enabled: p.enabled,
-      hasKey,
-      requests: pEvents.length,
-      errors: pErrors,
-      avgLatencyMs: pLatency,
-      status,
-    };
-  });
+          return {
+            provider: String(p.id),
+            label: p.label,
+            enabled: p.enabled,
+            hasKey,
+            requests: pEvents.length,
+            errors: pErrors,
+            avgLatencyMs: pLatency,
+            status,
+          };
+        });
 
   const alerts: PlatformAlert[] = [];
   const nowIso = new Date().toISOString();

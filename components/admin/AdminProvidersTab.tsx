@@ -160,7 +160,9 @@ export function AdminProvidersTab({
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [activeCategory, setActiveCategory] = useState<CategoryTab>("all");
+  // Open on one focused category instead of dumping every card in a single
+  // vertical wall; "All Categories" stays available as an explicit choice.
+  const [activeCategory, setActiveCategory] = useState<CategoryTab>("ai_llm");
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   const [drawer, setDrawer] = useState<DrawerTarget | null>(null);
 

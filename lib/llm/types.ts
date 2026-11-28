@@ -381,6 +381,39 @@ export function isSearchProviderId(raw: unknown): raw is SearchProviderId {
   return (ALL_SEARCH_PROVIDER_IDS as string[]).includes(clean);
 }
 
+/**
+ * Aliases users and older admin builds sent for the same provider. Without
+ * this a saved "Google PageSpeed" key landed under a provider id the runtime
+ * never read, so the card stayed "Not Configured" while the audit was keyless.
+ */
+const SEARCH_PROVIDER_ALIASES: Record<string, SearchProviderId> = {
+  google_pagespeed: "pagespeed",
+  googlepagespeed: "pagespeed",
+  google_page_speed: "pagespeed",
+  google_page_speed_insights: "pagespeed",
+  page_speed: "pagespeed",
+  page_speed_insights: "pagespeed",
+  lighthouse: "pagespeed",
+  cloudflare: "cloudflare_browser",
+  cloudflare_browser_rendering: "cloudflare_browser",
+  screenshot_one: "screenshotone",
+  get_prospect: "getprospect",
+  brave_search: "brave",
+  tavily_search: "tavily",
+  exa_search: "exa",
+  jina_reader: "jina",
+};
+
+/** Canonical search/audit provider id, tolerating legacy and alias spellings. */
+export function normalizeSearchProviderId(raw: unknown): SearchProviderId | null {
+  const clean = typeof raw === "string" ? raw.trim().toLowerCase().replace(/[\s-]+/g, "_") : "";
+  if (!clean) return null;
+  const canonical = SEARCH_PROVIDER_ALIASES[clean] ?? clean;
+  return (ALL_SEARCH_PROVIDER_IDS as string[]).includes(canonical)
+    ? (canonical as SearchProviderId)
+    : null;
+}
+
 export function getSearchProviderMeta(id: SearchProviderId): SearchProviderMeta {
   return SEARCH_PROVIDER_CATALOG.find((p) => p.id === id) ?? SEARCH_PROVIDER_CATALOG[0];
 }

@@ -250,6 +250,8 @@ export function runDeterministicRewriteAudit(input: {
   otherLeadBusinesses?: string[];
   sampleEmails?: string[];
   includeOptOutFooter?: boolean;
+  /** Knowledge base + verified lead record: claims must be traceable to it. */
+  groundingText?: string;
 }): {
   passed: boolean;
   noPlaceholdersOrWrongNames: boolean;
@@ -276,6 +278,15 @@ export function runDeterministicRewriteAudit(input: {
     issues.push("Square-bracket placeholder left inside subject or body.");
   }
 
+  // Placeholder stripping used to leave "Hi ," behind, which then got sent.
+  if (
+    /^(?:hi|hello|hey|dear)\s*[,:]\s*$/im.test(body) ||
+    /^(?:hi|hello|hey|dear)\s+(?:n\/?a|unknown|info|church office|no contact name)\s*,/im.test(body)
+  ) {
+    noPlaceholdersOrWrongNames = false;
+    issues.push('Greeting is empty or addresses an unverified name (never "Hi ,").');
+  }
+
   // If lead had NO contact_name, reject greeting with a fabricated person name (allow Hi/Hello/Hi there/Team/Company)
   if (!input.leadContactName?.trim()) {
     const greetMatch = body.match(/^(?:hi|hello|hey|dear)\s+([A-Z][a-z]{2,20})(?:[,\s!]|$)/m);
@@ -298,6 +309,22 @@ export function runDeterministicRewriteAudit(input: {
     if (cleanOther.length >= 6 && cleanOther !== ownBiz && combined.toLowerCase().includes(cleanOther)) {
       noPlaceholdersOrWrongNames = false;
       issues.push(`Wrong company name "${other}" appeared in email meant for "${input.leadBusiness}".`);
+    }
+  }
+
+  // Fabricated proof/metrics: a percentage or a guarantee the KB and verified
+  // record never state. Caught deterministically instead of by an LLM auditor.
+  const grounding = (input.groundingText ?? "").toLowerCase().replace(/\s+/g, " ");
+  const claimMatches =
+    body.match(/\b\d{1,3}(?:\.\d+)?\s*%[^.,;\n]{0,40}|\bguaranteed\b[^.,;\n]{0,40}/gi) ?? [];
+  for (const claim of claimMatches) {
+    const probe = claim.trim().toLowerCase().replace(/\s+/g, " ");
+    if (probe.length < 3) continue;
+    const traceable = grounding.length > 0 && grounding.includes(probe.slice(0, 24));
+    if (!traceable) {
+      noPlaceholdersOrWrongNames = false;
+      issues.push(`Fabricated performance claim "${claim.trim()}" is not present in the knowledge base or verified research.`);
+      break;
     }
   }
 

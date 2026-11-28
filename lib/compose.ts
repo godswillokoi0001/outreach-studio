@@ -3,7 +3,7 @@ import { getActiveOwnerAiContext } from "./ai/context";
 import { buildOrchestratedSystemPrompt, findUnresolvedPlaceholders, stripUnresolvedPlaceholders } from "./ai/orchestrator";
 import { checkSendingTierDeliverability } from "./guardrails";
 import { LLMGateway } from "./llm/gateway";
-import { cleanEmailText } from "./outreach-utils";
+import { cleanEmailText, normalizeEmailGreeting } from "./outreach-utils";
 import type { CampaignConfig, Lead, Message, ResearchResult, Settings } from "./types";
 
 export interface ComposedEmail {
@@ -14,7 +14,7 @@ export interface ComposedEmail {
   service: string;
   evidence: string[];
   template_id?: string;
-  /** Result of Module 2's 8-point & knowledge-base self-check before display. */
+  /** Result of the deterministic quality gate run before display. */
   check?: DraftCheck;
   deliverability_warnings?: string[];
 }
@@ -26,92 +26,13 @@ export interface DraftCheck {
   regenerated: boolean;
 }
 
-const CHECK_SCHEMA: Schema = {
-  type: Type.OBJECT,
-  properties: {
-    passed: { type: Type.BOOLEAN },
-    issues: { type: Type.ARRAY, items: { type: Type.STRING } },
-    kb_items_used: {
-      type: Type.ARRAY,
-      items: { type: Type.STRING },
-      description: "The exact knowledge base & Global Brain rules/items this draft relies on",
-    },
-  },
-  required: ["passed", "issues", "kb_items_used"],
-};
-
-/**
- * Combines Module 2's Mandatory 8-Point Quality Gate with the active user's
- * Business Profile, Knowledge Base, and Sending Tier limits.
- */
-function checklist(campaign: CampaignConfig, knowledge: string, draft: ComposedEmail, sendingTier: string): string {
-  return `USER KNOWLEDGE BASE (source of truth)
-${knowledge ? knowledge.slice(0, 2_500) : "(empty)"}
-
-OWNER INSTRUCTION FOR THIS CAMPAIGN
-Objective: ${campaign.objective}
-Services in focus: ${campaign.services.join(", ") || "(none specified)"}
-Tone: ${campaign.tone || "(not specified)"}
-Extra instructions: ${campaign.extra_instructions || "(none)"}
-Sending tier: ${sendingTier}
-
-DRAFT UNDER REVIEW
-Template ID: ${draft.template_id || "auto"}
-Subject: ${draft.subject}
-${draft.body}
-
-AUDIT AGAINST MODULE 2'S 8-POINT QUALITY GATE & USER KB:
-1. [WORD COUNT]: Touch 1 is ~45-95 words (follow-ups 25-65 words), short 1-2 sentence mobile-friendly paragraphs, plain text.
-2. [FIRST LINE]: Opens with a verified 1-2 sentence observation passing the Face-to-Face test (no generic flattery).
-3. [ZERO FABRICATION & ZERO RAW TAGS]: Every fact/metric is grounded in verified prospect data or user proof, and ZERO unresolved {{...}} tags exist.
-4. [YOU-FIRST / WIIFM]: "You/Your" outnumbers "I/We" by ~2:1+, translating features into concrete buyer outcomes.
-5. [ZERO AI SLOP]: ZERO banned openings ("hope this email finds you well", "came across your website"), buzzwords ("game-changer", "elevate", "synergy", "bespoke", "delve"), or service laundry lists.
-6. [SINGLE CLEAR CTA]: One low-friction, interest-based question (never a pushy 30-min call request on cold Touch 1 or vague "thoughts?").
-7. [DELIVERABILITY SAFE]: Subject is 2-5 words, lowercase/sentence case, no Re:/Fwd: clickbait; links/formatting respect Sending Tier (${sendingTier}).
-8. [HUMAN VOICE & SCOPE]: Respects USER_EXCLUSIONS and campaign extra instructions cleanly.
-
-Return passed=true only when all eight gates hold. List exact issues to fix if any fail.`;
-}
-
-async function reviewDraft(
-  campaign: CampaignConfig,
-  knowledge: string,
-  draft: ComposedEmail,
-  sendingTier: string,
-  ownerId: string,
-): Promise<{ passed: boolean; issues: string[]; kb_items_used: string[] }> {
-  try {
-    const { data: result } = await LLMGateway.completeJSON<{
-      passed: boolean;
-      issues: string[];
-      kb_items_used: string[];
-    }>({
-      ownerId,
-      taskType: "fast",
-      feature: "compose_review",
-      systemPrompt:
-        "You are a strict Module 2 Direct-Response Quality Gate reviewer. Judge the draft against the 8-point gate, user knowledge base, and campaign instructions. Report failures concisely; never rewrite.",
-      messages: [{ role: "user", content: checklist(campaign, knowledge, draft, sendingTier) }],
-      schema: CHECK_SCHEMA,
-      maxTokens: 1200,
-    });
-    return {
-      passed: result.passed === true,
-      issues: Array.isArray(result.issues) ? result.issues.filter((issue) => typeof issue === "string").slice(0, 8) : [],
-      kb_items_used: Array.isArray(result.kb_items_used)
-        ? result.kb_items_used.filter((item) => typeof item === "string").slice(0, 8)
-        : [],
-    };
-  } catch {
-    return { passed: true, issues: [], kb_items_used: [] };
-  }
-}
-
 const BANNED_SLOP_RE =
   /\b(?:hope this (?:email|message) finds you well|thrilled to reach out|i came across your website|i was browsing your site|conversion optimization|improved mobile responsiveness|digital landscape|take your business to the next level|game[- ]changer|synergy|delve(?: into)?|unlock your potential|revolutionize your|elevate|leverage|seamless|bespoke|utilize)\b/gi;
 
 const FORCED_OPTOUT_FOOTER_RE =
   /(?:if you['’]?d rather not hear from me again|reply ["']?stop["']? to opt out|to opt out,? reply|unsubscribe from future emails|click here to unsubscribe)/i;
+
+const EMPTY_GREETING_RE = /^(?:hi|hello|hey|dear)\s*[,:]?\s*$/im;
 
 export interface EmailQualityInput {
   subject: string;
@@ -148,6 +69,7 @@ export function extractWordsToAvoid(knowledge: string, exclusionsText?: string):
  * Deterministic email quality firewall run before saving any drafted email.
  * Enforces zero banned AI slop, zero forced opt-out footers when disabled,
  * zero user `Words to AVOID`, crisp 50-115 word range on Touch 1, and personal "I" voice.
+ * Costs zero LLM calls by design.
  */
 export function validateEmailQuality(input: EmailQualityInput): EmailQualityReport {
   const issues: string[] = [];
@@ -163,6 +85,10 @@ export function validateEmailQuality(input: EmailQualityInput): EmailQualityRepo
     }
   } else if (words < 20 || words > 85) {
     issues.push(`Follow-up length (${words} words) should be 20-85 words.`);
+  }
+
+  if (EMPTY_GREETING_RE.test(body) || /^(?:hi|hello|hey)\s+(?:n\/?a|unknown|no contact name)\s*,/im.test(body)) {
+    issues.push("Greeting is empty or addresses an unverified name (never output \"Hi ,\").");
   }
 
   const slopMatches = body.match(BANNED_SLOP_RE);
@@ -209,15 +135,16 @@ export function validateEmailQuality(input: EmailQualityInput): EmailQualityRepo
   };
 }
 
-async function withKnowledgeCheck(
+/**
+ * One draft, one deterministic gate, at most one corrective call.
+ * The previous flow added a `compose_review` LLM call (plus a rewrite call) to
+ * every single email, burning 3x-4x of the free quota and 20-40s per draft.
+ */
+async function finalizeDraft(
   draft: ComposedEmail,
-  campaign: CampaignConfig,
-  knowledge: string,
-  sendingTier: string,
   qualityInput: Omit<EmailQualityInput, "subject" | "body" | "kind">,
   kind: "initial" | "followup",
   regenerate: (issues: string[]) => Promise<ComposedEmail>,
-  ownerId: string,
 ): Promise<ComposedEmail> {
   const det = validateEmailQuality({
     ...qualityInput,
@@ -226,17 +153,11 @@ async function withKnowledgeCheck(
     kind,
   });
 
-  // Only invoke extra LLM review call if deterministic gate passed cleanly, or skip to fast 1-shot rewrite
   if (det.passed) {
-    const first = await reviewDraft(campaign, knowledge, draft, sendingTier, ownerId);
-    if (first.passed) {
-      return {
-        ...draft,
-        rationale: withKbLine(draft.rationale, first.kb_items_used),
-        check: { ...first, regenerated: false },
-      };
-    }
-    det.issues.push(...first.issues);
+    return {
+      ...draft,
+      check: { passed: true, issues: [], kb_items_used: [], regenerated: false },
+    };
   }
 
   const combinedIssues = Array.from(new Set(det.issues));
@@ -250,7 +171,6 @@ async function withKnowledgeCheck(
     });
     return {
       ...revised,
-      rationale: withKbLine(revised.rationale, []),
       check: {
         passed: secondDet.passed,
         issues: secondDet.issues,
@@ -261,15 +181,9 @@ async function withKnowledgeCheck(
   } catch {
     return {
       ...draft,
-      rationale: withKbLine(draft.rationale, []),
-      check: { passed: det.passed, issues: combinedIssues, kb_items_used: [], regenerated: false },
+      check: { passed: false, issues: combinedIssues, kb_items_used: [], regenerated: false },
     };
   }
-}
-
-function withKbLine(rationale: string, items: string[]): string {
-  if (items.length === 0) return rationale;
-  return `${rationale.trim()}\n\nKnowledge & rules applied: ${items.join("; ")}`;
 }
 
 const SCHEMA: Schema = {
@@ -298,13 +212,13 @@ const COMPOSE_INITIAL_TASK = `Execute Workflow B (draft_outreach — Touch 1 Ini
 - Apply Anti-Fingerprint Adaptation: use natural Voice-of-Customer phrasing, 45-95 words total, Grade 3-5 reading level, max 1-2 sentences per paragraph, >=2:1 You-to-I ratio.
 - Strictly follow USER_SENDING_TIER deliverability rules:
   * If free_gmail_starter: 0 links ideal (max 1 clean signature link only if verified in USER_PROOF/USER_LEAD_MAGNET), never calendar links, plain text only.
-- NEVER emit unresolved {{...}} placeholders or banned AI slop. Pass ALL 8 Module 2 Quality Gate points.`;
+- NEVER emit unresolved {{...}} placeholders, an empty greeting ("Hi ,"), or banned AI slop. Pass ALL 8 Module 2 Quality Gate points in this single draft.`;
 
 const COMPOSE_FOLLOWUP_TASK = `Execute Workflow B (draft_outreach — Same-Thread Follow-Up):
 - Follow Module 3's 5-Touch Execution Matrix and Follow-Up Laws strictly.
 - Keep it shorter than Touch 1 (20-65 words) and stay on the same thread without copy-pasting the same pitch.
 - Use Touch 2 frictionless bump, Touch 3 fresh proof/insight nudge, Touch 4 short binary check, or Touch 5 clean zero-pressure breakup as step dictates.
-- Zero guilt-tripping, zero "just following up", zero unresolved {{...}} tags, and respect USER_SENDING_TIER.`;
+- Zero guilt-tripping, zero "just following up", zero unresolved {{...}} tags, zero empty greetings, and respect USER_SENDING_TIER.`;
 
 function identity(settings: Settings, campaign: CampaignConfig): string {
   const name = settings.sender_name || "the sender";
@@ -336,8 +250,17 @@ Recommended angle: ${research.recommended_angle}
 Research confidence: ${research.confidence}/100${research.insufficient_data ? " - INSUFFICIENT DATA, stay honest and ultra-brief (no invented claims)" : ""}`;
 }
 
-function sanitizeComposedDraft(raw: ComposedEmail, isColdTouch1: boolean, sendingTier: "free_gmail_starter" | "authenticated_custom_domain"): ComposedEmail {
-  const cleanBody = cleanEmailText(stripUnresolvedPlaceholders(raw.body));
+function sanitizeComposedDraft(
+  raw: ComposedEmail,
+  isColdTouch1: boolean,
+  sendingTier: "free_gmail_starter" | "authenticated_custom_domain",
+  greeting?: { contactName?: string | null; role?: string | null },
+): ComposedEmail {
+  const cleanBody = normalizeEmailGreeting(
+    cleanEmailText(stripUnresolvedPlaceholders(raw.body)),
+    greeting?.contactName,
+    greeting?.role,
+  );
   const cleanSubject = cleanEmailText(stripUnresolvedPlaceholders(raw.subject)).split("\n")[0];
   const deliv = checkSendingTierDeliverability({
     tier: sendingTier,
@@ -392,7 +315,7 @@ Services in focus: ${campaign.services.join(", ")}
 Tone: ${campaign.tone}
 Extra instructions from the owner: ${campaign.extra_instructions || "(none)"}
 
-Select the optimal Module 3 template (T1-T12) and write the Touch 1 email passing all 8 Module 2 gates with ZERO raw {{...}} tags.`;
+Select the optimal Module 3 template (T1-T12) and write the Touch 1 email passing all 8 Module 2 gates with ZERO raw {{...}} tags. If no verified contact name is listed above, open with "Hi there," — never "Hi ," and never an invented first name.`;
 
   void model;
   const ownerId = options?.ownerId ?? lead.ownerId ?? getActiveOwnerAiContext()?.ownerId ?? "anonymous";
@@ -405,13 +328,11 @@ Select the optimal Module 3 template (T1-T12) and write the Touch 1 email passin
     schema: SCHEMA,
     maxTokens: 1600,
   });
-  const cleaned = sanitizeComposedDraft(draft, true, sendingTier);
+  const greeting = { contactName: lead.contact_name, role: lead.role };
+  const cleaned = sanitizeComposedDraft(draft, true, sendingTier, greeting);
 
-  return withKnowledgeCheck(
+  return finalizeDraft(
     cleaned,
-    campaign,
-    knowledge,
-    sendingTier,
     {
       leadBusiness: lead.business,
       leadContactName: lead.contact_name,
@@ -435,15 +356,14 @@ Select the optimal Module 3 template (T1-T12) and write the Touch 1 email passin
               settings.include_opt_out_footer === true
                 ? "with brief opt-out line"
                 : "zero generic opt-out/unsubscribe footers"
-            }, zero {{...}} tags).`,
+            }, zero {{...}} tags, and a real greeting).`,
           },
         ],
         schema: SCHEMA,
         maxTokens: 1600,
       });
-      return sanitizeComposedDraft(revised, true, sendingTier);
+      return sanitizeComposedDraft(revised, true, sendingTier, greeting);
     },
-    ownerId,
   );
 }
 
@@ -483,13 +403,13 @@ CAMPAIGN
 Objective: ${campaign.objective}
 Services in focus: ${campaign.services.join(", ")}
 Tone: ${campaign.tone}
-Extra instructions: ${campaign.extra_instructions || "(none)"}
+Extra instructions from the owner: ${campaign.extra_instructions || "(none)"}
 
 ORIGINAL EMAIL SENT
 Subject: ${original.subject}
 ${original.body}
 
-This is Touch #${step} in the Module 3 Follow-Up Matrix. Write a shorter same-thread follow-up adding a fresh angle or binary check with zero guilt-tripping and zero {{...}} placeholders.`;
+This is Touch #${step} in the Module 3 Follow-Up Matrix. Write a shorter same-thread follow-up adding a fresh angle or binary check with zero guilt-tripping, zero {{...}} placeholders, and a clean greeting (never "Hi ,").`;
 
   void model;
   const ownerId = options?.ownerId ?? lead.ownerId ?? getActiveOwnerAiContext()?.ownerId ?? "anonymous";
@@ -502,13 +422,11 @@ This is Touch #${step} in the Module 3 Follow-Up Matrix. Write a shorter same-th
     schema: SCHEMA,
     maxTokens: 1600,
   });
-  const cleaned = sanitizeComposedDraft(draft, false, sendingTier);
+  const greeting = { contactName: lead.contact_name, role: lead.role };
+  const cleaned = sanitizeComposedDraft(draft, false, sendingTier, greeting);
 
-  return withKnowledgeCheck(
+  return finalizeDraft(
     cleaned,
-    campaign,
-    knowledge,
-    sendingTier,
     {
       leadBusiness: lead.business,
       leadContactName: lead.contact_name,
@@ -538,8 +456,7 @@ This is Touch #${step} in the Module 3 Follow-Up Matrix. Write a shorter same-th
         schema: SCHEMA,
         maxTokens: 1600,
       });
-      return sanitizeComposedDraft(revised, false, sendingTier);
+      return sanitizeComposedDraft(revised, false, sendingTier, greeting);
     },
-    ownerId,
   );
 }

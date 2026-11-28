@@ -129,9 +129,16 @@ function classifyHttpFailure(
     /request too large|context length|maximum context|exceeded.*context window|reduce your message size/i.test(
       detail,
     );
+  // "Quota exceeded" alone is what Google and Groq also return for a plain
+  // per-minute burst. Only per-day/monthly wording (or an explicit PerDay
+  // detail) means the key is really out of quota for the rest of the cycle.
+  const perMinuteBurst = /per.?minute|per second|\brpm\b|\btpm\b|requests per minute|tokens per minute|retry in \d/i.test(
+    detail,
+  );
   const dailySignal =
     !payloadTooLarge &&
-    (/per.?day|daily.*quota|daily.*limit|free allocation|quota exceeded|rpd|tpd/i.test(detail) ||
+    !perMinuteBurst &&
+    (/per.?day|daily.*(?:quota|limit)|free allocation|\brpd\b|\btpd\b/i.test(detail) ||
       (Array.isArray(errObj?.details) &&
         errObj.details.some((d) => JSON.stringify(d).includes("PerDay"))));
 

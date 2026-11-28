@@ -39,6 +39,70 @@ export function stripUnresolvedPlaceholders(text: string): string {
     .trim();
 }
 
+const INVALID_CONTACT_NAME_RE =
+  /^(?:n\/?a|na|none|null|unknown|info(?:rmation)?|church office|(?:the )?office|pastor\s*\/?\s*church office|admin|support|sales|contact|contact person|customer service|front desk|no contact name|not provided|not verified)$/i;
+
+/** True only when a contact name is a real human name we may greet by name. */
+export function isUsableContactName(raw?: string | null): boolean {
+  const value = (raw ?? "").trim().replace(/[.,;:]+$/, "");
+  if (value.length < 2 || value.length > 60) return false;
+  if (INVALID_CONTACT_NAME_RE.test(value)) return false;
+  if (/[<>{}\[\]@/\\|]/.test(value)) return false;
+  if (/\d{3,}/.test(value)) return false;
+  // Random identifiers such as "jbw2xmu5GVR" are never a person's name.
+  if (!/\s/.test(value) && /^[A-Za-z0-9_-]{10,}$/.test(value) && /[a-z]/.test(value) && /[A-Z0-9]/.test(value)) {
+    return false;
+  }
+  return /[a-z]/i.test(value);
+}
+
+/** First name to greet with, or null when the record has no usable name. */
+export function contactFirstName(raw?: string | null): string | null {
+  if (!isUsableContactName(raw)) return null;
+  const first = (raw ?? "").trim().split(/\s+/)[0].replace(/[^A-Za-z'\u2019-]/g, "");
+  if (first.length < 2) return null;
+  return first[0].toUpperCase() + first.slice(1);
+}
+
+const GREETING_LINE_RE = /^(\s*)(hi|hello|hey|dear)(\s*)(.*)$/i;
+
+/**
+ * Repairs an empty or unusable greeting. Placeholder stripping turns
+ * "Hi {{first_name}}," into "Hi ," and unverified lead records produce
+ * "Hi N/A," or "Hi Church Office," — none of these may reach a prospect.
+ */
+export function normalizeEmailGreeting(
+  body: string,
+  contactName?: string | null,
+  role?: string | null,
+): string {
+  if (!body.trim()) return body;
+  const lines = body.split("\n");
+  const idx = lines.findIndex((line) => line.trim().length > 0);
+  if (idx < 0) return body;
+
+  const match = lines[idx].match(GREETING_LINE_RE);
+  if (!match) return body;
+  const [, indent, , , rest] = match;
+  const restTrimmed = rest.trim();
+  const commaAt = restTrimmed.indexOf(",");
+  const namePart = (commaAt >= 0 ? restTrimmed.slice(0, commaAt) : restTrimmed).trim();
+  const trailing = commaAt >= 0 ? restTrimmed.slice(commaAt + 1).trim() : "";
+
+  // A usable name already sits in the greeting: leave the line untouched.
+  if (namePart && isUsableContactName(namePart)) return body;
+  // "Hi there," / "Hello again," style greetings are already clean.
+  if (/^(?:there|again|all)$/i.test(namePart)) return body;
+  if (!namePart && !restTrimmed) return body;
+  if (!namePart && /\.$/.test(restTrimmed)) return body;
+
+  const first = contactFirstName(contactName);
+  const isPastor = /\b(?:pastor|pastoral|reverend|rev\.?|minister|deacon|elder|father)\b/i.test(role ?? "");
+  const greeting = first ? `Hi ${first}` : isPastor ? "Hi Pastor" : "Hi there";
+  lines[idx] = `${indent}${trailing ? `${greeting}, ${trailing}` : `${greeting},`}`;
+  return lines.join("\n");
+}
+
 export function sanitizeId(raw: string, prefix = "doc"): string {
   const cleaned = raw
     .trim()

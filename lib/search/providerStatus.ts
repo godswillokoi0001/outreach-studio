@@ -2,6 +2,7 @@ import type { SearchQuotaRecord } from "@/lib/search/quotaAndCache";
 import {
   KEYLESS_PROVIDERS,
   SEARCH_PROVIDER_CATALOG,
+  normalizeSearchProviderId,
   type AdminSearchKeyPublic,
   type SearchProviderId,
   type SearchProviderState,
@@ -61,7 +62,11 @@ export function buildSearchProviderStates(input: {
   const quotaByProvider = new Map(input.quotas.map((q) => [q.provider as string, q]));
 
   const keyed = SEARCH_PROVIDER_CATALOG.map((meta) => {
-    const keysForProvider = input.keys.filter((k) => k.provider === meta.id);
+    // Legacy rows could be stored under an alias ("google_pagespeed"); treat
+    // them as the canonical provider so a saved key is never "Not Configured".
+    const keysForProvider = input.keys.filter(
+      (k) => (normalizeSearchProviderId(k.provider) ?? k.provider) === meta.id,
+    );
     const activeKey =
       keysForProvider.find((k) => k.enabled) ??
       keysForProvider.find((k) => k.healthStatus !== "invalid") ??

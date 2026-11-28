@@ -3,16 +3,22 @@
 import { BrandLoader } from "@/components/BrandLoader";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Save, Sparkles, Trash2 } from "lucide-react";
+import { Check, ChevronLeft, Loader2, Save, Sparkles, Trash2, X } from "lucide-react";
 import { useAuth } from "@/components/AuthProvider";
 import { BatchRunner } from "@/components/Runner";
-import { Badge, Banner, Card, Empty, Modal, Pager } from "@/components/ui";
+import { Badge, Banner, Card, Empty, Pager } from "@/components/ui";
 import { EmailBodyEditor } from "@/components/EmailBodyEditor";
 import { EmailRewriteWorkspace } from "@/components/EmailRewriteWorkspace";
 import type { RewriteScope } from "@/lib/email-rewrite";
 import { useConfirm, useToast } from "@/components/Feedback";
 import { authedPost, errorMessage } from "@/lib/client";
 import type { ComposedEmail } from "@/lib/compose";
+import {
+  hasSendableEmail,
+  MAX_REWRITE_BATCH,
+  prospectDisplayName,
+  QUICK_REWRITE_BATCH,
+} from "@/lib/review-queue";
 import {
   approveAllMessagesInCampaign,
   deleteMessage,
@@ -33,14 +39,18 @@ interface MessageRow extends Message {
   business: string | null;
   lead_email: string | null;
   contact_name: string | null;
+  website: string | null;
   score: number | null;
   industry: string | null;
+  displayName: string;
 }
 
 const TABS = [
   ["pending_approval", "Awaiting approval"],
   ["approved", "Approved, ready to send"],
+  ["sent", "Sent"],
   ["cancelled,failed", "Rejected / failed"],
+  ["missing_email", "Missing email (cannot send)"],
   ["all", "All emails"],
 ] as const;
 
@@ -53,7 +63,8 @@ export default function ReviewPage() {
   const [tab, setTab] = useState<string>("pending_approval");
   const [campaign, setCampaign] = useState("");
   const [page, setPage] = useState(1);
-  const [open, setOpen] = useState<MessageRow | null>(null);
+  const [review, setReview] = useState<MessageRow | null>(null);
+  const [drawerMode, setDrawerMode] = useState<"review" | "rewrite" | null>(null);
   const [subject, setSubject] = useState("");
   const [body, setBody] = useState("");
   const [subjectIdeas, setSubjectIdeas] = useState<string[]>([]);
@@ -123,6 +134,21 @@ export default function ReviewPage() {
     return () => window.removeEventListener("os:data-refreshed", onRefresh);
   }, [reload]);
 
+  const closeDrawer = useCallback(() => {
+    setDrawerMode(null);
+    setReview(null);
+    setSubjectIdeas([]);
+  }, []);
+
+  useEffect(() => {
+    if (!drawerMode) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") closeDrawer();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [drawerMode, closeDrawer]);
+
   const rows: MessageRow[] = useMemo(() => {
     const leadMap = new Map(leads.map((l) => [l.id, l]));
     // Reply drafts belong to Conversations; showing them here would invite a
@@ -130,50 +156,99 @@ export default function ReviewPage() {
     return messages
       .filter((m) => !(m.kind === "reply" && m.status === "draft"))
       .map((m) => {
-      const lead = leadMap.get(m.lead_id);
-      return {
-        ...m,
-        business: lead?.business ?? null,
-        lead_email: lead?.email ?? null,
-        contact_name: lead?.contact_name ?? null,
-        score: lead?.score ?? null,
-        industry: lead?.industry ?? null,
-      };
-    });
+        const lead = leadMap.get(m.lead_id);
+        return {
+          ...m,
+          business: lead?.business ?? null,
+          lead_email: lead?.email ?? null,
+          contact_name: lead?.contact_name ?? null,
+          website: lead?.website ?? null,
+          score: lead?.score ?? null,
+          industry: lead?.industry ?? null,
+          displayName: prospectDisplayName({
+            business: lead?.business,
+            contactName: lead?.contact_name,
+            email: lead?.email,
+            website: lead?.website,
+          }),
+        };
+      });
   }, [messages, leads]);
 
-  const counts = useMemo(() => {
-    const map: Record<string, number> = {};
-    for (const m of rows) {
-      map[m.status] = (map[m.status] ?? 0) + 1;
-    }
-    return map;
-  }, [rows]);
-
-  const rejectedCount = useMemo(
-    () => rows.filter((m) => m.status === "cancelled" || m.status === "failed").length,
-    [rows],
+  const inCampaign = useMemo(
+    () => (campaign ? rows.filter((m) => m.campaign_id === campaign) : rows),
+    [rows, campaign],
   );
 
+  const counts = useMemo(() => {
+    const sendable = inCampaign.filter((m) => hasSendableEmail(m.lead_email));
+    return {
+      pending: sendable.filter((m) => m.status === "pending_approval").length,
+      approved: sendable.filter((m) => m.status === "approved").length,
+      sent: inCampaign.filter((m) => m.status === "sent").length,
+      rejected: inCampaign.filter((m) => m.status === "cancelled" || m.status === "failed").length,
+      missingEmail: inCampaign.filter(
+        (m) => !hasSendableEmail(m.lead_email) && m.status !== "sent",
+      ).length,
+      all: inCampaign.length,
+    };
+  }, [inCampaign]);
+
+  const tabCount = (value: string): number => {
+    if (value === "pending_approval") return counts.pending;
+    if (value === "approved") return counts.approved;
+    if (value === "sent") return counts.sent;
+    if (value === "cancelled,failed") return counts.rejected;
+    if (value === "missing_email") return counts.missingEmail;
+    return counts.all;
+  };
+
   const filtered = useMemo(() => {
+    if (tab === "missing_email") {
+      return inCampaign.filter((m) => !hasSendableEmail(m.lead_email) && m.status !== "sent");
+    }
     const allowed = tab === "all" ? null : new Set(tab.split(","));
-    return rows.filter((m) => {
+    return inCampaign.filter((m) => {
+      // An email without an address can never be sent: keep it out of the
+      // approval queue so review time is never spent on it.
+      if (!hasSendableEmail(m.lead_email) && m.status === "pending_approval") return false;
       if (allowed && !allowed.has(m.status)) return false;
-      if (campaign && m.campaign_id !== campaign) return false;
       return true;
     });
-  }, [rows, tab, campaign]);
+  }, [inCampaign, tab]);
 
   const paged = useMemo(
     () => filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE),
     [filtered, page],
   );
 
-  const openMessageModal = (message: MessageRow) => {
-    setOpen(message);
+  const nextBatchIds = useMemo(
+    () =>
+      inCampaign
+        .filter((m) => m.status === "pending_approval" && hasSendableEmail(m.lead_email))
+        .slice(0, QUICK_REWRITE_BATCH)
+        .map((m) => m.id),
+    [inCampaign],
+  );
+
+  const openReview = (message: MessageRow) => {
+    setReview(message);
+    setDrawerMode("review");
     setSubject(message.subject ?? "");
     setBody(message.body ?? "");
     setSubjectIdeas([]);
+    setError(null);
+  };
+
+  const launchRewrite = (ids: string[]) => {
+    if (ids.length === 0) return;
+    setRewriteTrigger({
+      scope: "selected",
+      selectedIds: ids.slice(0, MAX_REWRITE_BATCH),
+      nonce: Date.now(),
+    });
+    setDrawerMode("rewrite");
+    setError(null);
   };
 
   const suggestSubject = async (message: MessageRow) => {
@@ -188,13 +263,62 @@ export default function ReviewPage() {
         kind: message.kind,
         body: body.slice(0, 6000),
         originalSubject: message.subject ?? "",
-        business: message.business ?? "",
+        business: message.displayName,
       });
       setSubjectIdeas(res.subjects ?? []);
     } catch (err) {
       setError(errorMessage(err));
     } finally {
       setSubjectBusy(false);
+    }
+  };
+
+  /** Approve = save edits + mark approved, with a confirmed toast. */
+  const approveMessage = async (message: MessageRow) => {
+    setBusy(`approve:${message.id}`);
+    setError(null);
+    setNotice(null);
+    try {
+      await updateMessageContent(user.uid, message.id, { subject, body });
+      await updateMessageStatus(user.uid, message.id, "approved", {
+        approved_at: new Date().toISOString(),
+      });
+      await updateLeadFields(user.uid, message.lead_id, { status: "approved" });
+      toast.success("Approved & moved to Ready to Send", "Your edits are saved.");
+      closeDrawer();
+      await reload();
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  /** Approve a message whose content the rewrite workspace already saved. */
+  const approveMessageById = async (messageId: string) => {
+    const target = messages.find((m) => m.id === messageId);
+    if (!target) throw new Error("Message not found.");
+    await updateMessageStatus(user.uid, messageId, "approved", {
+      approved_at: new Date().toISOString(),
+    });
+    await updateLeadFields(user.uid, target.lead_id, { status: "approved" });
+    toast.success("Approved & moved to Ready to Send", "The rewritten email is saved.");
+    closeDrawer();
+    await reload();
+  };
+
+  const saveDraftOnly = async (message: MessageRow) => {
+    setBusy(`save:${message.id}`);
+    setError(null);
+    try {
+      await updateMessageContent(user.uid, message.id, { subject, body });
+      toast.success("Changes saved", "It stays under Awaiting approval.");
+      setReview({ ...message, subject, body });
+      await reload();
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setBusy(null);
     }
   };
 
@@ -207,7 +331,6 @@ export default function ReviewPage() {
         const ok = await reconnectWorkspace();
         if (!ok) throw new Error("Connect Google before sending emails.");
       }
-      // Save any edits, then approve, so "Send now" works straight from the modal.
       await updateMessageContent(user.uid, message.id, { subject, body });
       if (message.status !== "approved") {
         await updateMessageStatus(user.uid, message.id, "approved", {
@@ -217,7 +340,7 @@ export default function ReviewPage() {
       }
       const result = await sendMessageNow(user.uid, message.id);
       setNotice(result.info);
-      setOpen(null);
+      closeDrawer();
       await reload();
     } catch (err) {
       setError(errorMessage(err));
@@ -226,10 +349,7 @@ export default function ReviewPage() {
     }
   };
 
-  const act = async (
-    action: "approve_all" | "edit" | "draft" | "approve" | "reject" | "regenerate",
-    id?: string,
-  ) => {
+  const act = async (action: "approve_all" | "reject" | "regenerate", id?: string) => {
     setBusy(action);
     setError(null);
     setNotice(null);
@@ -245,24 +365,10 @@ export default function ReviewPage() {
         const currentMsg = messages.find((m) => m.id === id);
         if (!currentMsg) throw new Error("Message not found.");
 
-        if (action === "edit") {
-          await updateMessageContent(user.uid, id, { subject, body });
-          setNotice("Changes saved.");
-        } else if (action === "draft") {
-          await updateMessageContent(user.uid, id, { subject, body });
-          await updateMessageStatus(user.uid, id, "draft");
-          setNotice("Saved as a draft. It stays under All emails until you approve or send it.");
-          setOpen(null);
-        } else if (action === "approve") {
-          await updateMessageContent(user.uid, id, { subject, body });
-          await updateMessageStatus(user.uid, id, "approved", { approved_at: new Date().toISOString() });
-          await updateLeadFields(user.uid, currentMsg.lead_id, { status: "approved" });
-          setNotice("Approved successfully.");
-          setOpen(null);
-        } else if (action === "reject") {
+        if (action === "reject") {
           await updateMessageStatus(user.uid, id, "cancelled");
-          setNotice("Message rejected.");
-          setOpen(null);
+          toast.info("Rejected", "This email will never be sent.");
+          closeDrawer();
         } else if (action === "regenerate") {
           const lead = leads.find((l) => l.id === currentMsg.lead_id);
           const camp = campaigns.find((c) => c.id === currentMsg.campaign_id);
@@ -296,7 +402,7 @@ export default function ReviewPage() {
           });
           setSubject(composed.subject);
           setBody(composed.body);
-          setNotice("Email regenerated with Gemini.");
+          setNotice("Email rewritten.");
         }
       }
       await reload();
@@ -321,7 +427,7 @@ export default function ReviewPage() {
     setError(null);
     try {
       await deleteMessage(user.uid, message.id);
-      setOpen(null);
+      closeDrawer();
       await reload();
       toast.success("Email deleted", "It is gone from the review queue.");
     } catch (err) {
@@ -362,42 +468,38 @@ export default function ReviewPage() {
     }
   };
 
+  const allOnPageSelected = paged.length > 0 && paged.every((m) => selectedIds.includes(m.id));
+
   return (
     <main className="page">
       <div className="page-head">
         <div>
           <h1 className="page-title">Email review</h1>
           <p className="page-sub">
-            Every email is written from the stored research. Read it, edit it, or regenerate it. Only approved emails
-            can be sent, and only inside your sending window and limits.
+            Read, edit, and approve. Only approved emails can be sent, and only inside your sending
+            window and limits.
           </p>
         </div>
-        <div className="row-end" style={{ gap: 8 }}>
+        <div className="row-end" style={{ gap: 8, flexWrap: "wrap" }}>
           <button
-            className="btn btn-sm btn-primary"
-            onClick={() =>
-              setRewriteTrigger({
-                scope: selectedIds.length > 0 ? "selected" : "all",
-                selectedIds,
-                nonce: Date.now(),
-              })
-            }
-            disabled={rows.length === 0}
             type="button"
+            className="btn btn-sm"
+            disabled={selectedIds.length === 0}
+            onClick={() => launchRewrite(selectedIds)}
+            title={`Rewrite up to ${MAX_REWRITE_BATCH} selected emails with AI`}
           >
             <Sparkles size={13} aria-hidden="true" />
-            Rewrite all with AI
+            Rewrite Selected ({Math.min(selectedIds.length, MAX_REWRITE_BATCH)})
           </button>
           <button
-            className="btn btn-sm"
-            onClick={() => {
-              const nextInQueue = filtered.find((item) => item.status === "pending_approval") ?? filtered[0];
-              if (nextInQueue) openMessageModal(nextInQueue);
-            }}
-            disabled={filtered.length === 0}
             type="button"
+            className="btn btn-sm btn-primary"
+            disabled={nextBatchIds.length === 0}
+            onClick={() => launchRewrite(nextBatchIds)}
+            title={`Rewrite the next ${QUICK_REWRITE_BATCH} emails awaiting approval`}
           >
-            Review next email
+            <Sparkles size={13} aria-hidden="true" />
+            Rewrite Next {QUICK_REWRITE_BATCH}
           </button>
         </div>
       </div>
@@ -406,29 +508,26 @@ export default function ReviewPage() {
         {error && <Banner tone="bad">{error}</Banner>}
         {notice && <Banner tone="ok">{notice}</Banner>}
 
-        <EmailRewriteWorkspace
-          selectedIds={selectedIds}
-          preflightTrigger={rewriteTrigger}
-          onAcceptedChanges={reload}
-        />
-
         <Card tight>
           <div style={{ padding: "12px 16px 0" }}>
             <div className="tabs">
-              {TABS.map(([value, text]) => (
-                <button
-                  key={value}
-                  className={`tab${tab === value ? " active" : ""}`}
-                  onClick={() => {
-                    setTab(value);
-                    setPage(1);
-                  }}
-                  type="button"
-                >
-                  {text}
-                  {value === "pending_approval" && counts.pending_approval ? ` (${counts.pending_approval})` : ""}
-                </button>
-              ))}
+              {TABS.map(([value, text]) => {
+                const count = tabCount(value);
+                return (
+                  <button
+                    key={value}
+                    className={`tab${tab === value ? " active" : ""}`}
+                    onClick={() => {
+                      setTab(value);
+                      setPage(1);
+                    }}
+                    type="button"
+                  >
+                    {text}
+                    {value !== "all" && count > 0 ? ` (${count})` : ""}
+                  </button>
+                );
+              })}
             </div>
             <div className="row" style={{ paddingBottom: 14 }}>
               <select
@@ -455,7 +554,7 @@ export default function ReviewPage() {
               >
                 Approve all pending in campaign
               </button>
-              {rejectedCount > 0 && (
+              {counts.rejected > 0 && (
                 <button
                   className="btn btn-sm btn-danger"
                   onClick={() => void removeRejected()}
@@ -466,12 +565,12 @@ export default function ReviewPage() {
                   <Trash2 size={12} aria-hidden="true" />
                   {busy === "delete_rejected"
                     ? "Deleting…"
-                    : `Delete rejected & failed (${rejectedCount})`}
+                    : `Delete rejected & failed (${counts.rejected})`}
                 </button>
               )}
               <BatchRunner
                 type="send"
-                label="Send all approved"
+                label={`Send Approved (${counts.approved})`}
                 limit={2}
                 confirmText="Send every approved email now from your connected Gmail account? They go to real prospects."
                 onDone={reload}
@@ -487,7 +586,9 @@ export default function ReviewPage() {
           ) : paged.length === 0 ? (
             <div style={{ padding: 18 }}>
               <Empty title="Nothing in this view">
-                Generate emails from the Prospect research or Campaigns page once prospects are qualified.
+                {tab === "missing_email"
+                  ? "Every email in this campaign has a deliverable address."
+                  : "Generate emails from the Prospect research or Campaigns page once prospects are qualified."}
               </Empty>
             </div>
           ) : (
@@ -499,7 +600,7 @@ export default function ReviewPage() {
                       <input
                         type="checkbox"
                         aria-label="Select page emails"
-                        checked={paged.length > 0 && paged.every((m) => selectedIds.includes(m.id))}
+                        checked={allOnPageSelected}
                         onChange={(e) =>
                           setSelectedIds((prev) =>
                             e.target.checked
@@ -520,11 +621,11 @@ export default function ReviewPage() {
                 </thead>
                 <tbody>
                   {paged.map((message) => (
-                    <tr key={message.id} className="clickable" onClick={() => openMessageModal(message)}>
+                    <tr key={message.id} className="clickable" onClick={() => openReview(message)}>
                       <td onClick={(e) => e.stopPropagation()}>
                         <input
                           type="checkbox"
-                          aria-label={`Select email for ${message.business ?? message.id}`}
+                          aria-label={`Select email for ${message.displayName}`}
                           checked={selectedIds.includes(message.id)}
                           onChange={(e) =>
                             setSelectedIds((prev) =>
@@ -536,9 +637,9 @@ export default function ReviewPage() {
                         />
                       </td>
                       <td>
-                        <div className="strong">{message.business ?? "—"}</div>
+                        <div className="strong">{message.displayName}</div>
                         <div className="tiny">
-                          {message.lead_email ?? "no email"} · {message.contact_name ?? "no contact name"}
+                          {hasSendableEmail(message.lead_email) ? message.lead_email : "no email"}
                         </div>
                       </td>
                       <td style={{ maxWidth: 320 }}>{message.subject ?? "—"}</td>
@@ -559,13 +660,7 @@ export default function ReviewPage() {
                           <button
                             type="button"
                             className="btn btn-sm btn-ghost"
-                            onClick={() =>
-                              setRewriteTrigger({
-                                scope: "selected",
-                                selectedIds: [message.id],
-                                nonce: Date.now(),
-                              })
-                            }
+                            onClick={() => launchRewrite([message.id])}
                           >
                             <Sparkles size={12} aria-hidden="true" />
                             Rewrite
@@ -584,136 +679,214 @@ export default function ReviewPage() {
         </Card>
       </div>
 
-      <Modal open={Boolean(open)} onClose={() => setOpen(null)} title={open?.business ?? "Email"} large>
-        {open && (
-          <>
-            <div className="row" style={{ marginBottom: 12 }}>
-              <Badge tone={statusTone(open.status)}>{label(open.status)}</Badge>
-              {open.service && <Badge tone="info">{open.service}</Badge>}
-              {open.angle && <Badge tone="gold">{open.angle}</Badge>}
+      {drawerMode && (
+        <div
+          onClick={closeDrawer}
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(12, 20, 24, 0.42)",
+            zIndex: 60,
+            display: "flex",
+            justifyContent: "flex-end",
+          }}
+        >
+          <aside
+            onClick={(e) => e.stopPropagation()}
+            role="dialog"
+            aria-label="Email review panel"
+            style={{
+              width: "min(760px, 100vw)",
+              height: "100%",
+              overflowY: "auto",
+              background: "var(--surface)",
+              borderLeft: "1px solid var(--line)",
+              boxShadow: "-18px 0 40px rgba(0,0,0,0.14)",
+              padding: "16px 18px 40px",
+            }}
+          >
+            <div
+              className="row"
+              style={{ justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}
+            >
+              <button
+                type="button"
+                className="btn btn-sm btn-ghost"
+                onClick={closeDrawer}
+                title="Back to the email list"
+              >
+                <ChevronLeft size={13} aria-hidden="true" />
+                Back to Email List
+              </button>
+              <button
+                type="button"
+                className="btn btn-sm btn-ghost"
+                onClick={closeDrawer}
+                aria-label="Close review panel"
+              >
+                <X size={14} aria-hidden="true" />
+              </button>
             </div>
-            <div className="field">
-              <span className="label">Subject</span>
-              <div className="row reply-subject-row">
-                <input className="input" value={subject} onChange={(e) => setSubject(e.target.value)} />
-                <button
-                  className="btn btn-sm btn-ghost"
-                  onClick={() => void suggestSubject(open)}
-                  disabled={subjectBusy || busy !== null}
-                  type="button"
-                  title="Ask AI for subject lines based on this email"
-                >
-                  <Sparkles size={12} aria-hidden="true" />
-                  {subjectBusy ? "Thinking…" : "Suggest"}
-                </button>
-              </div>
-              {subjectIdeas.length > 0 && (
-                <div className="row refine-tones" style={{ marginTop: 6 }}>
-                  {subjectIdeas.map((idea) => (
-                    <button
-                      key={idea}
-                      className="btn btn-sm btn-ghost"
-                      type="button"
-                      title="Use this subject"
-                      onClick={() => setSubject(idea)}
-                    >
-                      {idea}
-                    </button>
-                  ))}
+
+            {drawerMode === "rewrite" ? (
+              <>
+                <EmailRewriteWorkspace
+                  selectedIds={selectedIds}
+                  preflightTrigger={rewriteTrigger}
+                  onAcceptedChanges={reload}
+                  onApproveMessage={approveMessageById}
+                />
+              </>
+            ) : review ? (
+              <div className="stack" style={{ gap: 12 }}>
+                <div className="row" style={{ gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+                  <span className="strong" style={{ fontSize: 16 }}>
+                    {review.displayName}
+                  </span>
+                  <Badge tone={statusTone(review.status)}>{label(review.status)}</Badge>
+                  {review.service && <Badge tone="info">{review.service}</Badge>}
+                  {review.angle && <Badge tone="gold">{review.angle}</Badge>}
                 </div>
-              )}
-            </div>
-            <EmailBodyEditor value={body} onChange={setBody} minHeight={260} />
-            {open.rationale && (
-              <div style={{ marginBottom: 12 }}>
-                <div className="label">Why this approach</div>
-                <p className="tiny" style={{ whiteSpace: "pre-wrap" }}>
-                  {open.rationale}
-                </p>
+
+                <div className="tiny">
+                  <strong>To:</strong>{" "}
+                  {hasSendableEmail(review.lead_email) ? review.lead_email : "no email address"}
+                  {review.contact_name ? ` · ${review.contact_name}` : ""}
+                </div>
+
+                {!hasSendableEmail(review.lead_email) && (
+                  <Banner tone="warn">
+                    This prospect has no email address, so this draft cannot be sent. Find a contact
+                    in Leads before approving it.
+                  </Banner>
+                )}
+
+                <div className="field">
+                  <span className="label">Subject</span>
+                  <div className="row reply-subject-row">
+                    <input
+                      className="input"
+                      value={subject}
+                      onChange={(e) => setSubject(e.target.value)}
+                    />
+                    <button
+                      className="btn btn-sm btn-ghost"
+                      onClick={() => void suggestSubject(review)}
+                      disabled={subjectBusy || busy !== null}
+                      type="button"
+                      title="Ask AI for subject lines based on this email"
+                    >
+                      <Sparkles size={12} aria-hidden="true" />
+                      {subjectBusy ? "Thinking…" : "Suggest"}
+                    </button>
+                  </div>
+                  {subjectIdeas.length > 0 && (
+                    <div className="row refine-tones" style={{ marginTop: 6 }}>
+                      {subjectIdeas.map((idea) => (
+                        <button
+                          key={idea}
+                          className="btn btn-sm btn-ghost"
+                          type="button"
+                          title="Use this subject"
+                          onClick={() => setSubject(idea)}
+                        >
+                          {idea}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                <EmailBodyEditor value={body} onChange={setBody} minHeight={260} />
+
+                <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
+                  <button
+                    className="btn btn-sm btn-primary"
+                    onClick={() => void approveMessage(review)}
+                    disabled={busy !== null || !hasSendableEmail(review.lead_email)}
+                    type="button"
+                  >
+                    {busy === `approve:${review.id}` ? (
+                      <>
+                        <Loader2 size={12} className="spin" aria-hidden="true" />
+                        Approving…
+                      </>
+                    ) : (
+                      <>
+                        <Check size={12} aria-hidden="true" />
+                        Approve &amp; Save
+                      </>
+                    )}
+                  </button>
+                  <button
+                    className="btn btn-sm"
+                    onClick={() => void saveDraftOnly(review)}
+                    disabled={busy !== null}
+                    type="button"
+                  >
+                    <Save size={12} aria-hidden="true" />
+                    {busy === `save:${review.id}` ? "Saving…" : "Save Changes"}
+                  </button>
+                  <button
+                    className="btn btn-sm"
+                    onClick={() => void act("regenerate", review.id)}
+                    disabled={busy !== null}
+                    type="button"
+                  >
+                    {busy === "regenerate" ? "Rewriting…" : "Rewrite with AI"}
+                  </button>
+                  <button
+                    className="btn btn-sm btn-primary"
+                    onClick={() => void sendNow(review)}
+                    disabled={busy !== null || !hasSendableEmail(review.lead_email)}
+                    type="button"
+                  >
+                    {busy === `send:${review.id}` ? "Sending…" : "Send now"}
+                  </button>
+                  <button
+                    className="btn btn-sm btn-danger"
+                    onClick={() => void act("reject", review.id)}
+                    disabled={busy !== null}
+                    type="button"
+                  >
+                    Reject
+                  </button>
+                  <button
+                    className="btn btn-sm btn-ghost"
+                    onClick={() => void removeMessage(review)}
+                    disabled={busy !== null}
+                    type="button"
+                  >
+                    <Trash2 size={12} aria-hidden="true" />
+                    {busy === `delete:${review.id}` ? "Deleting…" : "Delete"}
+                  </button>
+                </div>
+
+                {review.rationale && (
+                  <details>
+                    <summary className="tiny strong" style={{ cursor: "pointer" }}>
+                      Why AI wrote this ▸
+                    </summary>
+                    <p className="tiny" style={{ whiteSpace: "pre-wrap", marginTop: 6 }}>
+                      {review.rationale}
+                    </p>
+                  </details>
+                )}
+
+                <details>
+                  <summary className="tiny strong" style={{ cursor: "pointer" }}>
+                    Compare with original ▸
+                  </summary>
+                  <div className="tiny" style={{ whiteSpace: "pre-wrap", marginTop: 6 }}>
+                    {review.body || "(no original body stored)"}
+                  </div>
+                </details>
               </div>
-            )}
-            <div className="row" style={{ marginBottom: 10 }}>
-              <button
-                className="btn btn-sm btn-primary"
-                onClick={() => void sendNow(open)}
-                disabled={busy !== null}
-                type="button"
-              >
-                {busy === `send:${open.id}` ? "Sending…" : "Send now"}
-              </button>
-              <button
-                className="btn btn-sm"
-                onClick={() => void act("approve", open.id)}
-                disabled={busy !== null}
-                type="button"
-              >
-                Approve and send later
-              </button>
-              <button
-                className="btn btn-sm"
-                onClick={() => void act("edit", open.id)}
-                disabled={busy !== null}
-                type="button"
-              >
-                Save my edits
-              </button>
-              <button
-                className="btn btn-sm"
-                onClick={() => void act("draft", open.id)}
-                disabled={busy !== null}
-                type="button"
-                title="Keep this email unsent and finish it later"
-              >
-                <Save size={12} aria-hidden="true" />
-                {busy === "draft" ? "Saving…" : "Save as draft"}
-              </button>
-              <button
-                className="btn btn-sm btn-ghost"
-                onClick={() => void act("regenerate", open.id)}
-                disabled={busy !== null}
-                type="button"
-              >
-                {busy === "regenerate" ? "Rewriting…" : "Regenerate with AI"}
-              </button>
-              {open.status !== "sent" && open.status !== "sending" && (
-                <button
-                  className="btn btn-sm btn-ghost"
-                  type="button"
-                  onClick={() => {
-                    const targetId = open.id;
-                    setOpen(null);
-                    setRewriteTrigger({ scope: "selected", selectedIds: [targetId], nonce: Date.now() });
-                  }}
-                >
-                  <Sparkles size={12} aria-hidden="true" />
-                  AI Rewrite & Diff
-                </button>
-              )}
-              <span className="tiny row-end">To: {open.lead_email ?? "no address"}</span>
-            </div>
-            <div className="row">
-              <button
-                className="btn btn-sm btn-danger"
-                onClick={() => void act("reject", open.id)}
-                disabled={busy !== null}
-                type="button"
-              >
-                Reject this email
-              </button>
-              <button
-                className="btn btn-sm btn-ghost"
-                onClick={() => void removeMessage(open)}
-                disabled={busy !== null}
-                type="button"
-              >
-                <Trash2 size={12} aria-hidden="true" />
-                {busy === `delete:${open.id}` ? "Deleting…" : "Delete this email"}
-              </button>
-              <span className="tiny">Rejected emails are never sent.</span>
-            </div>
-          </>
-        )}
-      </Modal>
+            ) : null}
+          </aside>
+        </div>
+      )}
+
     </main>
   );
 }
