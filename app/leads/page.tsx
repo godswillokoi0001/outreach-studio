@@ -3,12 +3,11 @@
 import { BrandLoader } from "@/components/BrandLoader";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { usePersistedPageState } from "@/lib/usePersistedPageState";
-import { Bot, Plus, SlidersHorizontal, X } from "lucide-react";
+import { clearPageState, usePersistedPageState } from "@/lib/usePersistedPageState";
+import { Bot, Eye, Globe, Link2, Phone, Plus, SlidersHorizontal, Trash2, X } from "lucide-react";
 import { useAuth } from "@/components/AuthProvider";
 import { Badge, Banner, Card, Empty, Field, Modal, Pager } from "@/components/ui";
-import { MobileFeedRow } from "@/components/ui/MobileFeedRow";
-import { confirmDialog } from "@/components/Feedback";
+import { confirmDialog, useToast } from "@/components/Feedback";
 import { errorMessage } from "@/lib/client";
 import { isLeadMissingVerifiedContact } from "@/lib/search/contactGate";
 import { NarratorControl } from "@/components/NarratorControl";
@@ -28,6 +27,7 @@ const PAGE_SIZE = 20;
 
 export default function LeadsPage() {
   const { user } = useAuth();
+  const toast = useToast();
   const [allLeads, setAllLeads] = useState<Lead[]>([]);
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [renderNow] = useState(() => Date.now());
@@ -111,14 +111,33 @@ export default function LeadsPage() {
     };
   }, [user.uid]);
 
+  /**
+   * The only way to close the drawer. Clearing React state, the persisted id
+   * and any URL/storage trace in the same tick is what stops the modal from
+   * re-opening itself after Close, Escape or a backdrop click.
+   */
+  const closeLead = useCallback(() => {
+    setSelected(null);
+    setSelectedLeadId(null);
+    clearPageState("leads:open");
+  }, [setSelectedLeadId]);
+
   // Restore the lead drawer across navigation once the list has loaded.
   useEffect(() => {
     if (loading || !selectedLeadId || selected?.id === selectedLeadId) return;
     const lead = allLeads.find((l) => l.id === selectedLeadId);
-    if (!lead) return;
+    if (!lead) {
+      // The stored lead no longer exists (deleted in another tab): drop the id
+      // instead of keeping a restore loop alive.
+      const timer = window.setTimeout(() => {
+        setSelectedLeadId(null);
+        clearPageState("leads:open");
+      }, 0);
+      return () => window.clearTimeout(timer);
+    }
     const timer = window.setTimeout(() => setSelected(lead), 0);
     return () => window.clearTimeout(timer);
-  }, [loading, selectedLeadId, allLeads, selected]);
+  }, [loading, selectedLeadId, allLeads, selected, setSelectedLeadId]);
 
   useEffect(() => {
     if (loading) return;
@@ -362,17 +381,28 @@ export default function LeadsPage() {
   const remove = async (lead: Lead) => {
     const proceed = await confirmDialog({
       title: `Delete ${lead.business ?? lead.email}?`,
-      message: "Its messages and replies are deleted with it. This cannot be undone.",
+      message: "Its emails, follow-ups, replies and activity are deleted with it. This cannot be undone.",
       confirmLabel: "Delete prospect",
       tone: "bad",
     });
     if (!proceed) return;
+    setBusy(lead.id);
+    setNotice(null);
     try {
       await deleteLeadCascade(user.uid, lead.id);
-      setSelected(null);
+      // Remove it locally first so the row disappears immediately, then clear
+      // every persisted trace so the drawer cannot re-open on a dead id.
+      setAllLeads((prev) => prev.filter((l) => l.id !== lead.id));
+      setChecked((prev) => prev.filter((id) => id !== lead.id));
+      closeLead();
+      toast.success("Prospect deleted", `${lead.business ?? lead.email ?? "The prospect"} and its history were removed.`);
       await load();
     } catch (err) {
-      setNotice(errorMessage(err));
+      const message = errorMessage(err);
+      setNotice(message);
+      toast.error("Could not delete prospect", message);
+    } finally {
+      setBusy(null);
     }
   };
 
@@ -998,19 +1028,81 @@ export default function LeadsPage() {
             </div>
           ) : (
             <>
-            <div className="m-feed mobile-only">
-              {paged.map((lead) => (
-                <MobileFeedRow
-                  key={lead.id}
-                  title={lead.business ?? lead.email ?? "Untitled lead"}
-                  subtitle={lead.email ?? lead.contact_name ?? "No email yet"}
-                  meta={[lead.location, lead.industry].filter(Boolean).join(" · ")}
-                  side={lead.score ?? "—"}
-                  status={label(lead.status)}
-                  statusTone={statusTone(lead.status) as "ok" | "warn" | "bad" | "info"}
-                  onClick={() => setSelected(lead)}
-                />
-              ))}
+            <div className="mobile-only stack" style={{ gap: 10, padding: "0 12px 14px" }}>
+              {paged.map((lead) => {
+                const socials = lead.research?.socials ?? [];
+                return (
+                  <article
+                    key={lead.id}
+                    className="card"
+                    style={{ padding: 12, borderRadius: 12, display: "grid", gap: 8, minWidth: 0 }}
+                  >
+                    <div className="row" style={{ justifyContent: "space-between", gap: 8, minWidth: 0 }}>
+                      <button
+                        type="button"
+                        onClick={() => setSelected(lead)}
+                        className="strong"
+                        style={{
+                          border: 0,
+                          background: "none",
+                          padding: 0,
+                          textAlign: "left",
+                          minWidth: 0,
+                          flex: 1,
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "nowrap",
+                          fontSize: 15,
+                        }}
+                      >
+                        {lead.business ?? lead.email ?? "Untitled lead"}
+                      </button>
+                      <span className={`score ${scoreClass(lead.score)}`} style={{ flexShrink: 0 }}>
+                        {lead.score ?? "—"}
+                      </span>
+                    </div>
+                    <div
+                      className="tiny muted"
+                      style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}
+                    >
+                      {lead.email ?? lead.contact_name ?? "No verified email yet"}
+                    </div>
+                    <div className="row" style={{ justifyContent: "space-between", gap: 8, minWidth: 0 }}>
+                      <div className="tiny muted row" style={{ gap: 8, minWidth: 0, flexWrap: "nowrap" }}>
+                        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          {lead.location ?? lead.industry ?? "—"}
+                        </span>
+                        {lead.phone && <Phone size={13} aria-label="Phone available" style={{ flexShrink: 0 }} />}
+                        {socials.some((s) => /linkedin/i.test(s.platform)) && (
+                          <Link2 size={13} aria-label="LinkedIn available" style={{ flexShrink: 0 }} />
+                        )}
+                        {lead.website && <Globe size={13} aria-label="Website available" style={{ flexShrink: 0 }} />}
+                      </div>
+                      <div className="row" style={{ gap: 4, flexShrink: 0 }}>
+                        <button
+                          type="button"
+                          className="btn btn-sm"
+                          aria-label={`View ${lead.business ?? lead.email ?? "prospect"}`}
+                          onClick={() => setSelected(lead)}
+                          style={{ width: 44, height: 44, padding: 0, justifyContent: "center" }}
+                        >
+                          <Eye size={16} />
+                        </button>
+                        <button
+                          type="button"
+                          className="btn btn-sm btn-danger"
+                          aria-label={`Delete ${lead.business ?? lead.email ?? "prospect"}`}
+                          disabled={busy === lead.id}
+                          onClick={() => void remove(lead)}
+                          style={{ width: 44, height: 44, padding: 0, justifyContent: "center" }}
+                        >
+                          <Trash2 size={16} />
+                        </button>
+                      </div>
+                    </div>
+                  </article>
+                );
+              })}
             </div>
             <div className="table-wrap desktop-only">
               {checked.length > 0 && (
@@ -1069,14 +1161,12 @@ export default function LeadsPage() {
                         }
                       />
                     </th>
-                    <th>Business</th>
-                    <th>Contact</th>
-                    <th>Industry</th>
-                    <th>Campaign</th>
-                    <th className="num">Score</th>
-                    <th>Priority</th>
-                    <th>Status</th>
-                    <th>Updated</th>
+                    <th style={{ width: "26%" }}>Lead / Company</th>
+                    <th style={{ width: "32%" }}>Contact</th>
+                    <th style={{ width: "14%" }}>Location</th>
+                    <th className="num" style={{ width: "8%" }}>Score</th>
+                    <th style={{ width: "12%" }}>Status</th>
+                    <th style={{ width: "8%" }}>Actions</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1094,57 +1184,71 @@ export default function LeadsPage() {
                           }
                         />
                       </td>
-                      <td>
-                        <div className="strong">{lead.business ?? "—"}</div>
-                        <div className="row" style={{ gap: 4, flexWrap: "wrap", marginTop: 3 }}>
-                          {isLeadMissingVerifiedContact(lead).needsVerification ? (
-                            <Badge tone="warn">Needs Contact Verification</Badge>
-                          ) : (
-                            <>
-                              {lead.email && (
-                                <Badge tone={lead.research?.mx_verified ? "ok" : "info"}>
-                                  {lead.email}
-                                  {lead.research?.email_type ? ` (${lead.research.email_type === "direct" ? "Direct" : "Role"})` : ""}
-                                  {lead.research?.mx_verified ? " · MX" : ""}
-                                </Badge>
-                              )}
-                              {lead.phone && <Badge>{lead.phone}</Badge>}
-                              {(lead.research?.socials ?? []).slice(0, 2).map((s, sIdx) => (
-                                <Badge key={sIdx} tone="info">
-                                  {s.platform}
-                                </Badge>
-                              ))}
-                            </>
-                          )}
+                      <td style={{ minWidth: 0 }}>
+                        <div className="strong truncate">{lead.business ?? "—"}</div>
+                        <div className="tiny muted truncate" style={{ marginTop: 2 }}>
+                          {[lead.industry, lead.campaign_id ? campaignNames[lead.campaign_id] : "Unassigned"]
+                            .filter(Boolean)
+                            .join(" · ")}
                         </div>
-                        {lead.location && <div className="tiny muted" style={{ marginTop: 2 }}>{lead.location}</div>}
-                        {lead.research?.first_line && (
-                          <div className="tiny" style={{ marginTop: 2, color: "var(--ink-2)" }}>
-                            Hook: {lead.research.first_line.slice(0, 95)}
-                            {lead.research.first_line.length > 95 ? "…" : ""}
-                          </div>
-                        )}
                       </td>
-                      <td>
-                        {lead.contact_name ?? "—"}
-                        <div className="tiny">{lead.role ?? ""}</div>
-                      </td>
-                      <td>{lead.industry ?? "—"}</td>
-                      <td className="tiny nowrap">
-                        {lead.campaign_id ? (
-                          campaignNames[lead.campaign_id] ?? "Campaign"
+                      <td style={{ minWidth: 0 }}>
+                        {isLeadMissingVerifiedContact(lead).needsVerification ? (
+                          <Badge tone="warn">Needs Contact Verification</Badge>
                         ) : (
-                          <span className="tiny">Unassigned</span>
+                          <>
+                            <div className="truncate" style={{ fontSize: 12.8 }}>
+                              {lead.email ?? lead.contact_name ?? "—"}
+                            </div>
+                            <div className="row" style={{ gap: 6, marginTop: 3, alignItems: "center" }}>
+                              <span className="tiny muted truncate" style={{ minWidth: 0 }}>
+                                {[lead.contact_name ? `Attn: ${lead.contact_name}` : "", lead.role]
+                                  .filter(Boolean)
+                                  .join(" · ") || "No named contact"}
+                              </span>
+                              <span className="row" style={{ gap: 4, flexShrink: 0, color: "var(--ink-2)" }}>
+                                {lead.phone && <Phone size={12} aria-label="Phone available" />}
+                                {(lead.research?.socials ?? []).some((s) => /linkedin/i.test(s.platform)) && (
+                                  <Link2 size={12} aria-label="LinkedIn available" />
+                                )}
+                                {lead.website && <Globe size={12} aria-label="Website available" />}
+                              </span>
+                            </div>
+                          </>
                         )}
+                      </td>
+                      <td className="tiny" style={{ minWidth: 0 }}>
+                        <div className="truncate">{lead.location ?? "—"}</div>
                       </td>
                       <td className="num">
                         <span className={`score ${scoreClass(lead.score)}`}>{lead.score ?? "—"}</span>
                       </td>
-                      <td>{lead.priority ? <Badge tone={priorityTone(lead.priority)}>{label(lead.priority)}</Badge> : "—"}</td>
                       <td>
                         <Badge tone={statusTone(lead.status)}>{label(lead.status)}</Badge>
                       </td>
-                      <td className="tiny nowrap">{fmtDate(lead.updated_at)}</td>
+                      <td onClick={(e) => e.stopPropagation()}>
+                        <div className="row" style={{ gap: 4, flexWrap: "nowrap" }}>
+                          <button
+                            type="button"
+                            className="btn btn-sm btn-ghost"
+                            aria-label={`View ${lead.business ?? lead.email ?? "prospect"}`}
+                            onClick={() => setSelected(lead)}
+                            style={{ padding: "4px 6px" }}
+                          >
+                            <Eye size={14} />
+                          </button>
+                          <button
+                            type="button"
+                            className="btn btn-sm btn-danger"
+                            aria-label={`Delete ${lead.business ?? lead.email ?? "prospect"}`}
+                            disabled={busy === lead.id}
+                            onClick={() => void remove(lead)}
+                            style={{ padding: "4px 6px" }}
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        </div>
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -1163,7 +1267,7 @@ export default function LeadsPage() {
         lead={selected}
         campaigns={campaigns}
         busy={busy === selected?.id || busy === "move"}
-        onClose={() => setSelected(null)}
+        onClose={closeLead}
         onSave={async (patch) => {
           if (selected) await update(selected.id, patch);
         }}

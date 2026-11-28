@@ -27,6 +27,7 @@ import {
   type LeadField,
 } from "./columns";
 import { randomId } from "./crypto";
+import { buildFollowupBoard } from "./followups";
 import {
   clampReqStr,
   clampStr,
@@ -1084,6 +1085,9 @@ export async function updateLeadFields(
 export async function deleteLeadCascade(uid: string, leadId: string): Promise<void> {
   const path = `users/${uid}/leads/${leadId}`;
   try {
+    // Every child row is removed in the same batch as the lead, so a foreign
+    // key can never silently block the delete (messages include follow-ups and
+    // reply records; leadEvents holds the audit trail).
     const batch = writeBatch(db);
     const [msgs, reps, evts] = await Promise.all([
       getDocs(query(collection(db, `users/${uid}/messages`), where("ownerId", "==", uid))),
@@ -1104,6 +1108,9 @@ export async function deleteLeadCascade(uid: string, leadId: string): Promise<vo
     await writeAuditLog(uid, "lead_deleted", "lead", leadId);
   } catch (err) {
     handleDataError(err, OperationType.DELETE, path);
+    // The caller must know the delete failed instead of reloading the list and
+    // pretending the prospect vanished.
+    throw err instanceof Error ? err : new Error("Could not delete this prospect. Please try again.");
   }
 }
 
@@ -2045,6 +2052,16 @@ export async function loadFollowupsBundle(uid: string) {
   return { due, drafted, followupsSent };
 }
 
+export async function loadFollowupBoard(uid: string) {
+  const [leads, campaigns, messages, replies] = await Promise.all([
+    listLeads(uid),
+    listCampaigns(uid),
+    listMessages(uid),
+    listReplies(uid),
+  ]);
+  return buildFollowupBoard({ leads, campaigns, messages, replies });
+}
+
 export function subscribeBadgeCounts(
   uid: string,
   onChange: (counts: {
@@ -2255,6 +2272,15 @@ export async function saveGrowthAdvisorReport(uid: string, report: GrowthAdvisor
     }
   } catch (err) {
     handleDataError(err, OperationType.WRITE, path);
+  }
+}
+
+export async function clearGrowthAdvisorReport(uid: string): Promise<void> {
+  const docId = `growth_advisor_report_${uid}`;
+  try {
+    await deleteDoc(doc(db, "users", uid, "knowledge", docId));
+  } catch (err) {
+    handleDataError(err, OperationType.DELETE, `users/${uid}/knowledge/${docId}`);
   }
 }
 

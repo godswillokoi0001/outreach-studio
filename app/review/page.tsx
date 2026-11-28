@@ -538,7 +538,7 @@ export default function ReviewPage() {
           </button>
           <button
             type="button"
-            className="btn btn-sm btn-primary"
+            className="btn btn-sm"
             disabled={nextBatchIds.length === 0}
             onClick={() => launchRewrite(nextBatchIds)}
             title={`Rewrite the next ${QUICK_REWRITE_BATCH} emails awaiting approval`}
@@ -546,6 +546,14 @@ export default function ReviewPage() {
             <Sparkles size={13} aria-hidden="true" />
             Rewrite Next {QUICK_REWRITE_BATCH}
           </button>
+          <BatchRunner
+            type="send"
+            label={`Send Approved (${counts.approved})`}
+            limit={2}
+            variant="primary"
+            confirmText="Send every approved email now from your connected Gmail account? They go to real prospects."
+            onDone={reload}
+          />
         </div>
       </div>
 
@@ -613,13 +621,6 @@ export default function ReviewPage() {
                     : `Delete rejected & failed (${counts.rejected})`}
                 </button>
               )}
-              <BatchRunner
-                type="send"
-                label={`Send Approved (${counts.approved})`}
-                limit={2}
-                confirmText="Send every approved email now from your connected Gmail account? They go to real prospects."
-                onDone={reload}
-              />
               <button
                 type="button"
                 className="btn btn-sm btn-ghost"
@@ -683,13 +684,12 @@ export default function ReviewPage() {
                         }
                       />
                     </th>
-                    <th>Prospect</th>
-                    <th>Subject</th>
-                    <th>Type</th>
-                    <th>Score</th>
-                    <th>Status</th>
-                    <th>Created</th>
-                    <th />
+                    <th style={{ width: "24%" }}>Prospect</th>
+                    <th style={{ width: "32%" }}>Subject</th>
+                    <th style={{ width: "10%" }}>Type</th>
+                    <th className="num" style={{ width: "8%" }}>Score</th>
+                    <th style={{ width: "14%" }}>Status</th>
+                    <th style={{ width: "12%" }}>Actions</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -715,7 +715,9 @@ export default function ReviewPage() {
                           {hasSendableEmail(message.lead_email) ? message.lead_email : "no email"}
                         </div>
                       </td>
-                      <td style={{ maxWidth: 320 }}>{message.subject ?? "—"}</td>
+                      <td style={{ minWidth: 0 }}>
+                        <div className="truncate">{message.subject ?? "—"}</div>
+                      </td>
                       <td className="tiny">
                         {message.kind === "followup"
                           ? `Follow-up ${message.step}`
@@ -727,7 +729,6 @@ export default function ReviewPage() {
                       <td>
                         <Badge tone={statusTone(message.status)}>{label(message.status)}</Badge>
                       </td>
-                      <td className="tiny nowrap">{fmtDate(message.created_at)}</td>
                       <td onClick={(e) => e.stopPropagation()}>
                         <button
                           type="button"

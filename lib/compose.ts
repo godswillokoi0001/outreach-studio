@@ -3,6 +3,7 @@ import { getActiveOwnerAiContext } from "./ai/context";
 import { buildOrchestratedSystemPrompt, findUnresolvedPlaceholders, stripUnresolvedPlaceholders } from "./ai/orchestrator";
 import { checkSendingTierDeliverability } from "./guardrails";
 import { LLMGateway } from "./llm/gateway";
+import { ensureLeadMicroResearch } from "./micro-research";
 import { cleanEmailText, normalizeEmailGreeting } from "./outreach-utils";
 import type { CampaignConfig, Lead, Message, ResearchResult, Settings } from "./types";
 
@@ -232,6 +233,7 @@ function identity(settings: Settings, campaign: CampaignConfig): string {
 
 function researchBlock(research: ResearchResult): string {
   return `VERIFIED RESEARCH JSON
+Research status: ${research.research_status === "limited_public_info" ? "LIMITED PUBLIC INFO - no live site observations; never invent website flaws or claim you looked at their site." : research.research_status === "verified" ? "verified live website observations" : "(not checked live)"}
 Summary: ${research.summary}
 Website status: ${research.website_status}
 Awareness level: ${research.awareness_level || "(infer from facts)"}
@@ -287,6 +289,15 @@ export async function composeInitialServer(
   model?: string,
   options?: { ownerId?: string },
 ): Promise<ComposedEmail> {
+  const ownerId = options?.ownerId ?? lead.ownerId ?? getActiveOwnerAiContext()?.ownerId ?? "anonymous";
+  // Callers pass the verified record explicitly; use it so a thin/missing
+  // `lead.research` cannot trigger a redundant network check.
+  if (!lead.research && research) lead = { ...lead, research };
+  // Mandatory micro-research before the first draft: thin research gets a real
+  // live DOM check so the hook is evidence-backed (or explicitly absent).
+  lead = await ensureLeadMicroResearch(ownerId, lead);
+  // Draft from the enriched record, not the stale argument.
+  research = lead.research ?? research;
   const orchestrated = await buildOrchestratedSystemPrompt({
     workflow: "draft_outreach",
     ownerId: options?.ownerId ?? lead.ownerId ?? null,
@@ -319,7 +330,6 @@ Extra instructions from the owner: ${campaign.extra_instructions || "(none)"}
 Select the optimal Module 3 template (T1-T12) and write the Touch 1 email passing all 8 Module 2 gates with ZERO raw {{...}} tags. If no verified contact name is listed above, open with "Hi there," — never "Hi ," and never an invented first name.`;
 
   void model;
-  const ownerId = options?.ownerId ?? lead.ownerId ?? getActiveOwnerAiContext()?.ownerId ?? "anonymous";
   const { data: draft } = await LLMGateway.completeJSON<ComposedEmail>({
     ownerId,
     taskType: "balanced",
@@ -385,6 +395,10 @@ export async function composeFollowUpServer(
   model?: string,
   options?: { ownerId?: string },
 ): Promise<ComposedEmail> {
+  const ownerId = options?.ownerId ?? lead.ownerId ?? getActiveOwnerAiContext()?.ownerId ?? "anonymous";
+  if (!lead.research && research) lead = { ...lead, research };
+  lead = await ensureLeadMicroResearch(ownerId, lead);
+  research = lead.research ?? research;
   const orchestrated = await buildOrchestratedSystemPrompt({
     workflow: "draft_outreach",
     ownerId: options?.ownerId ?? lead.ownerId ?? null,
@@ -419,7 +433,6 @@ ${original.body}
 This is Touch #${step} in the Module 3 Follow-Up Matrix. Write a shorter same-thread follow-up adding a fresh angle or binary check with zero guilt-tripping, zero {{...}} placeholders, and a clean greeting (never "Hi ,").`;
 
   void model;
-  const ownerId = options?.ownerId ?? lead.ownerId ?? getActiveOwnerAiContext()?.ownerId ?? "anonymous";
   const { data: draft } = await LLMGateway.completeJSON<ComposedEmail>({
     ownerId,
     taskType: "balanced",

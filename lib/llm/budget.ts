@@ -113,6 +113,7 @@ export function isInteractiveFeature(feature?: string): boolean {
     feature === "chat" ||
     feature === "dashboard_chat" ||
     feature === "refine" ||
+    feature === "discover_hooks" ||
     feature === "review_rewrite" ||
     feature.startsWith("review_rewrite")
   );

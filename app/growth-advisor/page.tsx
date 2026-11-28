@@ -51,6 +51,7 @@ function GrowthAdvisorContent() {
     savingProfile,
     error,
     runResearch,
+    clearReport,
   } = useGrowthAdvisor(user.uid, { autoResearch: true });
 
   const [categoryFilter, setCategoryFilter] = usePersistedPageState<"all" | RecommendationCategory>(
@@ -60,6 +61,11 @@ function GrowthAdvisorContent() {
   const [profileExpandedOverride, setProfileExpanded] = useState<boolean | null>(null);
   const [executeRec, setExecuteRec] = useState<GrowthRecommendation | null>(null);
   const [executeOpen, setExecuteOpen] = useState(false);
+  // The chosen play survives navigation and refresh, alongside the thesis.
+  const [selectedPlayId, setSelectedPlayId] = usePersistedPageState<string | null>(
+    "growth:selected_play",
+    null,
+  );
 
   const profileExpanded = profileExpandedOverride ?? (!loading && !completeness.complete);
 
@@ -112,6 +118,21 @@ function GrowthAdvisorContent() {
             <RefreshCw size={13} className={researching ? "spin" : ""} />
             {researching ? "Researching web…" : "Refresh research"}
           </button>
+          {report && (
+            <button
+              type="button"
+              className="btn"
+              onClick={() => {
+                setExecuteOpen(false);
+                setSelectedPlayId(null);
+                void clearReport();
+                toast.success("Ready for a fresh analysis", "Run research again when you want a new thesis.");
+              }}
+            >
+              <RotateCcw size={13} />
+              New Analysis
+            </button>
+          )}
           {report && (
             <button type="button" className="btn btn-primary" onClick={() => openExecute(null)}>
               <Play size={13} />
@@ -334,6 +355,49 @@ function GrowthAdvisorContent() {
           </Card>
         )}
 
+        {/* 2. What's saturated and what to avoid */}
+        {report?.saturatedAngles && report.saturatedAngles.length > 0 && (
+          <Card
+            title="What's Saturated & What to Avoid"
+            sub="Overcrowded angles and commoditized pitches burning your replies right now"
+          >
+            <div className="grid grid-2" style={{ gap: 10 }}>
+              {report.saturatedAngles.map((item, idx) => (
+                <div
+                  key={idx}
+                  style={{
+                    padding: "10px 12px",
+                    borderRadius: 9,
+                    border: "1px solid var(--line-soft)",
+                    background: "var(--surface-2)",
+                  }}
+                >
+                  <div className="strong" style={{ fontSize: 13, marginBottom: 4 }}>
+                    Avoid: {item.angle}
+                  </div>
+                  <p className="tiny muted" style={{ margin: "0 0 6px", lineHeight: 1.45 }}>
+                    {item.whySaturated}
+                  </p>
+                  <p className="tiny" style={{ margin: 0, lineHeight: 1.45 }}>
+                    <strong>Instead:</strong> {item.whatToDoInstead}
+                  </p>
+                  {item.sourceUrl && (
+                    <a
+                      href={item.sourceUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="tiny row"
+                      style={{ gap: 4, color: "var(--teal-deep)", marginTop: 6 }}
+                    >
+                      {item.sourceTitle || item.sourceUrl} <ExternalLink size={10} />
+                    </a>
+                  )}
+                </div>
+              ))}
+            </div>
+          </Card>
+        )}
+
         {/* 1. Live Market Pulse + 2. Candid Pipeline Diagnosis */}
         {report && (report.marketPulse?.length || report.pipelineDiagnosis) && (
           <div className="grid grid-2" style={{ gap: 14 }}>
@@ -442,7 +506,7 @@ function GrowthAdvisorContent() {
                       gap: 8,
                       padding: 12,
                       borderRadius: 10,
-                      border: "1px solid var(--line)",
+                      border: selectedPlayId === play.linkedRecommendationId ? "1px solid var(--teal-deep)" : "1px solid var(--line)",
                       background: "var(--surface-2)",
                       justifyContent: "space-between",
                     }}
@@ -464,10 +528,14 @@ function GrowthAdvisorContent() {
                     <button
                       type="button"
                       className="btn btn-primary btn-sm"
-                      onClick={() => openExecute(matchedRec)}
+                      style={{ minHeight: 44 }}
+                      onClick={() => {
+                        setSelectedPlayId(play.linkedRecommendationId ?? String(play.rank));
+                        openExecute(matchedRec);
+                      }}
                     >
                       <Play size={12} />
-                      Launch Campaign From This Play
+                      Find Verified Prospects for This Play →
                     </button>
                   </div>
                 );

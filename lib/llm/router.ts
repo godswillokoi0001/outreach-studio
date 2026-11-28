@@ -304,6 +304,105 @@ export function isChatCapableModelId(modelId: string): boolean {
 }
 
 /**
+ * Models that must never take an automatic seat, even if a catalog sync marked
+ * them enabled. These are specialist, scientific, calibration or gigantic
+ * preview checkpoints: they answer slowly, ignore chat tooling, or dump raw
+ * JSON. Auto routing is a general-purpose chat router, not a model zoo.
+ */
+const BANNED_AUTO_MODEL_RE =
+  /(?:^|[-/_.])(?:1t|550b|480b|405b|397b|235b|ising|calibration|cosmos|nemoguard|reward|embed|embedding|rerank|parse|ocr|bolt-e4b|deep-research)(?:[-/_.]|$)/i;
+
+export function isBannedAutoModelId(modelId: string): boolean {
+  return BANNED_AUTO_MODEL_RE.test(modelId.trim());
+}
+
+/**
+ * Curated general-purpose models per provider, ranked by real-world speed and
+ * reliability on the free tiers this app runs on.
+ *
+ * Tier 1 answers in a couple of seconds and is always tried first for chat,
+ * compose, rewrite, discovery and strategy. Tier 2 are verified general
+ * instruct fallbacks. Anything not listed here (or banned above) is never
+ * auto-routed, so a catalog refresh can never smuggle a 1T physics model into
+ * the user's chat again. Operators can still pin any model manually.
+ */
+const CURATED_AUTO_TIERS: Record<string, { tier1: RegExp[]; tier2: RegExp[] }> = {
+  google: {
+    tier1: [
+      /^gemini-2\.5-flash-lite(?:-|$)/i,
+      /^gemini-flash-lite-latest$/i,
+      /^gemini-2\.5-flash(?:-|$)/i,
+      /^gemini-2\.0-flash(?:-|$)/i,
+    ],
+    tier2: [/^gemini-2\.5-pro(?:-|$)/i, /^gemini-2\.0-flash-lite(?:-|$)/i, /^gemma-3-27b-it$/i],
+  },
+  cerebras: {
+    tier1: [/^gpt-oss-120b$/i, /^qwen-3-32b$/i, /^llama-3\.3-70b$/i, /^llama3?\.1-8b$/i],
+    tier2: [/^llama3\.1-70b$/i, /^qwen-3-235b-a22b-instruct$/i],
+  },
+  groq: {
+    tier1: [
+      /^(?:openai\/)?gpt-oss-120b$/i,
+      /^(?:openai\/)?gpt-oss-20b$/i,
+      /^llama-3\.3-70b-versatile$/i,
+      /^(?:qwen\/)?qwen3?-32b$/i,
+    ],
+    tier2: [/^llama-3\.1-8b-instant$/i],
+  },
+  nvidia: {
+    tier1: [],
+    tier2: [
+      /^meta\/llama-3\.3-70b-instruct$/i,
+      /^meta\/llama-3\.1-70b-instruct$/i,
+      /^qwen\/qwen2\.5-72b-instruct$/i,
+      /^nvidia\/llama-3\.3-nemotron-super-49b-v1$/i,
+      /^mistralai\/mistral-small[^/]*$/i,
+      /^deepseek-ai\/deepseek-(?:v3\.2|chat|r1)$/i,
+      /^z-ai\/glm4?\.?7$/i,
+    ],
+  },
+  cloudflare: {
+    tier1: [],
+    tier2: [/^@cf\/meta\/llama-3\.3-70b-instruct-fp8-fast$/i, /^@cf\/zai-org\/glm-4\.7-flash$/i],
+  },
+  zai: {
+    tier1: [/^glm-4(?:\.5)?-flash$/i],
+    tier2: [/^glm-4\.7-flash$/i],
+  },
+  openrouter: {
+    tier1: [],
+    tier2: [
+      /^meta-llama\/llama-3\.3-70b-instruct(?::free)?$/i,
+      /^deepseek\/deepseek-chat-v3[^:]*:free$/i,
+      /^qwen\/qwen-?2\.5-72b-instruct(?::free)?$/i,
+      /^google\/gemma-3-27b-it(?::free)?$/i,
+      /^google\/gemini-2\.5-flash(?:-|$)/i,
+    ],
+  },
+  anthropic: {
+    tier1: [/^claude-haiku-4-5(?:-|$)/i],
+    tier2: [/^claude-sonnet-4-5(?:-|$)/i, /^claude-haiku-3-5(?:-|$)/i],
+  },
+  openai: {
+    tier1: [/^gpt-4o-mini$/i, /^gpt-4\.1-mini$/i],
+    tier2: [/^gpt-4o$/i, /^gpt-4\.1$/i],
+  },
+};
+
+/** 1 = ultra-fast primary, 2 = verified general fallback, null = never auto. */
+export function autoModelTier(provider: string, modelId: string): 1 | 2 | null {
+  const id = modelId.trim();
+  if (!id || isBannedAutoModelId(id)) return null;
+  if (provider === "custom") return 2;
+  const tiers = CURATED_AUTO_TIERS[provider];
+  if (!tiers) return null;
+  if (tiers.tier1.some((re) => re.test(id))) return 1;
+  if (tiers.tier2.some((re) => re.test(id))) return 2;
+  return null;
+}
+
+
+/**
  * Providers whose endpoint rejects the OpenAI tool-calling payload we send.
  * They stay in the pool for plain text/JSON work but must never be chosen for
  * tool-using agent turns (Cloudflare Workers AI answers "invalid extraction
@@ -360,6 +459,10 @@ export function rankPoolCandidates(input: {
       if (/nemotron-3-ultra-550b|550b/i.test(model.id)) continue;
       // Specialised/audio/safety models are never valid chat candidates in any seat.
       if (!isChatCapableModelId(model.id)) continue;
+      // Strict curated allowlist: auto routing never touches an unvetted
+      // catalog entry (specialist, scientific, 1T/400B+ preview, calibration).
+      const curatedTier = autoModelTier(key.provider, model.id);
+      if (curatedTier === null) continue;
       const slowMega = isSlowMegaModel(model.id);
       if (
         slowMega &&
@@ -403,7 +506,12 @@ export function rankPoolCandidates(input: {
       // 1. Headroom steering: healthy headroom strictly outranks keys >= 85% cap
       score += headroom.lowHeadroom ? -200 : 120 - Math.round(headroom.utilization * 40);
 
-      // 2. Strongly demote slow 400B-550B+ preview models & thinking queues on interactive/compose paths
+      // 2. Tiered curated ranking: fast Tier-1 models always outrank generic
+      // Tier-2 fallbacks, and Cloudflare stays a last-resort text fallback.
+      score += curatedTier === 1 ? 420 : 90;
+      if (key.provider === "cloudflare") score -= 260;
+
+      // 2b. Strongly demote slow 400B-550B+ preview models & thinking queues on interactive/compose paths
       if (slowMega) {
         score -= isGrowthOrOperator ? 600 : input.taskType === "smart" ? 180 : 320;
       } else if (FAST_RESPONSIVE_MODEL_RE.test(model.id)) {

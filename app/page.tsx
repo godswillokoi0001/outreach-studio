@@ -263,6 +263,28 @@ export default function DashboardPage() {
             </div>
           </header>
 
+          {data.followupsDue > 0 && (
+            <Banner tone="warn">
+              <div
+                className="row"
+                style={{ justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10 }}
+              >
+                <div style={{ flex: 1, minWidth: 200 }}>
+                  <strong style={{ fontSize: 13.5 }}>
+                    {data.followupsDue} follow-up{data.followupsDue === 1 ? "" : "s"} due today
+                  </strong>
+                  <div className="tiny">
+                    Prospects with no reply are waiting for the next touch. Sequences stop automatically on a reply.
+                  </div>
+                </div>
+                <Link href="/followups" className="btn btn-primary btn-sm" style={{ minHeight: 44 }}>
+                  Open follow-ups
+                  <ArrowRight size={13} />
+                </Link>
+              </div>
+            </Banner>
+          )}
+
           {(!profileCompleteness.isEssentialsComplete || profileCompleteness.score < 100) && (
             <Banner tone={profileCompleteness.isEssentialsComplete ? "info" : "warn"}>
               <div

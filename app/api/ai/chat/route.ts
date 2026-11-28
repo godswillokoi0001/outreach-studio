@@ -5,7 +5,12 @@ import type { AgentContent } from "@/lib/agent-meta";
 import { handleApiError } from "@/lib/api-helpers";
 import { buildOrchestratedSystemPrompt } from "@/lib/ai/orchestrator";
 import { LLMGateway } from "@/lib/llm/gateway";
-import { buildFastChatSystemPrompt, isTrivialChatTurn, lastUserText } from "@/lib/llm/fast-path";
+import {
+  buildFastChatSystemPrompt,
+  isPipelineSummaryTurn,
+  isTrivialChatTurn,
+  lastUserText,
+} from "@/lib/llm/fast-path";
 import { verifyRequest } from "@/lib/server-auth";
 
 // Node runtime is required: the gateway and key vault use node:crypto.
@@ -147,10 +152,27 @@ export async function POST(req: NextRequest) {
     const mode: OperatorMode =
       body.mode === "chat" || body.mode === "developer" ? body.mode : "agent";
 
+    // Deterministic fast path: pipeline/status questions are answered from the
+    // exact snapshot the client computed. Zero LLM calls, zero tools, <1s — the
+    // old path could sit 30s+ waiting on a model to read counts it was handed.
+    const lastText = lastUserText(trimmedContents as never);
+    if (isPipelineSummaryTurn(lastText) && body.context?.summary?.trim()) {
+      const text = `Here is your live workspace snapshot (computed from your records, not estimated):\n\n${body.context.summary.trim()}`;
+      return NextResponse.json(
+        {
+          text,
+          functionCalls: [],
+          modelContent: { role: "model", parts: [{ text }] },
+          modelUsed: "workspace-snapshot",
+        },
+        { headers: { "Cache-Control": "no-store" } },
+      );
+    }
+
     // Fast path: a greeting or a short product question must never load the
     // knowledge base, memory, tool schemas or a reasoning model. Lean prompt,
     // no tools, fastest seat: answers in a second or two instead of forty.
-    const trivialTurn = isTrivialChatTurn(lastUserText(trimmedContents as never));
+    const trivialTurn = isTrivialChatTurn(lastText);
     if (trivialTurn) {
       const fastPrompt = buildFastChatSystemPrompt({
         userName: body.context?.userName ?? authUser.email ?? null,

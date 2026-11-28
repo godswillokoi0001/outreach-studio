@@ -132,6 +132,15 @@ export interface GrowthMarketTrend {
   sourceTitle: string;
 }
 
+export interface GrowthSaturationSignal {
+  /** The overcrowded angle, pitch or segment to stop using. */
+  angle: string;
+  whySaturated: string;
+  whatToDoInstead: string;
+  sourceUrl?: string;
+  sourceTitle?: string;
+}
+
 export interface GrowthPipelineDiagnosis {
   summary: string;
   strengths: string[];
@@ -163,6 +172,7 @@ export interface GrowthAdvisorReport {
   recommendations: GrowthRecommendation[];
   postAnalysisInsights?: PostAnalysisInsights;
   marketPulse?: GrowthMarketTrend[];
+  saturatedAngles?: GrowthSaturationSignal[];
   pipelineDiagnosis?: GrowthPipelineDiagnosis;
   topPlays?: GrowthPlayCard[];
 }

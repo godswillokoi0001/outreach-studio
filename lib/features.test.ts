@@ -30,10 +30,14 @@ import { LLMGateway, LLMGatewayError } from "./llm/gateway";
 import { executeAgentTool, clearVerifiedDiscoveryForTests } from "./agent-executor";
 import { decodeCfEmail, extractJsonLdContacts, findDeepContactsForProspect } from "./search/contactFinder";
 import { validateContactableLead, validateOperatorAddLead } from "./search/contactGate";
+import { buildDeterministicDiscoveryCandidates } from "./intelligence";
+import type { DeepContactProfile } from "./search/contactFinder";
 import {
+  autoModelTier,
   clearAllInMemoryModelCooldowns,
   clearRouterStateForTests,
   evaluateKeyHeadroom,
+  isBannedAutoModelId,
   isCandidateCoolingDown,
   isChatCapableModelId,
   MAX_AUTO_ATTEMPTS,
@@ -41,6 +45,16 @@ import {
   recordCandidateFailure,
   recordKeyUsageHit,
 } from "./llm/router";
+import { isPipelineSummaryTurn } from "./llm/fast-path";
+import { looksLikeInternalJson, sanitizeOperatorReply, shouldSkipToolCall, toolCallSignature } from "./operator-guard";
+import {
+  analyseSiteHtml,
+  isThinResearch,
+  mergeMicroResearch,
+  microResearchSite,
+  resolveLeadWebsite,
+} from "./micro-research";
+import { buildFollowupBoard, snoozeLastContactedAt } from "./followups";
 import { summarizeKeyAnalytics } from "./llm/analytics";
 import {
   buildSearchProviderStates,
@@ -53,7 +67,7 @@ import { readFileSync } from "node:fs";
 import { composeInitialServer, validateEmailQuality } from "./compose";
 import { isUsableContactName, normalizeEmailGreeting } from "./outreach-utils";
 import { hasSendableEmail, MAX_REWRITE_BATCH, prospectDisplayName } from "./review-queue";
-import type { CampaignConfig, Lead, ResearchResult, Settings } from "./types";
+import type { Campaign, CampaignConfig, Lead, Message, Reply, ResearchResult, Settings } from "./types";
 import { GatewayProviderError } from "./llm/providers";
 import {
   encryptGatewayKey,
@@ -1055,7 +1069,25 @@ function makeSampleAdminKey(
     enabled: true,
     models: [
       {
-        id: provider === "google" ? "gemini-2.5-flash" : `${provider}-default-model`,
+        // Curated auto-routing allowlist models, one fast default per provider.
+        id:
+          provider === "google"
+            ? "gemini-2.5-flash"
+            : provider === "groq"
+              ? "llama-3.3-70b-versatile"
+              : provider === "cerebras"
+                ? "llama-3.3-70b"
+                : provider === "nvidia"
+                  ? "meta/llama-3.3-70b-instruct"
+                  : provider === "cloudflare"
+                    ? "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
+                    : provider === "openrouter"
+                      ? "meta-llama/llama-3.3-70b-instruct:free"
+                      : provider === "zai"
+                        ? "glm-4.5-flash"
+                        : provider === "anthropic"
+                          ? "claude-haiku-4-5"
+                          : "gpt-4o-mini",
         displayName: `${provider} Default`,
         enabled: true,
         seats: ["smart", "balanced", "fast"],
@@ -4789,20 +4821,28 @@ test("router excludes allam/audio/safety models, skips paused keys, and caps fai
   try {
     resetGatewayCachesForTests();
     clearRouterStateForTests();
-    const denseModels = ["m1", "m2", "m3"].map((id) => ({
-      id,
-      displayName: id,
-      enabled: true,
-      seats: ["balanced" as const],
-      capabilities: { json: true, tools: true, vision: false, reasoning: false },
-    }));
+    const modelsFor = (provider: string) => {
+      const ids =
+        provider === "nvidia"
+          ? ["meta/llama-3.3-70b-instruct", "meta/llama-3.1-70b-instruct"]
+          : provider === "openai"
+            ? ["gpt-4o-mini", "gpt-4o"]
+            : ["llama-3.3-70b", "llama3.1-70b"];
+      return ids.map((id) => ({
+        id,
+        displayName: id,
+        enabled: true,
+        seats: ["balanced" as const],
+        capabilities: { json: true, tools: true, vision: false, reasoning: false },
+      }));
+    };
     const owner = "owner-hop-cap";
     seedGatewayCachesForTests({
       adminSettings: makeSampleAdminSettings(),
       adminKeys: [
-        makeSampleAdminKey("adm_hop_nvidia", "nvidia", "nvapi-hop-a", { models: denseModels }),
-        makeSampleAdminKey("adm_hop_openai", "openai", "sk-hop-b", { models: denseModels }),
-        makeSampleAdminKey("adm_hop_cerebras", "cerebras", "csk-hop-c", { models: denseModels }),
+        makeSampleAdminKey("adm_hop_nvidia", "nvidia", "nvapi-hop-a", { models: modelsFor("nvidia") }),
+        makeSampleAdminKey("adm_hop_openai", "openai", "sk-hop-b", { models: modelsFor("openai") }),
+        makeSampleAdminKey("adm_hop_cerebras", "cerebras", "csk-hop-c", { models: modelsFor("cerebras") }),
       ],
       userSettings: {
         [owner]: {
@@ -5094,7 +5134,7 @@ test("the saved email footer is appended once, on every send, with working links
 function seedSystemAutoGroq(): string {
   const ownerId = "owner-guard-tests";
   const now = new Date().toISOString();
-  const denseModels = ["m1", "m2", "m3"].map((id) => ({
+  const denseModels = ["openai/gpt-oss-120b", "openai/gpt-oss-20b", "llama-3.3-70b-versatile"].map((id) => ({
     id,
     displayName: id,
     enabled: true,
@@ -5326,4 +5366,355 @@ test("the greeting fast path stays tiny and needs no tools", async () => {
   assert.ok(estimateTokens(prompt) < 500);
   assert.ok(getBudgetProfile("operator_chat").attemptMs <= 6_000);
   assert.ok(getBudgetProfile("operator_chat").wallMs <= 20_000);
+});
+
+test("Curated allowlist bans 1T/calibration/specialist models and ranks Tier-1 first", () => {
+  assert.equal(isBannedAutoModelId("mistralai/mistral-large-4-1t-a52b"), true);
+  assert.equal(isBannedAutoModelId("nvidia/ising-calibration-1.5-31b"), true);
+  assert.equal(isBannedAutoModelId("nvidia/cosmos-reason-1"), true);
+  assert.equal(isBannedAutoModelId("meta/llama-3.3-70b-instruct"), false);
+
+  assert.equal(autoModelTier("nvidia", "mistralai/mistral-large-4-1t-a52b"), null);
+  assert.equal(autoModelTier("nvidia", "nvidia/ising-calibration-1.5-31b"), null);
+  assert.equal(autoModelTier("nvidia", "meta/llama-3.3-70b-instruct"), 2);
+  assert.equal(autoModelTier("google", "gemini-2.5-flash-lite"), 1);
+  assert.equal(autoModelTier("google", "gemini-2.5-flash"), 1);
+  assert.equal(autoModelTier("google", "gemini-3-pro-preview"), null);
+  assert.equal(autoModelTier("cerebras", "gpt-oss-120b"), 1);
+  assert.equal(autoModelTier("groq", "llama-3.3-70b-versatile"), 1);
+  assert.equal(autoModelTier("cloudflare", "@cf/meta/llama-3.3-70b-instruct-fp8-fast"), 2);
+  assert.equal(autoModelTier("openrouter", "some/random-model:free"), null);
+
+  clearRouterStateForTests();
+  const exotic = makeSampleAdminKey("adm_exotic", "nvidia", "nvapi-ExoticKey", {
+    models: [
+      {
+        id: "mistralai/mistral-large-4-1t-a52b",
+        displayName: "Mistral Large 1T",
+        enabled: true,
+        seats: ["smart", "balanced", "fast"],
+        capabilities: { json: true, tools: true, vision: false, reasoning: true },
+      },
+      {
+        id: "nvidia/ising-calibration-1.5-31b",
+        displayName: "Ising Calibration",
+        enabled: true,
+        seats: ["smart", "balanced", "fast"],
+        capabilities: { json: true, tools: true, vision: false, reasoning: false },
+      },
+    ],
+  });
+  const fast = makeSampleAdminKey("adm_fast_google", "google", "AIzaFastGoogleKey");
+  const ranked = rankPoolCandidates({
+    keys: [exotic, fast],
+    settings: makeSampleAdminSettings({ masterMode: "auto", strategy: "balanced" }),
+    taskType: "balanced",
+  });
+  assert.ok(ranked.length > 0);
+  assert.equal(ranked[0].key.id, fast.id);
+  assert.equal(ranked.some((c) => c.key.id === exotic.id), false);
+});
+
+test("Deterministic discovery returns verified contactable leads without a hook LLM", () => {
+  const profile: DeepContactProfile = {
+    business: "Bright Dental",
+    website: "https://brightdental.example",
+    domain: "brightdental.example",
+    location: "Austin, TX",
+    emails: ["hello@brightdental.example"],
+    primaryEmail: "hello@brightdental.example",
+    emailType: "role_inbox",
+    mxVerified: true,
+    phones: ["+1 512 555 0100"],
+    primaryPhone: "+1 512 555 0100",
+    socials: [{ platform: "LinkedIn", url: "https://linkedin.com/company/bright-dental", handle: "bright-dental" }],
+    decisionMakers: [{ name: "Dana Reed", role: "Owner" }],
+    contactPagesChecked: ["https://brightdental.example/contact"],
+    contactSourceUrls: [
+      { channel: "email", sourceUrl: "https://brightdental.example/contact", field: "email", verification_status: "Verified", date_found: "2026-01-01" },
+    ],
+    verifiedSiteIssues: ["No HTTPS on the public site"],
+    inspectedSite: {
+      url: "https://brightdental.example",
+      finalUrl: "https://brightdental.example",
+      reachable: true,
+      status: 200,
+      https: true,
+      hasViewport: false,
+      platform: "wordpress",
+      statusHints: ["No mobile viewport"],
+      textSummary: "Family dental care in Austin",
+    },
+    hasVerifiedContact: true,
+  } as unknown as DeepContactProfile;
+
+  const candidates = buildDeterministicDiscoveryCandidates({
+    deepContacts: [profile],
+    fallbackLocation: "Austin, TX",
+    industry: "Dental",
+    today: "2026-01-20",
+    count: 5,
+  });
+  assert.equal(candidates.length, 1);
+  assert.equal(candidates[0].business, "Bright Dental");
+  assert.equal(candidates[0].contact.email, "hello@brightdental.example");
+  assert.equal(candidates[0].contact.email_status, "Verified");
+  assert.ok(candidates[0].issues.length > 0);
+  assert.ok(candidates[0].why.length > 0);
+});
+
+test("Operator guard blocks identical failed retries, auto model tests and raw receipt JSON", () => {
+  const signature = toolCallSignature("discover_prospects", { industry: "dental", count: 5 });
+  const failed = new Set([signature]);
+  assert.equal(
+    shouldSkipToolCall({ name: "discover_prospects", args: { count: 5, industry: "dental" }, failedSignatures: failed, userText: "find dentists" }).skip,
+    true,
+  );
+  assert.equal(
+    shouldSkipToolCall({ name: "discover_prospects", args: { industry: "legal", count: 5 }, failedSignatures: failed, userText: "find lawyers" }).skip,
+    false,
+  );
+  assert.equal(
+    shouldSkipToolCall({ name: "test_gemini_connection", args: {}, failedSignatures: new Set(), userText: "create a campaign" }).skip,
+    true,
+  );
+  assert.equal(
+    shouldSkipToolCall({ name: "test_gemini_connection", args: {}, failedSignatures: new Set(), userText: "test my gemini connection" }).skip,
+    false,
+  );
+
+  const raw = '{"model":"nvidia/ising-calibration-1.5-31b","receipt":{"fallbackHops":2}}';
+  assert.equal(looksLikeInternalJson(raw), true);
+  assert.equal(sanitizeOperatorReply(raw).includes("receipt"), false);
+  assert.equal(sanitizeOperatorReply("Saved 4 prospects."), "Saved 4 prospects.");
+});
+
+test("Pipeline summary intent is answered deterministically from the workspace snapshot", () => {
+  assert.equal(isPipelineSummaryTurn("summarize my pipeline"), true);
+  assert.equal(isPipelineSummaryTurn("give me a quick workspace status update"), true);
+  assert.equal(isPipelineSummaryTurn("how many leads do I have?"), true);
+  assert.equal(isPipelineSummaryTurn("write a cold email for a dentist"), false);
+});
+
+test("Micro-research extracts visible DOM facts and flags unreachable sites honestly", async () => {
+  const html = `<!doctype html><html><head><title>Bright Dental | Austin</title>
+    <meta name="description" content="Family and cosmetic dentistry in Austin.">
+    </head><body><h1>Modern dentistry without the wait</h1>
+    <p>&copy; 2019 Bright Dental</p><a href="/contact">Contact</a></body></html>`;
+  const parsed = analyseSiteHtml(html);
+  assert.equal(parsed.title, "Bright Dental | Austin");
+  assert.equal(parsed.hasViewport, false);
+  assert.equal(parsed.copyrightYear, 2019);
+  assert.equal(parsed.hasContactLink, true);
+
+  const verified = await microResearchSite({
+    business: "Bright Dental",
+    website: "https://brightdental.example",
+    nowYear: 2026,
+    fetchImpl: (async () => new Response(html, { status: 200 })) as typeof fetch,
+  });
+  assert.equal(verified.status, "verified");
+  assert.ok(verified.auditEvidence.some((e) => /viewport/i.test(e.issue)));
+  assert.ok(verified.hookCandidates.length > 0);
+
+  const unreachable = await microResearchSite({
+    business: "No Site Co",
+    email: "owner@gmail.com",
+    fetchImpl: (async () => {
+      throw new Error("offline");
+    }) as typeof fetch,
+  });
+  assert.equal(unreachable.status, "limited_public_info");
+  assert.equal(unreachable.auditEvidence.length, 0);
+
+  const merged = mergeMicroResearch(null, unreachable, { business: "No Site Co", industry: "Legal", location: "Lagos" });
+  assert.equal(merged.research_status, "limited_public_info");
+  assert.equal(merged.insufficient_data, true);
+  assert.equal(isThinResearch(null), true);
+  assert.equal(resolveLeadWebsite({ website: null, email: "owner@gmail.com" }), null);
+  assert.equal(resolveLeadWebsite({ website: null, email: "ops@acme-dental.com" }), "https://acme-dental.com");
+});
+
+test("Follow-up board separates due/upcoming/sent/stopped and pauses on reply", () => {
+  const campaign = {
+    id: "c1",
+    name: "Dental Q1",
+    status: "active",
+    config: { followup_days: [3, 7, 14] },
+  } as unknown as Campaign;
+  const baseLead = {
+    id: "l1",
+    business: "Bright Dental",
+    email: "hello@brightdental.example",
+    status: "sent",
+    campaign_id: "c1",
+  } as unknown as Lead;
+  const message = {
+    id: "m1",
+    lead_id: "l1",
+    kind: "initial",
+    status: "sent",
+    step: 1,
+    subject: "quick question about bright dental",
+    sent_at: "2026-01-17T09:00:00.000Z",
+  } as unknown as Message;
+  const nowMs = Date.parse("2026-01-20T12:00:00.000Z");
+
+  const dueToday = buildFollowupBoard({
+    leads: [{ ...baseLead, last_contacted_at: "2026-01-17T09:00:00.000Z" }],
+    campaigns: [campaign],
+    messages: [message],
+    replies: [],
+    nowMs,
+  });
+  assert.equal(dueToday.due.length, 1);
+  assert.equal(dueToday.due[0].urgency, "due_today");
+  assert.equal(dueToday.due[0].step, 2);
+  assert.equal(dueToday.due[0].lastSentSubject, "quick question about bright dental");
+  assert.equal(dueToday.dueTodayCount, 1);
+
+  const overdue = buildFollowupBoard({
+    leads: [{ ...baseLead, last_contacted_at: "2026-01-14T09:00:00.000Z" }],
+    campaigns: [campaign],
+    messages: [message],
+    replies: [],
+    nowMs,
+  });
+  assert.equal(overdue.due[0].urgency, "overdue");
+  assert.equal(overdue.overdueCount, 1);
+
+  const upcoming = buildFollowupBoard({
+    leads: [{ ...baseLead, last_contacted_at: "2026-01-19T09:00:00.000Z" }],
+    campaigns: [campaign],
+    messages: [message],
+    replies: [],
+    nowMs,
+  });
+  assert.equal(upcoming.due.length, 0);
+  assert.equal(upcoming.upcoming.length, 1);
+
+  const replied = buildFollowupBoard({
+    leads: [{ ...baseLead, last_contacted_at: "2026-01-14T09:00:00.000Z" }],
+    campaigns: [campaign],
+    messages: [message],
+    replies: [{ id: "r1", lead_id: "l1", received_at: "2026-01-18T09:00:00.000Z" } as unknown as Reply],
+    nowMs,
+  });
+  assert.equal(replied.due.length, 0);
+  assert.equal(replied.stopped[0].reason, "Replied");
+
+  const snoozed = snoozeLastContactedAt({
+    lastContactedAt: "2026-01-17T09:00:00.000Z",
+    gapDays: 3,
+    days: 2,
+    nowMs,
+  });
+  const snoozedBoard = buildFollowupBoard({
+    leads: [{ ...baseLead, last_contacted_at: snoozed }],
+    campaigns: [campaign],
+    messages: [message],
+    replies: [],
+    nowMs,
+  });
+  assert.equal(snoozedBoard.due.length, 0);
+  assert.equal(snoozedBoard.upcoming[0].dueDate, "2026-01-22");
+});
+
+test("compose runs micro-research before drafting when the lead research is thin", async () => {
+  const { resetGatewayCachesForTests } = await import("./llm/store");
+  const prevFetch = globalThis.fetch;
+  let siteFetched = false;
+  const llmPayloads: string[] = [];
+  const draftBody =
+    "Hi there,\n\nI opened Bright Dental on my phone today and the page leads with a strong promise but gives a visitor no obvious way to book. That is usually where appointment requests quietly stop.\n\nI fix that exact drop-off for dental practices and can send a short teardown of your booking flow, no strings attached.\n\nWorth a look?\n\nAlex";
+
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = typeof input === "string" ? input : input.toString();
+    if (url.includes("brightdental.example")) {
+      siteFetched = true;
+      return new Response(
+        `<html><head><title>Bright Dental | Austin</title><meta name="description" content="Family dentistry in Austin."></head><body><h1>Modern dentistry without the wait</h1><p>&copy; 2019 Bright Dental</p></body></html>`,
+        { status: 200, headers: { "Content-Type": "text/html" } },
+      );
+    }
+    if (init?.body) llmPayloads.push(String(init.body));
+    return new Response(
+      JSON.stringify({
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({
+                template_id: "T1",
+                subject: "quick booking check",
+                body: draftBody,
+                angle: "mobile booking friction",
+                rationale: "Live DOM observation.",
+                service: "site audit",
+                evidence: ["No primary CTA"],
+              }),
+            },
+          },
+        ],
+      }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    );
+  }) as typeof fetch;
+
+  try {
+    resetGatewayCachesForTests();
+    clearRouterStateForTests();
+    const ownerId = seedSystemAutoGroq();
+    const lead = {
+      id: "micro-lead",
+      ownerId,
+      campaign_id: "c1",
+      business: "Bright Dental",
+      contact_name: null,
+      role: "Owner",
+      email: "hello@brightdental.example",
+      website: "https://brightdental.example",
+      status: "qualified",
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      research: null,
+    } as unknown as Lead;
+    const thinResearch = {
+      business_name_confirmed: true,
+      industry: "Dental",
+      summary: "",
+      website_status: "not_checked",
+      website_facts: [],
+      verified_facts: [],
+      findings: [],
+      inferences: [],
+      opportunities: [],
+      recommended_angle: "",
+      confidence: 0,
+      insufficient_data: true,
+      notes: "",
+    } as unknown as ResearchResult;
+    const campaign = {
+      id: "c1",
+      objective: "Book audits",
+      services: ["site audit"],
+      tone: "direct",
+      extra_instructions: "",
+      identity: "personal",
+    } as unknown as CampaignConfig;
+
+    await composeInitialServer(lead, thinResearch, campaign, DEFAULT_SETTINGS, "", undefined, { ownerId });
+    assert.equal(siteFetched, true, "the live site must be inspected before drafting");
+    assert.ok(
+      llmPayloads.some((payload) => payload.includes("Live site reachable")),
+      "the verified DOM facts must reach the drafting prompt",
+    );
+    assert.ok(
+      llmPayloads.some((payload) => payload.includes("Modern dentistry without the wait")),
+      "the real page heading must be available to the hook writer",
+    );
+  } finally {
+    globalThis.fetch = prevFetch;
+    resetGatewayCachesForTests();
+    clearRouterStateForTests();
+  }
 });

@@ -59,6 +59,7 @@ import { withRetry } from "@/lib/retry";
 import { readWorkspaceToken as getWorkspaceAccessToken } from "@/lib/workspace-token";
 import { getSettings, saveSettings } from "@/lib/store";
 import { buildLiveKnowledgeDigest } from "@/lib/pipeline-client";
+import { sanitizeOperatorReply, shouldSkipToolCall, toolCallSignature } from "@/lib/operator-guard";
 import { formatResponseTime, formatSessionDuration } from "@/lib/format";
 import { useAuth } from "./AuthProvider";
 import { UserAvatar } from "./UserAvatar";
@@ -1004,8 +1005,13 @@ export function DashboardChat({
     const effectiveStartedAt = turnStartedAt ?? nowEpochMs();
     let workingHistory = [...contents];
     let round = startRound;
+    // Three consecutive rounds with no successful tool result means the model is
+    // looping on a broken step. Stop and report instead of burning minutes.
+    let failedRounds = 0;
     let activeModel = model;
     const narration: string[] = [];
+    // Identical failed calls are never retried in a loop.
+    const failedToolSignatures = new Set<string>();
 
     // Keep the model's running commentary in the reply bubble so the operator
     // reads what is happening instead of waiting on a silent panel.
@@ -1084,7 +1090,7 @@ export function DashboardChat({
         lastActivityRef.current = finishedAt;
         updateAssistantMessage(assistantMsgId, (m) => ({
           ...m,
-          text: [...narration, turn.text.trim()].filter(Boolean).join("\n\n") || "Done.",
+          text: sanitizeOperatorReply([...narration, turn.text.trim()].filter(Boolean).join("\n\n")) || "Done.",
           modelUsed: turn.modelUsed,
           responseTimeMs,
           error: undefined,
@@ -1107,6 +1113,7 @@ export function DashboardChat({
 
       const env = makeExecEnv();
       const responses: { id?: string; name: string; response: Record<string, unknown> }[] = [];
+      let successfulCalls = 0;
 
       for (const fc of safeCalls) {
         if (cancelledRef.current) break;
@@ -1131,13 +1138,34 @@ export function DashboardChat({
           .reverse()
           .find((m) => m.role === "user")?.parts?.map((p) => p.text ?? "").join(" ") ?? "";
         const toolEnv = { ...env, userTextCorpus: lastUserMessage };
+        const signature = toolCallSignature(toolName, fc.args);
+        const guard = shouldSkipToolCall({
+          name: toolName,
+          args: fc.args,
+          failedSignatures: failedToolSignatures,
+          userText: lastUserMessage,
+        });
         let attempts = 1;
-        let res = await executeAgentTool(toolName, fc.args, toolEnv);
+        let res = guard.skip
+          ? {
+              ok: false,
+              summary: "Skipped",
+              data: { ok: false, skipped: true, error: guard.reason },
+            }
+          : await executeAgentTool(toolName, fc.args, toolEnv);
         // One honest retry for transient failures — never for a missing Google session.
-        while (!res.ok && !res.needsWorkspace && attempts < 2 && !cancelledRef.current) {
+        while (!guard.skip && !res.ok && !res.needsWorkspace && attempts < 2 && !cancelledRef.current) {
           attempts += 1;
           await wait(700);
           res = await executeAgentTool(toolName, fc.args, toolEnv);
+        }
+        if (!guard.skip) {
+          if (res.ok) {
+            failedToolSignatures.delete(signature);
+            successfulCalls += 1;
+          } else {
+            failedToolSignatures.add(signature);
+          }
         }
         const check = await verifyAction(toolName, res, routeArg);
         patchStep(assistantMsgId, stepId, {
@@ -1206,6 +1234,23 @@ export function DashboardChat({
       workingHistory = [...workingHistory, modelContent, responseTurn];
       historyRef.current = workingHistory;
       round += 1;
+
+      failedRounds = successfulCalls > 0 ? 0 : failedRounds + 1;
+      if (failedRounds >= 3) {
+        updateAssistantMessage(assistantMsgId, (m) => ({
+          ...m,
+          responseTimeMs: Math.max(100, nowEpochMs() - effectiveStartedAt),
+          text: sanitizeOperatorReply(
+            [
+              ...narration,
+              "I stopped after three steps that did not change anything, so this is not an endless retry loop. The blocker is real — check the last error above (usually a missing Google connection, an empty key, or a provider outage) and send \"continue\" once it is fixed.",
+            ]
+              .filter(Boolean)
+              .join("\n\n"),
+          ),
+        }));
+        return;
+      }
     }
 
     updateAssistantMessage(assistantMsgId, (m) => ({

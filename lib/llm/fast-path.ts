@@ -57,6 +57,20 @@ export function buildFastChatSystemPrompt(input: {
     .join(" ");
 }
 
+/**
+ * Pipeline/status questions are answered from the deterministic workspace
+ * snapshot the client already computed. No LLM call, no tools, no wait.
+ */
+export function isPipelineSummaryTurn(raw: string): boolean {
+  const text = normalizeChatText(raw).toLowerCase();
+  if (!text || text.length > 160) return false;
+  return /(?:summari[sz]e|summary of|quick summary|status of|status update|overview of|snapshot of).*(?:pipeline|workspace|leads?|outreach|account|dashboard)/i.test(
+    text,
+  ) || /^(?:how many|number of) (?:leads?|prospects?|emails?|drafts?|replies|campaigns?|follow-?ups?)/i.test(
+    text,
+  ) || /\b(?:pipeline|workspace)\s+(?:status|summary|update)\b/i.test(text);
+}
+
 /** The last user turn in a plain chat message list, if any. */
 export function lastUserText(contents: { role?: string; parts?: { text?: string }[] }[]): string {
   for (let i = contents.length - 1; i >= 0; i -= 1) {

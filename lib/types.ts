@@ -58,6 +58,8 @@ export interface ResearchResult {
   socials?: { platform: string; url: string; verification_status?: string }[];
   contact_source_urls?: { channel: string; value: string; sourceUrl: string }[];
   verified_site_issues?: string[];
+  /** "limited_public_info" when no public site could be verified live. */
+  research_status?: "verified" | "limited_public_info";
   audit_evidence?: AuditEvidenceItem[];
   mobile_screenshot_url?: string | null;
   email_type?: "direct" | "role_inbox" | "invalid";
@@ -86,6 +88,7 @@ export interface QualificationResult {
   socials?: { platform: string; url: string; verification_status?: string }[];
   contact_source_urls?: { channel: string; value: string; sourceUrl: string }[];
   verified_site_issues?: string[];
+  research_status?: "verified" | "limited_public_info";
   email_type?: "direct" | "role_inbox" | "invalid";
   mx_verified?: boolean;
   first_line?: string;

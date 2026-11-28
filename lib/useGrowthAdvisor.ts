@@ -16,6 +16,7 @@ import {
 import type { PerformanceInsight } from "./intelligence";
 import type { OnboardingState } from "./onboarding";
 import {
+  clearGrowthAdvisorReport,
   formatKnowledgeDigest,
   getGrowthAdvisorReport,
   getGrowthProfile,
@@ -50,6 +51,9 @@ export function useGrowthAdvisor(
 
   const [loading, setLoading] = useState(true);
   const [researching, setResearching] = useState(false);
+  // Set by "New Analysis" so the automatic refresh loop does not immediately
+  // rebuild the report the user just cleared.
+  const [analysisCleared, setAnalysisCleared] = useState(false);
   const [savingProfile, setSavingProfile] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -91,6 +95,7 @@ export function useGrowthAdvisor(
     }) => {
       if (runningRef.current) return;
       runningRef.current = true;
+      setAnalysisCleared(false);
       setResearching(true);
       setError(null);
       try {
@@ -242,9 +247,18 @@ export function useGrowthAdvisor(
     };
   }, [isJobActive, uid]);
 
+  /** "New Analysis": clear the saved thesis and pause auto-refresh until asked. */
+  const clearReport = useCallback(async () => {
+    setReport(null);
+    setResearchJob(null);
+    setError(null);
+    setAnalysisCleared(true);
+    await clearGrowthAdvisorReport(uid);
+  }, [uid]);
+
   // Automatic background refresh when profile/data changes or report expires
   useEffect(() => {
-    if (loading || !autoResearch || researching) return;
+    if (loading || !autoResearch || researching || analysisCleared) return;
     if (!completeness.complete) return;
     if (researchJob?.status === "failed") return; // do not infinitely loop failed jobs automatically
 
@@ -255,18 +269,29 @@ export function useGrowthAdvisor(
       if (insightKey) lastInsightKeyRef.current = insightKey;
       void runResearch({ insightOverride: analyticsInsight });
     }
-  }, [loading, autoResearch, researching, completeness.complete, report, fingerprint, analyticsInsight, researchJob, runResearch]);
+  }, [
+    loading,
+    autoResearch,
+    researching,
+    analysisCleared,
+    completeness.complete,
+    report,
+    fingerprint,
+    analyticsInsight,
+    researchJob,
+    runResearch,
+  ]);
 
   // Periodic background check every 30 minutes while open
   useEffect(() => {
-    if (!autoResearch || !completeness.complete) return;
+    if (!autoResearch || !completeness.complete || analysisCleared) return;
     const timer = window.setInterval(() => {
       if (isReportStale(report, fingerprint)) {
         void runResearch();
       }
     }, 30 * 60 * 1000);
     return () => window.clearInterval(timer);
-  }, [autoResearch, completeness.complete, report, fingerprint, runResearch]);
+  }, [autoResearch, completeness.complete, analysisCleared, report, fingerprint, runResearch]);
 
   const updateProfile = useCallback(
     async (next: GrowthProfile, triggerResearch = true) => {
@@ -351,5 +376,6 @@ export function useGrowthAdvisor(
     savingProfile,
     error,
     runResearch,
+    clearReport,
   };
 }

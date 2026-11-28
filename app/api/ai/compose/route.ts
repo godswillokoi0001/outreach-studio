@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { handleApiError } from "@/lib/api-helpers";
 import { verifyRequest } from "@/lib/server-auth";
 import { composeFollowUpServer, composeInitialServer } from "@/lib/compose";
+import { ensureLeadMicroResearch } from "@/lib/micro-research";
 import { evaluateLeadSendEligibility } from "@/lib/guardrails";
 import type { CampaignConfig, Lead, Message, ResearchResult, Settings } from "@/lib/types";
 
@@ -59,12 +60,19 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ composed });
     }
 
-    if (!body.research) {
-      return NextResponse.json({ error: "Research record is required before composing initial email." }, { status: 400 });
+    // A missing research record is no longer a dead end: run the mandatory
+    // micro-research pass first, then draft from what the live site proved.
+    const draftedLead = await ensureLeadMicroResearch(user.ownerId, body.lead!);
+    const research = body.research ?? draftedLead.research;
+    if (!research) {
+      return NextResponse.json(
+        { error: "No verified research or public website was available for this prospect." },
+        { status: 400 },
+      );
     }
     const composed = await composeInitialServer(
-      body.lead!,
-      body.research!,
+      draftedLead,
+      research,
       body.campaign!,
       body.settings!,
       body.knowledge ?? "",

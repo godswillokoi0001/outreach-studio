@@ -32,6 +32,7 @@ import {
 } from "./email-rewrite";
 import { loadUserContextServer, type LoadedUserContext } from "./global-knowledge/user-context";
 import { LLMGateway, LLMGatewayError } from "./llm/gateway";
+import { ensureLeadMicroResearch } from "./micro-research";
 import type { OnboardingState, StructuredKnowledgeBase } from "./onboarding";
 import { supabaseServer } from "./supabase-server";
 import type { Campaign, EmailOpen, Lead, Message, Reply, Settings } from "./types";
@@ -1338,10 +1339,15 @@ export async function runEmailRewriteJobPipeline(input: {
       );
 
       try {
+        // Mandatory micro-research before rewriting: never rewrite from a thin
+        // record. Unreachable sites are marked limited_public_info instead of
+        // letting the model invent website flaws.
+        const enrichedLead = await ensureLeadMicroResearch(input.ownerId, lead);
+        leadMap.set(lead.id, enrichedLead);
         const rewrittenItem = await rewriteAndSelfCheckOneMessage({
           ownerId: input.ownerId,
           message: msg,
-          lead,
+          lead: enrichedLead,
           snap,
           kb,
           existingItem: workspace.itemsByMessageId[msgId],

@@ -389,6 +389,89 @@ export interface DiscoveryCandidate {
   qualification_review?: QualificationReview;
 }
 
+/**
+ * Deterministic discovery candidates built only from evidence already fetched
+ * (live search results + deep contact waterfall + Layer-A DOM inspection).
+ *
+ * This is the safety net for `discover_prospects`: a slow or unavailable LLM
+ * must never turn verified, contactable businesses into `Action failed`. The
+ * model may improve the wording of a hook; it is not allowed to gate the
+ * pipeline.
+ */
+export function buildDeterministicDiscoveryCandidates(input: {
+  deepContacts: DeepContactProfile[];
+  fallbackLocation: string;
+  industry: string;
+  today: string;
+  count: number;
+  allowPhoneOrSocialOnly?: boolean;
+}): DiscoveryCandidate[] {
+  const out: DiscoveryCandidate[] = [];
+  for (const dc of input.deepContacts) {
+    const business = dc.business?.trim();
+    if (!business) continue;
+    const site = dc.inspectedSite;
+    const issues = (dc.verifiedSiteIssues.length > 0 ? dc.verifiedSiteIssues : site?.statusHints ?? [])
+      .slice(0, 5)
+      .map((issue) => ({
+        area: "Website",
+        problem: String(issue).slice(0, 300),
+        evidence: `Visible on ${dc.website || site?.finalUrl || site?.url || "the live site"}`,
+        severity: "medium" as const,
+      }));
+    const summaryParts = [
+      site?.reachable ? `Live site (HTTP ${site.status})` : "Site not reachable during inspection",
+      site?.https === false ? "No HTTPS" : "",
+      site?.hasViewport === false ? "No mobile viewport meta tag" : "",
+      (site?.textSummary || "").slice(0, 180),
+    ].filter(Boolean);
+
+    out.push({
+      business,
+      website: dc.website || "",
+      location: dc.location || input.fallbackLocation || "",
+      industry: input.industry || "",
+      why:
+        summaryParts.join(" \u00b7 ").slice(0, 400) ||
+        "Verified business with a reachable public contact channel.",
+      source_url: dc.website || site?.finalUrl || site?.url || "",
+      research_notes: "Deterministic live discovery (search + DOM inspection); no LLM gate.",
+      contact: {
+        decision_maker: dc.decisionMakers[0]?.name ?? "",
+        role: dc.decisionMakers[0]?.role ?? "",
+        email: dc.primaryEmail || "",
+        phone: dc.primaryPhone || "",
+        whatsapp: "",
+        address: dc.location || "",
+        email_status: dc.primaryEmail ? (dc.mxVerified ? "Verified" : "Unverified") : "Not found",
+        phone_status: dc.primaryPhone ? "Verified" : "Not found",
+        socials: dc.socials.slice(0, 8).map((s) => ({
+          platform: s.platform,
+          url: s.url,
+          verification_status: "Verified" as const,
+        })),
+        sources: dc.contactSourceUrls.slice(0, 8).map((ev) => ({
+          field: ev.channel,
+          url: ev.sourceUrl,
+          confidence: "high" as const,
+          verification_status: "Verified" as const,
+          date_found: input.today,
+        })),
+      },
+      issues,
+      how_we_help: [],
+      qualification_review: {
+        verdict: "qualified",
+        criteria: [],
+        weaknesses_and_risks: [],
+        missing_information: [],
+      },
+    });
+    if (out.length >= input.count) break;
+  }
+  return out;
+}
+
 export async function discoverProspectsServer(input: {
   ownerId?: string;
   industry: string;
@@ -428,7 +511,9 @@ export async function discoverProspectsServer(input: {
       !(/\/(?:portfolio|case-studies?|our-work|work\/)/i.test(r.url)) &&
       (!isDirectoryUrl(r.url) || r.sourceProvider === "osm"),
   );
-  const inspectBudget = Math.min(12, Math.max(8, input.count * 2));
+  // Hard cap: discovery must finish in seconds. Every candidate gets a 4s
+  // contact/DOM timeout, and the batch is parallel, so this is bounded.
+  const inspectBudget = Math.min(8, Math.max(4, input.count));
   const topProspectSources = (filteredResults.length > 0 ? filteredResults : searchRes.results).slice(
     0,
     inspectBudget,
@@ -526,17 +611,27 @@ ${inspectedDossier}
 
 Return ONLY valid JSON with a "candidates" array and short "notes".`;
 
-  const { data } = await LLMGateway.completeJSON<{
-    candidates: unknown[];
-    notes: string;
-  }>({
-    ownerId: input.ownerId ?? getActiveOwnerAiContext()?.ownerId ?? "anonymous",
-    taskType: "balanced",
-    feature: "discover",
-    maxTokens: 2200,
-    systemPrompt: orchestrated.system,
-    messages: [{ role: "user", content: user }],
-  });
+  // ONE fast call, and it is strictly optional: if it is slow, rate limited or
+  // unavailable, the verified deterministic candidates below are returned
+  // instead of throwing "Action failed".
+  let data: { candidates: unknown[]; notes: string } = { candidates: [], notes: "" };
+  let llmSkipped = false;
+  try {
+    const completion = await LLMGateway.completeJSON<{ candidates: unknown[]; notes: string }>({
+      ownerId: input.ownerId ?? getActiveOwnerAiContext()?.ownerId ?? "anonymous",
+      taskType: "fast",
+      feature: "discover_hooks",
+      maxTokens: 1600,
+      systemPrompt: orchestrated.system,
+      messages: [{ role: "user", content: user }],
+    });
+    data = {
+      candidates: Array.isArray(completion.data?.candidates) ? completion.data.candidates : [],
+      notes: typeof completion.data?.notes === "string" ? completion.data.notes : "",
+    };
+  } catch {
+    llmSkipped = true;
+  }
 
   const fullEvidenceText = `${searchDossier}\n${inspectedDossier}`.toLowerCase();
   const seen = new Set<string>();
@@ -621,16 +716,52 @@ Return ONLY valid JSON with a "candidates" array and short "notes".`;
     .slice(0, input.count)
     .map((entry) => entry.candidate);
 
+  // Deterministic safety net: verified contacts captured by the waterfall are
+  // always returned, even when the optional hook-writing call failed or was
+  // rate limited. Deduped against whatever the model produced.
+  const seenKeys = new Set(
+    enrichedCandidates.map((c) =>
+      (c.website || c.business).toLowerCase().replace(/^https?:\/\//, "").replace(/\/+$/, ""),
+    ),
+  );
+  const deterministicCandidates = buildDeterministicDiscoveryCandidates({
+    deepContacts,
+    fallbackLocation: input.location,
+    industry: input.industry,
+    today,
+    count: input.count,
+    allowPhoneOrSocialOnly,
+  })
+    .filter((candidate) => {
+      const verdict = validateContactableLead({
+        business: candidate.business,
+        website: candidate.website,
+        location: candidate.location,
+        email: candidate.contact.email,
+        phone: candidate.contact.phone,
+        socials: candidate.contact.socials,
+        decisionMaker: candidate.contact.decision_maker,
+        mxVerified: candidate.contact.email_status === "Verified" ? true : undefined,
+        requireEmail: !allowPhoneOrSocialOnly,
+      });
+      return verdict.contactable;
+    })
+    .filter((candidate) => {
+      const key = (candidate.website || candidate.business).toLowerCase().replace(/^https?:\/\//, "").replace(/\/+$/, "");
+      return Boolean(key) && !seenKeys.has(key);
+    });
+  const finalCandidates = [...enrichedCandidates, ...deterministicCandidates].slice(0, input.count);
+
   const inspectedCount = Math.max(topProspectSources.length, deepContacts.filter((d) => d.inspectedSite?.reachable).length);
-  const funnelNote = `Inspected ${inspectedCount} business(es) -> Qualified ${enrichedCandidates.length} with verified contacts -> Skipped ${skippedNoContact} with no reachable contact info.`;
+  const funnelNote = `Inspected ${inspectedCount} business(es) -> Qualified ${finalCandidates.length} with verified contacts -> Skipped ${skippedNoContact} with no reachable contact info.`;
 
   const value = {
-    candidates: enrichedCandidates,
+    candidates: finalCandidates,
     notes: `${
       typeof data.notes === "string" && data.notes.trim()
         ? data.notes.trim()
         : `Sources queried: ${searchRes.providersSucceeded.join(", ")}.`
-    } ${funnelNote}`,
+    } ${llmSkipped ? "Hook generation was unavailable, so verified leads were saved from live DOM findings. " : ""}${funnelNote}`,
     groundingUrls,
   };
   discoveryCache.set(cacheKey, { at: Date.now(), value });

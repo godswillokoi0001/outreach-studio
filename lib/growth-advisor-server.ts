@@ -15,6 +15,7 @@ import {
   type GrowthProfile,
   type GrowthRecommendation,
   type GrowthRunCandidate,
+  type GrowthSaturationSignal,
   type GrowthRunInspectedSite,
   type ImpactRating,
   type IntentSignal,
@@ -283,6 +284,15 @@ Return ONLY valid JSON:
   "marketPulse": [
     { "trend": "Concrete 2026 shift in buyer behavior or demand", "whyNow": "Why this creates immediate urgency for the user's offer", "sourceUrl": "https://...", "sourceTitle": "Source title" }
   ],
+  "saturatedAngles": [
+    {
+      "angle": "Overcrowded angle, pitch or segment to stop using",
+      "whySaturated": "Why it is commoditized right now and produces low replies",
+      "whatToDoInstead": "The sharper, less crowded move to make instead",
+      "sourceUrl": "https://...",
+      "sourceTitle": "Source title"
+    }
+  ],
   "pipelineDiagnosis": {
     "summary": "Candid 2-sentence diagnosis of pipeline health & positioning from real numbers",
     "strengths": ["What currently stands out in offer/positioning"],
@@ -378,7 +388,7 @@ ${
 }
 ${liveSearchContext}
 
-Generate marketPulse (3 trends with verified sources), candid pipelineDiagnosis (flagging ${accountSnapshot.untouchedNewLeads} untouched leads if > 0), topPlays (Top 3 Ranked Growth Plays linked to rec_1..rec_3), and 6 recommendations covering location, niche, messaging, channels_timing, and offer_strategy.`;
+Generate marketPulse (3-4 demand signals with verified sources), saturatedAngles (2-3 overcrowded plays to avoid, each with what to do instead), candid pipelineDiagnosis (flagging ${accountSnapshot.untouchedNewLeads} untouched leads if > 0), topPlays (Top 3 Ranked Growth Plays linked to rec_1..rec_3), and 6 recommendations covering location, niche, messaging, channels_timing, and offer_strategy.`;
 
   await input.onStageProgress?.(
     "reading_sources",
@@ -392,6 +402,7 @@ Generate marketPulse (3 trends with verified sources), candid pipelineDiagnosis 
     overallStrategy?: string;
     marketPulse?: Record<string, unknown>[];
     pipelineDiagnosis?: Record<string, unknown>;
+    saturatedAngles?: Record<string, unknown>[];
     topPlays?: Record<string, unknown>[];
     recommendations?: Record<string, unknown>[];
     postAnalysisInsights?: {
@@ -489,6 +500,23 @@ Generate marketPulse (3 trends with verified sources), candid pipelineDiagnosis 
     })
     .filter((m) => Boolean(m.trend));
 
+  const saturatedAngles: GrowthSaturationSignal[] = (Array.isArray(data.saturatedAngles)
+    ? data.saturatedAngles
+    : []
+  )
+    .slice(0, 4)
+    .map((item, idx) => {
+      const rawUrl = cleanStr(item.sourceUrl, 400);
+      return {
+        angle: cleanStr(item.angle, 200),
+        whySaturated: cleanStr(item.whySaturated, 320),
+        whatToDoInstead: cleanStr(item.whatToDoInstead, 320),
+        sourceUrl: rawUrl && allowedSourceUrls.has(rawUrl.toLowerCase()) ? rawUrl : "",
+        sourceTitle: cleanStr(item.sourceTitle, 140) || groundingUrls[idx]?.title || "",
+      };
+    })
+    .filter((item) => Boolean(item.angle) && Boolean(item.whySaturated));
+
   const diagRaw = data.pipelineDiagnosis && typeof data.pipelineDiagnosis === "object" ? data.pipelineDiagnosis : null;
   const pipelineDiagnosis: GrowthPipelineDiagnosis | undefined = diagRaw
     ? {
@@ -528,6 +556,7 @@ Generate marketPulse (3 trends with verified sources), candid pipelineDiagnosis 
     recommendations: recs,
     postAnalysisInsights: postInsights,
     ...(marketPulse.length ? { marketPulse } : {}),
+    ...(saturatedAngles.length ? { saturatedAngles } : {}),
     ...(pipelineDiagnosis?.summary ? { pipelineDiagnosis } : {}),
     ...(topPlays.length ? { topPlays } : {}),
   };
