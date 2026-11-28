@@ -49,9 +49,10 @@ export async function POST(req: NextRequest) {
         "Rewrite the supplied message faithfully according to the user's instruction without inventing claims or leaving placeholders.",
     });
 
-    const { data: result } = await LLMGateway.completeJSON<{ text?: unknown }>({
+    const { data: result } = await LLMGateway.completeJSON<{ text?: unknown }>(
+      {
       ownerId: user.ownerId,
-      taskType: "balanced",
+      taskType: "fast",
       feature: "refine",
       systemPrompt: orchestrated.system,
       messages: [{ role: "user", content: `HOW TO CHANGE IT\n${instruction}\n\nMESSAGE TO REWRITE\n${text.slice(0, 6_000)}` }],
@@ -61,12 +62,24 @@ export async function POST(req: NextRequest) {
         required: ["text"],
       },
       maxTokens: 1400,
-    });
+      },
+      {
+        // An empty rewrite is retryable, not a user-facing dead end: the
+        // gateway fails over to the next healthy model instead of returning
+        // the old "The model returned an empty rewrite" error.
+        validate: (data) => {
+          const value = typeof data?.text === "string" ? data.text.trim() : "";
+          if (!value) {
+            throw new Error("Refine produced an empty rewrite.");
+          }
+        },
+      },
+    );
 
     const refined = typeof result.text === "string" ? stripUnresolvedPlaceholders(result.text.trim()) : "";
     if (!refined) {
       return NextResponse.json(
-        { error: "The model returned an empty rewrite. Try again or pick another model." },
+        { error: "The rewrite service is briefly unavailable. Retry in a moment." },
         { status: 502 },
       );
     }

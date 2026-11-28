@@ -29,6 +29,7 @@ import { buildLiveKnowledgeDigest } from "@/lib/pipeline-client";
 import { createLead, getSettings, listCampaigns, listLeads } from "@/lib/store";
 import { label, statusTone } from "@/lib/format";
 import type { Campaign, Lead } from "@/lib/types";
+import { usePersistedPageState } from "@/lib/usePersistedPageState";
 import type { DiscoveryCandidate, VerificationStatus } from "@/lib/intelligence";
 
 interface Candidate extends DiscoveryCandidate {
@@ -447,11 +448,11 @@ export default function ResearchPage() {
   const { user } = useAuth();
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [leads, setLeads] = useState<Lead[]>([]);
-  const [campaignId, setCampaignId] = useState("");
+  const [campaignId, setCampaignId] = usePersistedPageState<string>("research:campaign", "");
 
-  const [criteria, setCriteria] = useState<ResearchCriteria>(DEFAULT_CRITERIA);
-  const [geo, setGeo] = useState<GeoSelection>(EMPTY_GEO);
-  const [candidates, setCandidates] = useState<Candidate[]>([]);
+  const [criteria, setCriteria] = usePersistedPageState<ResearchCriteria>("research:criteria", DEFAULT_CRITERIA);
+  const [geo, setGeo] = usePersistedPageState<GeoSelection>("research:geo", EMPTY_GEO);
+  const [candidates, setCandidates] = usePersistedPageState<Candidate[]>("research:candidates", []);
   const [groundingUrls, setGroundingUrls] = useState<GroundingLink[]>([]);
   const [notes, setNotes] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);

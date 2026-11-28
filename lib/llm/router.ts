@@ -1,4 +1,5 @@
 import type { GatewayProviderError } from "./providers";
+import { resolveInputTokenCap } from "./budget";
 import { persistAdminKeyHealth } from "./store";
 import {
   getModelContextWindow,
@@ -119,6 +120,25 @@ export function clearRouterStateForTests(): void {
   rpdCounters.clear();
   keyModelCooldowns.clear();
   googleGroundingBlockedKeys.clear();
+  latencyEwma.clear();
+}
+
+/**
+ * Rolling latency per (key, model). A model that is healthy but consistently
+ * slow must lose to a fast one, not keep winning on seat name alone.
+ */
+const latencyEwma = new Map<string, number>();
+
+export function recordCandidateLatency(keyId: string, modelId: string, latencyMs: number): void {
+  if (!Number.isFinite(latencyMs) || latencyMs <= 0) return;
+  const signature = `${keyId}:${modelId}`;
+  const previous = latencyEwma.get(signature);
+  const next = previous === undefined ? latencyMs : previous * 0.7 + latencyMs * 0.3;
+  latencyEwma.set(signature, Math.round(next));
+}
+
+export function getCandidateLatencyMs(keyId: string, modelId: string): number | null {
+  return latencyEwma.get(`${keyId}:${modelId}`) ?? null;
 }
 
 export function clearAllInMemoryModelCooldowns(): void {
@@ -370,6 +390,12 @@ export function rankPoolCandidates(input: {
         if (input.estimatedTokens > ctxWindow * 0.85) {
           continue;
         }
+        // Free-tier Input-Tokens-Per-Minute caps (Groq Qwen/GPT-OSS, CF): skip
+        // the model before the call instead of eating a 413 and a cooldown.
+        const inputCap = resolveInputTokenCap(key.provider, model.id, model.maxInputTokens);
+        if (inputCap && input.estimatedTokens > inputCap) {
+          continue;
+        }
       }
 
       let score = 0;
@@ -397,6 +423,13 @@ export function rankPoolCandidates(input: {
         if (key.provider === "google" && model.capabilities.grounding && !isGoogleGroundingBlocked(key.id)) {
           score += 500;
         }
+      }
+
+      // 3b. Observed latency: a genuinely fast healthy model outranks a slow one.
+      const observedLatency = latencyEwma.get(`${key.id}:${model.id}`);
+      if (observedLatency) {
+        const divisor = input.taskType === "fast" ? 60 : 150;
+        score -= Math.min(90, Math.round(observedLatency / divisor));
       }
 
       // 4. Task-seat alignment (smart / balanced / fast)

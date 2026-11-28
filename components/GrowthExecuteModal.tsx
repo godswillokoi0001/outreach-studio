@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
+import { usePersistedPageState } from "@/lib/usePersistedPageState";
 import {
   AlertTriangle,
   CheckCircle2,
@@ -62,11 +63,17 @@ export function GrowthExecuteModal({
   const toast = useToast();
 
   const [generating, setGenerating] = useState(false);
-  const [activeStage, setActiveStage] = useState<GrowthExecuteStage>("strategy");
-  const [completedStages, setCompletedStages] = useState<GrowthExecuteStage[]>([]);
+  const [activeStage, setActiveStage] = usePersistedPageState<GrowthExecuteStage>(
+    "growth:execute_stage",
+    "strategy",
+  );
+  const [completedStages, setCompletedStages] = usePersistedPageState<GrowthExecuteStage[]>(
+    "growth:execute_completed",
+    [],
+  );
   const [stepSummaries, setStepSummaries] = useState<Partial<Record<GrowthExecuteStage, string>>>({});
   const [failedStage, setFailedStage] = useState<GrowthExecuteStage | null>(null);
-  const [runId, setRunId] = useState<string | null>(null);
+  const [runId, setRunId] = usePersistedPageState<string | null>("growth:execute_run", null);
   const [error, setError] = useState<string | null>(null);
   const [blueprint, setBlueprint] = useState<ExecutedCampaignBlueprint | null>(null);
   const [saving, setSaving] = useState(false);

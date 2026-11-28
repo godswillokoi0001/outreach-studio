@@ -3,6 +3,7 @@
 import { BrandLoader } from "@/components/BrandLoader";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { usePersistedPageState } from "@/lib/usePersistedPageState";
 import { Bot, Plus, SlidersHorizontal, X } from "lucide-react";
 import { useAuth } from "@/components/AuthProvider";
 import { Badge, Banner, Card, Empty, Field, Modal, Pager } from "@/components/ui";
@@ -33,8 +34,8 @@ export default function LeadsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const [status, setStatus] = useState("all");
-  const [campaignFilter, setCampaignFilter] = useState("all");
+  const [status, setStatus, resetStatus] = usePersistedPageState<string>("leads:status", "all");
+  const [campaignFilter, setCampaignFilter, resetCampaign] = usePersistedPageState<string>("leads:campaign", "all");
   const [campaignFilters, setCampaignFilters] = useState<string[]>([]);
   const [qualFilter, setQualFilter] = useState<"all" | "qualified" | "not_qualified" | "needs_review">("all");
   const [locationFilter, setLocationFilter] = useState("");
@@ -43,17 +44,21 @@ export default function LeadsPage() {
   const [hasEmailFilter, setHasEmailFilter] = useState(false);
   const [hasPhoneFilter, setHasPhoneFilter] = useState(false);
   const [hasSocialFilter, setHasSocialFilter] = useState(false);
-  const [needsVerificationFilter, setNeedsVerificationFilter] = useState(false);
+  const [needsVerificationFilter, setNeedsVerificationFilter] = usePersistedPageState<boolean>(
+    "leads:needs_verification",
+    false,
+  );
   const [dateAddedFilter, setDateAddedFilter] = useState<"all" | "today" | "7d" | "30d">("all");
   const [scoreFilter, setScoreFilter] = useState<"all" | "high" | "medium" | "low">("all");
   const [sortOption, setSortOption] = useState<"newest" | "oldest" | "score_desc" | "score_asc" | "az" | "za">("newest");
   const [showAdvancedFilters, setShowAdvancedFilters] = useState(false);
   const [checked, setChecked] = useState<string[]>([]);
   const [bulkCampaign, setBulkCampaign] = useState("");
-  const [search, setSearch] = useState("");
-  const [query, setQuery] = useState("");
-  const [page, setPage] = useState(1);
+  const [search, setSearch, resetSearch] = usePersistedPageState<string>("leads:search", "");
+  const [query, setQuery] = usePersistedPageState<string>("leads:query", "");
+  const [page, setPage, resetPage] = usePersistedPageState<number>("leads:page", 1);
   const [selected, setSelected] = useState<Lead | null>(null);
+  const [selectedLeadId, setSelectedLeadId] = usePersistedPageState<string | null>("leads:open", null);
   const [busy, setBusy] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
@@ -105,6 +110,21 @@ export default function LeadsPage() {
       active = false;
     };
   }, [user.uid]);
+
+  // Restore the lead drawer across navigation once the list has loaded.
+  useEffect(() => {
+    if (loading || !selectedLeadId || selected?.id === selectedLeadId) return;
+    const lead = allLeads.find((l) => l.id === selectedLeadId);
+    if (!lead) return;
+    const timer = window.setTimeout(() => setSelected(lead), 0);
+    return () => window.clearTimeout(timer);
+  }, [loading, selectedLeadId, allLeads, selected]);
+
+  useEffect(() => {
+    if (loading) return;
+    if (selected?.id && selected.id !== selectedLeadId) setSelectedLeadId(selected.id);
+    else if (!selected && selectedLeadId) setSelectedLeadId(null);
+  }, [loading, selected, selectedLeadId, setSelectedLeadId]);
 
   const unverifiedLeads = useMemo(
     () => allLeads.filter((l) => isLeadMissingVerifiedContact(l).needsVerification),
@@ -292,6 +312,12 @@ export default function LeadsPage() {
     setQuery("");
     setSortOption("newest");
     setPage(1);
+    setSelected(null);
+    setSelectedLeadId(null);
+    resetStatus();
+    resetCampaign();
+    resetSearch();
+    resetPage();
   };
 
   const hasActiveFilters = Boolean(

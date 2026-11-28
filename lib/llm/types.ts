@@ -468,6 +468,11 @@ export interface GatewayModelConfig {
   capabilities: ModelCapabilities;
   isFreeTier?: boolean;
   contextWindow?: number;
+  /**
+   * Safe input-tokens-per-minute ceiling for tight free tiers (Groq Qwen,
+   * GPT-OSS, Cloudflare). A request above it skips the model before calling.
+   */
+  maxInputTokens?: number;
 }
 
 export interface ProviderCatalogMeta {

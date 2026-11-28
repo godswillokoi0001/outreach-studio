@@ -9,6 +9,17 @@
  * guessing where the paragraphs are.
  */
 
+/**
+ * Remove open-tracking <img> tags before rendering an email inside the app.
+ * The dashboard preview must never fire /api/track/open for the sender.
+ */
+export function stripTrackingPixels(html: string): string {
+  return (html ?? "")
+    .replace(/<img\b[^>]*\bsrc=["'][^"']*\/api\/track\/open[^"']*["'][^>]*>/gi, "")
+    .replace(/<img\b[^>]*\bdata-tracking-pixel=["'][^"']*["'][^>]*>/gi, "")
+    .replace(/<img\b[^>]*\bdata-tracking=["'][^"']*["'][^>]*>/gi, "");
+}
+
 export function escapeEmailHtml(value: string): string {
   return value
     .replace(/&/g, "&amp;")
@@ -20,7 +31,14 @@ export function escapeEmailHtml(value: string): string {
 const BOLD = /\*\*([^*\n]+)\*\*/g;
 const ITALIC_STAR = /(^|[\s(])\*([^*\n]+)\*(?=[\s.,!?)]|$)/g;
 const ITALIC_UNDERSCORE = /(^|[\s(])_([^_\n]+)_(?=[\s.,!?)]|$)/g;
-const LINK = /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g;
+const LINK = /\[([^\]]+)\]\(([^)\s]+)\)/g;
+
+/** Only web, mail and phone links are allowed into an email href. */
+export function safeEmailHref(raw: string): string | null {
+  const value = (raw ?? "").trim();
+  if (!value) return null;
+  return /^(?:https?:\/\/|mailto:|tel:)/i.test(value) ? value : null;
+}
 
 /** The same body as readable plain text, for the text/plain MIME part. */
 export function formatEmailText(body: string): string {
@@ -29,21 +47,41 @@ export function formatEmailText(body: string): string {
     .replace(BOLD, "$1")
     .replace(ITALIC_STAR, "$1$2")
     .replace(ITALIC_UNDERSCORE, "$1$2")
-    .replace(LINK, "$1 ($2)")
+    // Never leave raw [Label](url) brackets in a plain-text email.
+    .replace(LINK, "$1: $2")
     .replace(/[ \t]+$/gm, "")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 }
 
+const LINK_STYLE = "color:#1a5b3a;text-decoration:underline;";
+
 function inlineHtml(text: string): string {
-  return escapeEmailHtml(text)
-    .replace(
-      /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,
-      '<a href="$2" style="color:#1a5b3a;text-decoration:underline;">$1</a>',
-    )
+  let out = escapeEmailHtml(text);
+  const anchors: string[] = [];
+  const stash = (html: string) => {
+    anchors.push(html);
+    return `\u0000${anchors.length - 1}\u0000`;
+  };
+
+  // Markdown links first, so a bare-URL pass cannot rewrite their target.
+  out = out.replace(LINK, (_match, label: string, url: string) => {
+    const href = safeEmailHref(url);
+    if (!href) return label;
+    return stash(`<a href="${href}" style="${LINK_STYLE}">${label}</a>`);
+  });
+
+  // Bare URLs in a footer become real links too.
+  out = out.replace(/\bhttps?:\/\/[^\s<>"']+/g, (url) =>
+    stash(`<a href="${url}" style="${LINK_STYLE}">${url}</a>`),
+  );
+
+  out = out
     .replace(BOLD, "<strong>$1</strong>")
     .replace(ITALIC_STAR, "$1<em>$2</em>")
     .replace(ITALIC_UNDERSCORE, "$1<em>$2</em>");
+
+  return out.replace(/\u0000(\d+)\u0000/g, (_match, index: string) => anchors[Number(index)] ?? "");
 }
 
 /**
@@ -51,7 +89,7 @@ function inlineHtml(text: string): string {
  * separated by a blank line; a block made only of `- ` lines becomes a list.
  */
 export function formatEmailHtml(body: string): string {
-  const blocks = body
+  const blocks = stripTrackingPixels(body)
     .replace(/\r\n/g, "\n")
     .replace(/\u00a0/g, " ")
     .split(/\n{2,}/)

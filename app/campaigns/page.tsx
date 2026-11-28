@@ -30,6 +30,7 @@ import {
 import { fmtDate, label, statusTone } from "@/lib/format";
 import { buildLiveKnowledgeDigest } from "@/lib/pipeline-client";
 import type { Campaign, CampaignConfig, Lead, Message, Reply } from "@/lib/types";
+import { usePersistedPageState } from "@/lib/usePersistedPageState";
 
 interface Plan {
   name: string;
@@ -75,7 +76,7 @@ export default function CampaignsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const [instruction, setInstruction] = useState("");
+  const [instruction, setInstruction] = usePersistedPageState<string>("campaigns:instruction", "");
   const [criteria, setCriteria] = useState<ResearchCriteria>(DEFAULT_CRITERIA);
   const [geo, setGeo] = useState<GeoSelection>(EMPTY_GEO);
   const [plan, setPlan] = useState<Plan | null>(null);
@@ -83,7 +84,7 @@ export default function CampaignsPage() {
   const [notice, setNotice] = useState<string | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
   const [plannerOpen, setPlannerOpen] = useState(false);
-  const [selectedId, setSelectedId] = useState("");
+  const [selectedId, setSelectedId] = usePersistedPageState<string>("campaigns:selected", "");
   const fullInstructionRef = useRef("");
 
   const reload = useCallback(async () => {

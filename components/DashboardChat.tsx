@@ -188,6 +188,7 @@ const MODE_KEY = "agent-operator-mode";
 const DOCK_MODE_KEY = "agent-operator-dock-mode";
 const CONV_KEY = "agent-operator-conversations";
 const ACTIVE_KEY = "agent-operator-active";
+const DRAFT_KEY = "agent-operator-draft";
 const RECENT_LIMIT = 40;
 const DEVELOPER_MODE_KEY = "os:developer-mode";
 
@@ -364,7 +365,21 @@ export function DashboardChat({
   };
 
   const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [input, setInput] = useState("");
+  // Keep an unsent composer draft across route changes and reloads.
+  const [input, setInput] = useState(() => {
+    if (typeof window === "undefined") return "";
+    return readStored<string>(userScopedKey(DRAFT_KEY, user.uid)) ?? "";
+  });
+
+  useEffect(() => {
+    try {
+      const key = userScopedKey(DRAFT_KEY, user.uid);
+      if (input) window.localStorage.setItem(key, JSON.stringify(input));
+      else window.localStorage.removeItem(key);
+    } catch {
+      /* storage unavailable */
+    }
+  }, [input, user.uid]);
   const [busy, setBusyState] = useState(false);
   const [statusLabel, setStatusLabel] = useState<string | null>(null);
   const [pendingConfirm, setPendingConfirm] = useState<PendingConfirmation | null>(null);

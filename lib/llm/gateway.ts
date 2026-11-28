@@ -14,10 +14,17 @@ import {
   MAX_AUTO_ATTEMPTS,
   rankPoolCandidates,
   recordCandidateFailure,
+  recordCandidateLatency,
   recordCandidateSuccess,
   recordKeyUsageHit,
   getSoonestCooldownRemainingMs,
 } from "./router";
+import {
+  estimateRequestInputTokens,
+  getBudgetProfile,
+  resolveInputTokenCap,
+  shouldDisableThinking,
+} from "./budget";
 import { WebSearchService } from "../search/webSearch";
 import {
   appendAiExecutionLog,
@@ -118,13 +125,11 @@ async function runPooledAutoFailover<T>(input: {
     listAdminAiKeys(),
   ]);
 
-  const estimateChars =
-    (input.req.systemPrompt?.length ?? 0) +
-    JSON.stringify(input.req.messages ?? []).length +
-    (input.req.agentContents ? JSON.stringify(input.req.agentContents).length : 0) +
-    (input.req.tools?.length ?? 0) * 650;
-  const maxOutputReserve = input.req.maxTokens ?? 1800;
-  const estimatedTokens = Math.ceil(estimateChars / 3.2) + maxOutputReserve;
+  // Input-only estimate: context checks and the free-tier ITPM pre-flight both
+  // care about what we send, not the output budget we ask for.
+  const estimatedTokens = estimateRequestInputTokens(input.req);
+  const budget = getBudgetProfile(input.req.feature);
+  const disableThinking = shouldDisableThinking(input.req.feature, input.req.taskType);
 
   const ranked = rankPoolCandidates({
     keys: adminKeys,
@@ -186,10 +191,11 @@ async function runPooledAutoFailover<T>(input: {
   const hasMultipleKeys = new Set(ranked.map((c) => c.key.id)).size > 1;
   const MAX_FAILURES_PER_KEY = 3;
 
-  for (let i = 0; i < ranked.length && attempts < MAX_AUTO_ATTEMPTS; i++) {
+  const maxAttempts = Math.min(MAX_AUTO_ATTEMPTS, budget.maxAttempts);
+  for (let i = 0; i < ranked.length && attempts < maxAttempts; i++) {
     const elapsed = Date.now() - input.startedAt;
-    const budgetLeft = AUTO_WALL_BUDGET_MS - elapsed;
-    if (attempts >= 1 && budgetLeft < 4_000) {
+    const budgetLeft = budget.wallMs - elapsed;
+    if (attempts >= 1 && budgetLeft < 3_000) {
       break;
     }
 
@@ -199,6 +205,10 @@ async function runPooledAutoFailover<T>(input: {
     }
     const trySig = `${candidate.key.id}:${candidate.model.id}`;
     if (triedKeys.has(trySig)) continue;
+    // ITPM/context pre-flight: skip before the call, so no quota is spent and
+    // no key or model goes on cooldown for a payload it cannot accept.
+    const inputCap = resolveInputTokenCap(candidate.key.provider, candidate.model.id, candidate.model.maxInputTokens);
+    if (inputCap && estimatedTokens > inputCap) continue;
     triedKeys.add(trySig);
     attempts += 1;
 
@@ -213,14 +223,15 @@ async function runPooledAutoFailover<T>(input: {
 
     recordKeyUsageHit(candidate.key.id);
 
-    const remainingMs = Math.max(4_000, AUTO_WALL_BUDGET_MS - (Date.now() - input.startedAt));
+    const remainingMs = Math.max(3_000, budget.wallMs - (Date.now() - input.startedAt));
     const heavyScoringJson =
       input.req.responseFormat === "json" &&
       (input.req.feature === "growth_execute_score" ||
         input.req.feature === "growth_advisor" ||
         input.req.taskType === "smart");
-    const targetAttemptTimeout = heavyScoringJson ? 14_000 : 10_000;
+    const targetAttemptTimeout = heavyScoringJson ? Math.max(budget.attemptMs, 14_000) : budget.attemptMs;
     const attemptTimeout = Math.min(remainingMs, targetAttemptTimeout);
+    const attemptStarted = Date.now();
 
     // Non-Google providers cannot run Google Search grounding natively; also skip keys where free-tier rejected grounding
     const isGoogleGrounding =
@@ -253,10 +264,12 @@ async function runPooledAutoFailover<T>(input: {
         agentContents: input.req.agentContents,
         useGrounding: isGoogleGrounding,
         timeoutMs: attemptTimeout,
+        disableThinking,
       });
 
       const parsed = input.parseResult(raw);
       recordCandidateSuccess(candidate.key, candidate.model.id);
+      recordCandidateLatency(candidate.key.id, candidate.model.id, Date.now() - attemptStarted);
 
       const receipt: GatewayReceipt = {
         ownerId: input.req.ownerId,
@@ -501,15 +514,35 @@ export const LLMGateway = {
   async complete(req: GatewayRequest): Promise<GatewayTextResult> {
     const res = await executeGatewayCore(
       { ...req, responseFormat: req.responseFormat ?? "text" },
-      (raw) => raw.text,
+      (raw) => {
+        // Whitespace-only is the same dead end as empty: fail over, never
+        // hand the caller an empty string it has to explain to the user.
+        const text = (raw.text ?? "").trim();
+        if (!text) {
+          throw new GatewayProviderError("Provider returned an empty completion.", {
+            status: 502,
+            retryable: true,
+          });
+        }
+        return text;
+      },
     );
     return { text: res.parsed, receipt: res.receipt };
   },
 
-  async completeJSON<T>(req: GatewayRequest): Promise<GatewayJsonResult<T>> {
+  async completeJSON<T>(
+    req: GatewayRequest,
+    options?: { validate?: (data: T) => void },
+  ): Promise<GatewayJsonResult<T>> {
     const res = await executeGatewayCore(
       { ...req, responseFormat: "json" },
-      (raw) => parseJsonWithRescue<T>(raw.text),
+      (raw) => {
+        const data = parseJsonWithRescue<T>(raw.text);
+        // A syntactically valid object whose required field is empty is still
+        // a failed generation: let the gateway fail over to the next model.
+        options?.validate?.(data);
+        return data;
+      },
     );
     return { data: res.parsed, receipt: res.receipt };
   },

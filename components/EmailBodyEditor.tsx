@@ -101,7 +101,7 @@ export function EmailBodyEditor({
         kind,
       });
       const next = (res.text ?? "").trim();
-      if (!next) throw new Error("The model returned an empty rewrite. Try again or pick another model.");
+      if (!next) throw new Error("The rewrite service is briefly unavailable. Retry in a moment.");
       setPrevious(value);
       onChange(next);
       setInstruction("");

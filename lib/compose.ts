@@ -212,7 +212,8 @@ const COMPOSE_INITIAL_TASK = `Execute Workflow B (draft_outreach — Touch 1 Ini
 - Apply Anti-Fingerprint Adaptation: use natural Voice-of-Customer phrasing, 45-95 words total, Grade 3-5 reading level, max 1-2 sentences per paragraph, >=2:1 You-to-I ratio.
 - Strictly follow USER_SENDING_TIER deliverability rules:
   * If free_gmail_starter: 0 links ideal (max 1 clean signature link only if verified in USER_PROOF/USER_LEAD_MAGNET), never calendar links, plain text only.
-- NEVER emit unresolved {{...}} placeholders, an empty greeting ("Hi ,"), or banned AI slop. Pass ALL 8 Module 2 Quality Gate points in this single draft.`;
+- NEVER emit unresolved {{...}} placeholders, an empty greeting ("Hi ,"), or banned AI slop. Pass ALL 8 Module 2 Quality Gate points in this single draft.
+- FIRST PASS MUST BE SEND-READY: open with the contact's real first name (or "Hi there," when unknown), lead with ONE concrete verified hook from the research JSON, say what the sender does in one plain sentence, and close with a single low-friction question. No meta commentary, no bracketed notes, no draft disclaimers.`;
 
 const COMPOSE_FOLLOWUP_TASK = `Execute Workflow B (draft_outreach — Same-Thread Follow-Up):
 - Follow Module 3's 5-Touch Execution Matrix and Follow-Up Laws strictly.
@@ -327,6 +328,12 @@ Select the optimal Module 3 template (T1-T12) and write the Touch 1 email passin
     messages: [{ role: "user", content: user }],
     schema: SCHEMA,
     maxTokens: 1600,
+  }, {
+    validate: (data) => {
+      if (!String(data?.body ?? "").trim() || !String(data?.subject ?? "").trim()) {
+        throw new Error("Compose returned an empty subject or body.");
+      }
+    },
   });
   const greeting = { contactName: lead.contact_name, role: lead.role };
   const cleaned = sanitizeComposedDraft(draft, true, sendingTier, greeting);
@@ -421,6 +428,12 @@ This is Touch #${step} in the Module 3 Follow-Up Matrix. Write a shorter same-th
     messages: [{ role: "user", content: user }],
     schema: SCHEMA,
     maxTokens: 1600,
+  }, {
+    validate: (data) => {
+      if (!String(data?.body ?? "").trim() || !String(data?.subject ?? "").trim()) {
+        throw new Error("Compose returned an empty subject or body.");
+      }
+    },
   });
   const greeting = { contactName: lead.contact_name, role: lead.role };
   const cleaned = sanitizeComposedDraft(draft, false, sendingTier, greeting);

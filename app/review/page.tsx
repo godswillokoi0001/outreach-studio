@@ -3,7 +3,7 @@
 import { BrandLoader } from "@/components/BrandLoader";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Check, ChevronLeft, Loader2, Save, Sparkles, Trash2, X } from "lucide-react";
+import { Check, ChevronLeft, Info, Loader2, Save, Sparkles, Trash2, X } from "lucide-react";
 import { useAuth } from "@/components/AuthProvider";
 import { BatchRunner } from "@/components/Runner";
 import { Badge, Banner, Card, Empty, Pager } from "@/components/ui";
@@ -36,6 +36,13 @@ import { fmtDate, label, statusTone } from "@/lib/format";
 import { formatEmailHtml } from "@/lib/email-format";
 import { buildLiveKnowledgeDigest, sendMessageNow } from "@/lib/pipeline-client";
 import type { Campaign, Lead, Message } from "@/lib/types";
+import { LeadResearchModal } from "@/components/LeadResearchModal";
+import {
+  clearEmailDraft,
+  readEmailDraft,
+  usePersistedPageState,
+  writeEmailDraft,
+} from "@/lib/usePersistedPageState";
 
 interface MessageRow extends Message {
   business: string | null;
@@ -62,9 +69,11 @@ export default function ReviewPage() {
   const { user, workspaceToken, reconnectWorkspace } = useAuth();
   const confirmDialog = useConfirm();
   const toast = useToast();
-  const [tab, setTab] = useState<string>("pending_approval");
-  const [campaign, setCampaign] = useState("");
-  const [page, setPage] = useState(1);
+  const [tab, setTab, resetTab] = usePersistedPageState<string>("review:tab", "pending_approval");
+  const [campaign, setCampaign, resetCampaign] = usePersistedPageState<string>("review:campaign", "");
+  const [page, setPage, resetPage] = usePersistedPageState<number>("review:page", 1);
+  const [openEmailId, setOpenEmailId] = usePersistedPageState<string | null>("review:open", null);
+  const [researchLead, setResearchLead] = useState<Lead | null>(null);
   const [review, setReview] = useState<MessageRow | null>(null);
   const [drawerMode, setDrawerMode] = useState<"review" | "rewrite" | null>(null);
   const [subject, setSubject] = useState("");
@@ -143,7 +152,8 @@ export default function ReviewPage() {
     setDrawerMode(null);
     setReview(null);
     setSubjectIdeas([]);
-  }, []);
+    setOpenEmailId(null);
+  }, [setOpenEmailId]);
 
   useEffect(() => {
     if (!drawerMode) return;
@@ -236,11 +246,38 @@ export default function ReviewPage() {
     [inCampaign],
   );
 
+  // Reopen the email that was being reviewed before the user navigated away.
+  useEffect(() => {
+    if (loading || review || drawerMode || !openEmailId) return;
+    const row = rows.find((item) => item.id === openEmailId);
+    if (!row) return;
+    // Deferred one tick so restoring the drawer never cascades a render
+    // inside the effect that observes freshly loaded messages.
+    const timer = window.setTimeout(() => {
+      const draft = readEmailDraft(row.id);
+      setReview(row);
+      setDrawerMode("review");
+      setSubject(draft?.subject ?? row.subject ?? "");
+      setBody(draft?.body ?? row.body ?? "");
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [loading, review, drawerMode, openEmailId, rows]);
+
+  // Keep unsaved edits per email so leaving and returning never loses them.
+  useEffect(() => {
+    if (!review || drawerMode !== "review") return;
+    const unchanged = subject === (review.subject ?? "") && body === (review.body ?? "");
+    if (unchanged) return;
+    writeEmailDraft(review.id, { subject, body });
+  }, [review, drawerMode, subject, body]);
+
   const openReview = (message: MessageRow) => {
+    const draft = readEmailDraft(message.id);
     setReview(message);
     setDrawerMode("review");
-    setSubject(message.subject ?? "");
-    setBody(message.body ?? "");
+    setOpenEmailId(message.id);
+    setSubject(draft?.subject ?? message.subject ?? "");
+    setBody(draft?.body ?? message.body ?? "");
     setSubjectIdeas([]);
     setError(null);
   };
@@ -285,6 +322,7 @@ export default function ReviewPage() {
     setNotice(null);
     try {
       await updateMessageContent(user.uid, message.id, { subject, body });
+      clearEmailDraft(message.id);
       await updateMessageStatus(user.uid, message.id, "approved", {
         approved_at: new Date().toISOString(),
       });
@@ -317,6 +355,7 @@ export default function ReviewPage() {
     setError(null);
     try {
       await updateMessageContent(user.uid, message.id, { subject, body });
+      clearEmailDraft(message.id);
       toast.success("Changes saved", "It stays under Awaiting approval.");
       setReview({ ...message, subject, body });
       await reload();
@@ -337,6 +376,7 @@ export default function ReviewPage() {
         if (!ok) throw new Error("Connect Google before sending emails.");
       }
       await updateMessageContent(user.uid, message.id, { subject, body });
+      clearEmailDraft(message.id);
       if (message.status !== "approved") {
         await updateMessageStatus(user.uid, message.id, "approved", {
           approved_at: new Date().toISOString(),
@@ -580,6 +620,19 @@ export default function ReviewPage() {
                 confirmText="Send every approved email now from your connected Gmail account? They go to real prospects."
                 onDone={reload}
               />
+              <button
+                type="button"
+                className="btn btn-sm btn-ghost"
+                title="Clear saved filters and close any open email"
+                onClick={() => {
+                  resetTab();
+                  resetCampaign();
+                  resetPage();
+                  closeDrawer();
+                }}
+              >
+                Clear / Reset
+              </button>
               <span className="tiny row-end">{filtered.length} emails</span>
             </div>
           </div>
@@ -676,6 +729,18 @@ export default function ReviewPage() {
                       </td>
                       <td className="tiny nowrap">{fmtDate(message.created_at)}</td>
                       <td onClick={(e) => e.stopPropagation()}>
+                        <button
+                          type="button"
+                          className="btn btn-sm btn-ghost"
+                          title="View research & contact"
+                          aria-label={`View research and contact for ${message.displayName}`}
+                          onClick={() => {
+                            const lead = leads.find((item) => item.id === message.lead_id);
+                            if (lead) setResearchLead(lead);
+                          }}
+                        >
+                          <Info size={12} aria-hidden="true" />
+                        </button>
                         {message.status !== "sent" && message.status !== "sending" && (
                           <button
                             type="button"
@@ -770,10 +835,24 @@ export default function ReviewPage() {
                   {review.angle && <Badge tone="gold">{review.angle}</Badge>}
                 </div>
 
-                <div className="tiny">
-                  <strong>To:</strong>{" "}
-                  {hasSendableEmail(review.lead_email) ? review.lead_email : "no email address"}
-                  {review.contact_name ? ` · ${review.contact_name}` : ""}
+                <div className="row" style={{ gap: 10, flexWrap: "wrap", alignItems: "center", justifyContent: "space-between" }}>
+                  <div className="tiny">
+                    <strong>To:</strong>{" "}
+                    {hasSendableEmail(review.lead_email) ? review.lead_email : "no email address"}
+                    {review.contact_name ? ` · ${review.contact_name}` : ""}
+                  </div>
+                  <button
+                    type="button"
+                    className="btn btn-sm"
+                    onClick={() => {
+                      const lead = leads.find((item) => item.id === review.lead_id);
+                      if (lead) setResearchLead(lead);
+                      else setError("No research record is attached to this prospect.");
+                    }}
+                  >
+                    <Info size={12} aria-hidden="true" />
+                    View Research &amp; Contact
+                  </button>
                 </div>
 
                 {!hasSendableEmail(review.lead_email) && (
@@ -918,6 +997,9 @@ export default function ReviewPage() {
         </div>
       )}
 
+      {researchLead && (
+        <LeadResearchModal lead={researchLead} onClose={() => setResearchLead(null)} />
+      )}
     </main>
   );
 }

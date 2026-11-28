@@ -225,6 +225,10 @@ export interface RawEmailInput {
   openPixelUrl?: string | null;
   /** True for Free Gmail / Starter cold outreach to send pure text/plain. */
   plainTextOnly?: boolean;
+  /** Full HTML document from the signature template (pixel is appended here). */
+  htmlBody?: string;
+  /** Already-formatted plain-text twin from the signature template. */
+  plainBody?: string;
 }
 
 
@@ -255,7 +259,8 @@ export function buildRawEmail(input: RawEmailInput): string {
   if (input.plainTextOnly) {
     headers.push(`Content-Type: text/plain; charset="UTF-8"`);
     headers.push(`Content-Transfer-Encoding: base64`);
-    const plain = wrapBase64(btoa(bytesToBinary(new TextEncoder().encode(formatEmailText(body)))));
+    const plainText = input.plainBody ?? formatEmailText(body);
+    const plain = wrapBase64(btoa(bytesToBinary(new TextEncoder().encode(plainText))));
     return `${headers.join("\r\n")}\r\n\r\n${plain}`;
   }
 
@@ -267,7 +272,10 @@ export function buildRawEmail(input: RawEmailInput): string {
   // where tracking is off and there is no pixel. Sending plain text only is
   // what made paragraphs and lists collapse in some mail clients.
   const boundary = `os_alt_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
-  const html = wrapEmailHtml(body, pixel);
+  const html = input.htmlBody
+    ? input.htmlBody.replace(/<\/body>/i, `${pixel}</body>`)
+    : wrapEmailHtml(body, pixel);
+  const plainText = input.plainBody ?? formatEmailText(body);
   headers.push(`Content-Type: multipart/alternative; boundary="${boundary}"`);
 
   const textPart = [
@@ -275,7 +283,7 @@ export function buildRawEmail(input: RawEmailInput): string {
     `Content-Type: text/plain; charset="UTF-8"`,
     `Content-Transfer-Encoding: base64`,
     "",
-    wrapBase64(btoa(bytesToBinary(new TextEncoder().encode(formatEmailText(body))))),
+    wrapBase64(btoa(bytesToBinary(new TextEncoder().encode(plainText)))),
   ].join("\r\n");
 
   const htmlPart = [

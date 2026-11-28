@@ -23,7 +23,7 @@ import {
 import { fmtDate } from "@/lib/format";
 import { DEFAULT_SETTINGS, type Settings, type Suppression } from "@/lib/types";
 import { AiProviderSettingsCard } from "@/components/AiProviderSettingsCard";
-import { formatEmailHtml } from "@/lib/email-format";
+import { EMAIL_TEMPLATE_OPTIONS, buildOutgoingEmailHtml, normalizeEmailTemplate } from "@/lib/email-template";
 import { ClearActivityModal } from "@/components/ClearActivityModal";
 import {
   OPERATOR_MEMORY_CHANGED,
@@ -456,13 +456,32 @@ export default function SettingsPage() {
         </Card>
 
         <Card
-          title="Email footer"
-          sub="One footer, added to every email you send — initial outreach, follow-ups and replies."
+          title="Email footer & signature"
+          sub="One footer and template, applied to every email you send — initial outreach, follow-ups and replies."
         >
           <div className="stack" style={{ gap: 10 }}>
+            <div>
+              <div className="label" style={{ marginBottom: 6 }}>Signature template</div>
+              <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
+                {EMAIL_TEMPLATE_OPTIONS.map((option) => (
+                  <button
+                    key={option.id}
+                    type="button"
+                    className={`btn btn-sm${normalizeEmailTemplate(form.email_template) === option.id ? " btn-primary" : ""}`}
+                    onClick={() => set("email_template", option.id)}
+                    title={option.blurb}
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
+              <p className="hint" style={{ marginTop: 6 }}>
+                {EMAIL_TEMPLATE_OPTIONS.find((o) => o.id === normalizeEmailTemplate(form.email_template))?.blurb}
+              </p>
+            </div>
             <Field
-              label="Footer text"
-              hint="Leave empty for no footer. Line breaks are kept and a Markdown link such as [Book a call](https://cal.com/you) becomes a real link in the email."
+              label="Footer text & links"
+              hint="Line breaks are kept. Markdown links such as [Book a call](https://cal.com/you) and bare URLs become real links; LinkedIn, X, GitHub, Instagram, calendar and website links get a hosted icon badge."
             >
               <textarea
                 className="textarea"
@@ -493,7 +512,17 @@ export default function SettingsPage() {
                 </div>
                 <div
                   className="footer-preview"
-                  dangerouslySetInnerHTML={{ __html: formatEmailHtml(form.email_footer) }}
+                  dangerouslySetInnerHTML={{
+                    __html: buildOutgoingEmailHtml({
+                      body: "Hi there,\n\nA short note about your business goes here.",
+                      footer: form.email_footer,
+                      template: form.email_template,
+                      appUrl: typeof window !== "undefined" ? window.location.origin : "",
+                      senderName: form.sender_name,
+                      senderRole: form.sender_role,
+                      senderCompany: form.sender_company,
+                    }),
+                  }}
                 />
               </div>
             )}

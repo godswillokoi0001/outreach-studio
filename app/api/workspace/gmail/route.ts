@@ -10,7 +10,12 @@ import {
 import { verifyRequest } from "@/lib/server-auth";
 import { buildOpenPixelUrl, buildRawEmail, encodeBase64Url, type RawEmailInput } from "@/lib/outreach-utils";
 import { getSupabaseSettingsServer, supabaseServer } from "@/lib/supabase-server";
-import { applyEmailFooter } from "@/lib/email-format";
+import { clientIpFromHeaders, hashSenderIp } from "@/lib/tracking-guard";
+import {
+  buildOutgoingEmailHtml,
+  buildOutgoingEmailText,
+  normalizeEmailTemplate,
+} from "@/lib/email-template";
 import type { Campaign, Lead } from "@/lib/types";
 
 const GMAIL_API = "https://gmail.googleapis.com/gmail/v1/users/me";
@@ -262,15 +267,40 @@ export async function POST(req: NextRequest) {
       // the server, so every email that leaves the app carries it — initial,
       // follow-up and reply alike — no matter which page triggered the send.
       let accountFooter = "";
+      let accountSignature = "";
+      let template = "executive_clean";
+      let senderName = "";
+      let senderRole = "";
+      let senderCompany = "";
       try {
-        accountFooter = (await getSupabaseSettingsServer(user.ownerId))?.email_footer ?? "";
+        const account = await getSupabaseSettingsServer(user.ownerId);
+        accountFooter = account?.email_footer ?? "";
+        accountSignature = account?.signature ?? "";
+        template = normalizeEmailTemplate(account?.email_template);
+        senderName = account?.sender_name ?? "";
+        senderRole = account?.sender_role ?? "";
+        senderCompany = account?.sender_company ?? "";
       } catch {
         accountFooter = "";
       }
 
+      const templateInput = {
+        body: body.email.body,
+        // Free-form signature text is treated as footer copy, then upgraded
+        // with icon links by the template renderer.
+        footer: [accountFooter, accountSignature].filter(Boolean).join("\n\n"),
+        template,
+        appUrl: publicOrigin,
+        senderName,
+        senderRole,
+        senderCompany,
+      };
+
       const raw = buildRawEmail({
         ...body.email,
-        body: applyEmailFooter(body.email.body, accountFooter),
+        body: body.email.body,
+        htmlBody: buildOutgoingEmailHtml(templateInput),
+        plainBody: buildOutgoingEmailText(templateInput),
         openPixelUrl: pixelUrl,
         plainTextOnly: enforcePlainText,
       });
@@ -281,6 +311,21 @@ export async function POST(req: NextRequest) {
           ...(body.email.threadId ? { threadId: body.email.threadId } : {}),
         }),
       });
+
+      // Remember the sender's hashed IP so the tracking route can ignore an
+      // immediate self-open from the same machine. Best-effort: a missing
+      // column or failed update must never block the send.
+      if (tracking?.messageId && supabaseServer) {
+        try {
+          await supabaseServer
+            .from("messages")
+            .update({ sender_ip_hash: hashSenderIp(clientIpFromHeaders(req.headers)) } as never)
+            .eq("owner_id", user.ownerId)
+            .eq("id", tracking.messageId);
+        } catch {
+          /* non-blocking */
+        }
+      }
       return NextResponse.json({
         ...sent,
         sendingTier,

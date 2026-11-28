@@ -277,6 +277,8 @@ export interface Settings {
   signature: string;
   /** Account-wide footer appended to every outgoing email. Supports links. */
   email_footer: string;
+  /** Outgoing email signature template: plain_personal | executive_clean | accent_bar. */
+  email_template: string;
   daily_limit: number;
   campaign_limit: number;
   interval_seconds: number;
@@ -314,6 +316,7 @@ export const DEFAULT_SETTINGS: Settings = {
   sender_email: "",
   signature: "",
   email_footer: "",
+  email_template: "executive_clean",
   daily_limit: 25,
   campaign_limit: 50,
   interval_seconds: 45,

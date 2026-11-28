@@ -98,13 +98,19 @@ export async function buildOrchestratedSystemPrompt(input: {
   campaign?: Partial<CampaignConfig> | null;
   knowledgeDigest?: string;
   taskInstructions: string;
+  /** Tighten the static module prefix for free-tier ITPM caps (Growth Advisor). */
+  maxStaticPrefixChars?: number;
+  /** Tighten the tenant knowledge slice for free-tier ITPM caps. */
+  maxKnowledgeChars?: number;
 }): Promise<OrchestratedPrompt> {
   const moduleKeys = WORKFLOW_MODULES[input.workflow];
+  const staticBudget = Math.max(1_000, input.maxStaticPrefixChars ?? MAX_STATIC_PREFIX_CHARS);
+  const knowledgeBudget = Math.max(500, input.maxKnowledgeChars ?? 7_500);
   const moduleMap = await getGlobalKnowledgeModules();
 
   // 1. Byte-for-byte identical static Global Knowledge prefix first (budgeted for <=8k TPM free tiers)!
   const perModuleCap =
-    moduleKeys.length > 0 ? Math.floor(MAX_STATIC_PREFIX_CHARS / moduleKeys.length) : MAX_STATIC_PREFIX_CHARS;
+    moduleKeys.length > 0 ? Math.floor(staticBudget / moduleKeys.length) : staticBudget;
   const staticPrefix = moduleKeys
     .map((key) => compactModuleContent(moduleMap.get(key)?.content ?? "", perModuleCap))
     .filter(Boolean)
@@ -131,7 +137,7 @@ export async function buildOrchestratedSystemPrompt(input: {
 
   // Prioritize Master Knowledge & voice/sample/avoid rules within an extended 7,500-char
   // lossless window so user writing rules are NEVER silently truncated before reaching the model.
-  const digest = (input.knowledgeDigest?.trim() || loaded?.knowledgeDigest || "").slice(0, 7_500);
+  const digest = (input.knowledgeDigest?.trim() || loaded?.knowledgeDigest || "").slice(0, knowledgeBudget);
   const userKbBlock = digest
     ? `USER BUSINESS KNOWLEDGE BASE (Master Knowledge, Sources & Additional Notes):\n${digest}`
     : "USER BUSINESS KNOWLEDGE BASE:\nNot provided — do not fabricate missing company offers, prices, or case studies.";

@@ -1,5 +1,6 @@
 import type { FunctionDeclaration, Schema } from "@google/genai";
 import type { AgentContent, AgentFunctionCall } from "../agent-meta";
+import { isInputLimitErrorMessage } from "./budget";
 import {
   getProviderMeta,
   isSlowMegaModel,
@@ -85,6 +86,8 @@ export interface AdapterCallInput {
   agentContents?: AgentContent[];
   useGrounding?: boolean;
   timeoutMs?: number;
+  /** Interactive/fast work: ask the provider for zero visible reasoning. */
+  disableThinking?: boolean;
 }
 
 export interface AdapterCallOutput {
@@ -124,11 +127,10 @@ function classifyHttpFailure(
     `HTTP ${res.status}`;
 
   const retryAfterMs = parseRetryAfterHeader(res);
-  const payloadTooLarge =
-    res.status === 413 ||
-    /request too large|context length|maximum context|exceeded.*context window|reduce your message size/i.test(
-      detail,
-    );
+  // 413 plus the per-minute input-token wording Groq/Cloudflare use for ITPM.
+  // These are request-shape errors: skip this model for this request only and
+  // never bench the whole API key.
+  const payloadTooLarge = isInputLimitErrorMessage(detail, res.status);
   // "Quota exceeded" alone is what Google and Groq also return for a plain
   // per-minute burst. Only per-day/monthly wording (or an explicit PerDay
   // detail) means the key is really out of quota for the rest of the cycle.
@@ -221,7 +223,17 @@ async function fetchWithDeadline(
 }
 
 export function stripThinkTags(text: string): string {
-  return text.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
+  return (text ?? "")
+    // Closed reasoning blocks:  thinking...</think>
+    .replace(/<think(?:ing)?\b[^>]*>[\s\S]*?<\/think(?:ing)?>/gi, "")
+    // Truncated or never-closed reasoning block: the visible answer never
+    // arrived inside maxTokens, so everything after the tag is unusable.
+    .replace(/<think(?:ing)?\b[^>]*>[\s\S]*$/gi, "")
+    // Channel-marked reasoning (gpt-oss style) instead of  tags.
+    .replace(/<\|channel\|>\s*analysis[\s\S]*?(?=<\|channel\|>\s*final|$)/gi, "")
+    .replace(/<\|channel\|>\s*final/gi, "")
+    .replace(/<\|[^|]*\|>/g, "")
+    .trim();
 }
 
 export function parseJsonWithRescue<T>(rawText: string): T {
@@ -525,6 +537,11 @@ async function callGoogleAdapter(input: AdapterCallInput): Promise<AdapterCallOu
     genConfig.responseMimeType = "application/json";
     if (input.schema) genConfig.responseSchema = input.schema;
   }
+  // Interactive/fast calls must answer, not think. Gemini 2.5 Flash accepts a
+  // zero thinking budget; if a model rejects it we retry without the field.
+  if (input.disableThinking) {
+    genConfig.thinkingConfig = { thinkingBudget: 0, includeThoughts: false };
+  }
 
   const body: Record<string, unknown> = {
     contents,
@@ -541,7 +558,7 @@ async function callGoogleAdapter(input: AdapterCallInput): Promise<AdapterCallOu
   }
   if (toolsList.length > 0) body.tools = toolsList;
 
-  const { res, raw, parsed } = await fetchWithDeadline(
+  let { res, raw, parsed } = await fetchWithDeadline(
     url,
     {
       method: "POST",
@@ -550,6 +567,24 @@ async function callGoogleAdapter(input: AdapterCallInput): Promise<AdapterCallOu
     },
     timeoutMs ?? (input.useGrounding ? GROUNDED_ATTEMPT_TIMEOUT_MS : DEFAULT_ATTEMPT_TIMEOUT_MS),
   );
+
+  // A model that does not support thinkingConfig rejects the whole payload.
+  // Retry the same call without it instead of failing the request.
+  if (!res.ok && res.status === 400 && genConfig.thinkingConfig && /thinking|thought/i.test(raw)) {
+    delete genConfig.thinkingConfig;
+    const retried = await fetchWithDeadline(
+      url,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+      timeoutMs ?? (input.useGrounding ? GROUNDED_ATTEMPT_TIMEOUT_MS : DEFAULT_ATTEMPT_TIMEOUT_MS),
+    );
+    res = retried.res;
+    raw = retried.raw;
+    parsed = retried.parsed;
+  }
 
   if (!res.ok) {
     throw classifyHttpFailure(res, raw, parsed);
@@ -677,6 +712,13 @@ async function callOpenAICompatAdapter(
   if (input.responseFormat === "json" && !forceNoJsonFormat && !isCloudflare) {
     body.response_format = { type: "json_object" };
   }
+  // Reasoning-capable open-weight models otherwise spend the whole output
+  // budget on hidden reasoning and return an empty final message.
+  const reasoningModel =
+    /gpt-oss|qwen3|nemotron|deepseek-r1|reasoner|glm-4\.7|qwq|thinking/i.test(cfg.model);
+  if (input.disableThinking && reasoningModel && !isCloudflare) {
+    body.reasoning_effort = "low";
+  }
   if (input.tools && input.tools.length > 0) {
     body.tools = input.tools
       .filter((t) => Boolean(t.name))
@@ -706,6 +748,19 @@ async function callOpenAICompatAdapter(
     { method: "POST", headers, body: JSON.stringify(body) },
     input.timeoutMs ?? DEFAULT_ATTEMPT_TIMEOUT_MS,
   );
+
+  // Some OpenAI-compatible endpoints reject reasoning_effort outright.
+  if (!res.ok && res.status === 400 && body.reasoning_effort && /reasoning_effort|unsupported/i.test(raw)) {
+    delete body.reasoning_effort;
+    const retried = await fetchWithDeadline(
+      `${baseUrl}/chat/completions`,
+      { method: "POST", headers, body: JSON.stringify(body) },
+      input.timeoutMs ?? DEFAULT_ATTEMPT_TIMEOUT_MS,
+    );
+    res = retried.res;
+    raw = retried.raw;
+    parsed = retried.parsed;
+  }
 
   // Z.ai dual-host fallback (global api.z.ai vs domestic open.bigmodel.cn)
   if (provider === "zai" && (res.status === 401 || res.status === 403) && !cfg.baseUrl?.trim()) {

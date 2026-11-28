@@ -5,6 +5,7 @@ import type { AgentContent } from "@/lib/agent-meta";
 import { handleApiError } from "@/lib/api-helpers";
 import { buildOrchestratedSystemPrompt } from "@/lib/ai/orchestrator";
 import { LLMGateway } from "@/lib/llm/gateway";
+import { buildFastChatSystemPrompt, isTrivialChatTurn, lastUserText } from "@/lib/llm/fast-path";
 import { verifyRequest } from "@/lib/server-auth";
 
 // Node runtime is required: the gateway and key vault use node:crypto.
@@ -146,6 +147,29 @@ export async function POST(req: NextRequest) {
     const mode: OperatorMode =
       body.mode === "chat" || body.mode === "developer" ? body.mode : "agent";
 
+    // Fast path: a greeting or a short product question must never load the
+    // knowledge base, memory, tool schemas or a reasoning model. Lean prompt,
+    // no tools, fastest seat: answers in a second or two instead of forty.
+    const trivialTurn = isTrivialChatTurn(lastUserText(trimmedContents as never));
+    if (trivialTurn) {
+      const fastPrompt = buildFastChatSystemPrompt({
+        userName: body.context?.userName ?? authUser.email ?? null,
+        currentPath: body.context?.currentPath ?? "/",
+      });
+      const result = await LLMGateway.agentTurn({
+        ownerId: authUser.ownerId,
+        taskType: "fast",
+        feature: "operator_chat_fast",
+        maxTokens: 220,
+        temperature: 0.4,
+        systemPrompt: fastPrompt,
+        messages: [],
+        agentContents: trimmedContents.slice(-6) as unknown as AgentContent[],
+        tools: [],
+      });
+      return NextResponse.json(result, { headers: { "Cache-Control": "no-store" } });
+    }
+
     const baseTaskInstructions = buildSystemInstruction(
       {
         ...body.context,
@@ -168,6 +192,7 @@ export async function POST(req: NextRequest) {
       ownerId: authUser.ownerId,
       taskType: "balanced",
       feature: "operator_chat",
+      temperature: 0.5,
       maxTokens: 2048,
       systemPrompt: orchestrated.system,
       messages: [],

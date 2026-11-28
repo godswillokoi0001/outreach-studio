@@ -5085,7 +5085,245 @@ test("the saved email footer is appended once, on every send, with working links
   assert.equal(applyEmailFooter(body, "   "), body);
 
   // The footer's Markdown link survives in both the text and HTML parts.
-  assert.match(formatEmailText(withFooter), /Book a call \(https:\/\/cal\.com\/ada\)/);
+  assert.match(formatEmailText(withFooter), /Book a call: https:\/\/cal\.com\/ada/);
+  assert.doesNotMatch(formatEmailText(withFooter), /\]\(/);
   assert.match(formatEmailHtml(withFooter), /<a href="https:\/\/cal\.com\/ada"/);
 });
 
+
+function seedSystemAutoGroq(): string {
+  const ownerId = "owner-guard-tests";
+  const now = new Date().toISOString();
+  const denseModels = ["m1", "m2", "m3"].map((id) => ({
+    id,
+    displayName: id,
+    enabled: true,
+    seats: ["smart" as const, "balanced" as const, "fast" as const],
+    capabilities: { json: true, tools: true, vision: false, reasoning: false },
+  }));
+  seedGatewayCachesForTests({
+    adminSettings: makeSampleAdminSettings(),
+    adminKeys: [makeSampleAdminKey("adm_sys", "groq", "gsk_GuardTestKey123456", { models: denseModels })],
+    userSettings: {
+      [ownerId]: {
+        ownerId,
+        mode: "system_auto",
+        activeKeyId: null,
+        activeProvider: null,
+        activeModel: null,
+        fallbackToSystemAuto: false,
+        updatedAt: now,
+      },
+    },
+    userKeys: { [ownerId]: [] },
+  });
+  return ownerId;
+}
+
+test("an empty or {{...}}-only provider reply fails over and never reaches the user", async () => {
+  const { resetGatewayCachesForTests } = await import("./llm/store");
+  const prevFetch = globalThis.fetch;
+  let calls = 0;
+
+  globalThis.fetch = (async () => {
+    calls += 1;
+    if (calls === 1) {
+      // A reasoning model that spent its whole budget on thinking.
+      return new Response(
+        JSON.stringify({ choices: [{ message: { content: "   " } }] }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }
+    return new Response(
+      JSON.stringify({
+        choices: [
+          { message: { content: JSON.stringify({ subject: "quick site note", body: "Hi there, one idea for you." }) } },
+        ],
+      }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    );
+  }) as typeof fetch;
+
+  try {
+    resetGatewayCachesForTests();
+    clearRouterStateForTests();
+    const ownerId = seedSystemAutoGroq();
+
+    const result = await LLMGateway.completeJSON<{ subject: string; body: string }>({
+      ownerId,
+      taskType: "fast",
+      feature: "email_rewrite_test",
+      messages: [{ role: "user", content: "rewrite this email" }],
+    }, {
+      validate: (data) => {
+        if (!String(data?.body ?? "").trim()) throw new Error("empty body");
+      },
+    });
+
+    assert.equal(result.data.body, "Hi there, one idea for you.");
+    assert.ok(calls >= 2, "the empty first reply must trigger a failover call");
+  } finally {
+    globalThis.fetch = prevFetch;
+  }
+});
+
+test("an ITPM 413 skips only that model and fails over without benching the key", async () => {
+  const { resetGatewayCachesForTests } = await import("./llm/store");
+  const prevFetch = globalThis.fetch;
+  let calls = 0;
+
+  globalThis.fetch = (async () => {
+    calls += 1;
+    if (calls === 1) {
+      return new Response(
+        JSON.stringify({
+          error: {
+            message:
+              "Request too large for model `qwen/qwen3.8-27b` ... tokens per minute (TPM): Limit 7000, Requested 9534",
+          },
+        }),
+        { status: 413, headers: { "Content-Type": "application/json" } },
+      );
+    }
+    return new Response(
+      JSON.stringify({ choices: [{ message: { content: JSON.stringify({ ok: true }) } }] }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    );
+  }) as typeof fetch;
+
+  try {
+    resetGatewayCachesForTests();
+    clearRouterStateForTests();
+    const ownerId = seedSystemAutoGroq();
+    const result = await LLMGateway.completeJSON<{ ok: boolean }>({
+      ownerId,
+      taskType: "balanced",
+      feature: "growth_advisor_test",
+      messages: [{ role: "user", content: "advise me" }],
+    });
+    assert.equal(result.data.ok, true);
+    assert.ok(calls >= 2);
+  } finally {
+    globalThis.fetch = prevFetch;
+  }
+});
+
+test("open tracking ignores the sender, prefetchers, scanners and immediate hits", async () => {
+  const { decideOpen, hashSenderIp, isScannerUserAgent } = await import("./tracking-guard");
+  const headers = new Headers();
+  const cookie = new Headers();
+  cookie.set("cookie", "sb-abc-auth-token=xyz");
+  const prefetch = new Headers({ "sec-purpose": "prefetch;prerender" });
+
+  assert.deepEqual(decideOpen({ cookieNames: ["sb-project-auth-token.0"], headers }), {
+    record: false,
+    reason: "sender_session",
+  });
+  assert.equal(decideOpen({ cookieNames: [], headers: prefetch }).reason, "prefetch");
+  assert.equal(isScannerUserAgent("Mozilla/5.0 (compatible; GoogleImageProxy)"), true);
+  assert.equal(isScannerUserAgent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15"), false);
+
+  const sentAt = new Date(Date.now() - 10_000).toISOString();
+  assert.equal(decideOpen({ cookieNames: [], headers, sentAt }).reason, "too_soon");
+
+  const senderHash = hashSenderIp("203.0.113.9");
+  assert.equal(
+    decideOpen({
+      cookieNames: [],
+      headers,
+      sentAt: new Date(Date.now() - 120_000).toISOString(),
+      senderIpHash: senderHash,
+      requestIpHash: senderHash,
+    }).reason,
+    "same_ip",
+  );
+
+  // A real recipient, two minutes later, from another IP: record it.
+  assert.equal(
+    decideOpen({
+      cookieNames: [],
+      headers,
+      userAgent: "Mozilla/5.0 (iPhone) AppleWebKit/605.1.15",
+      sentAt: new Date(Date.now() - 120_000).toISOString(),
+      senderIpHash: senderHash,
+      requestIpHash: hashSenderIp("198.51.100.7"),
+    }).record,
+    true,
+  );
+});
+
+test("in-app previews strip the tracking pixel before rendering", async () => {
+  const { stripTrackingPixels, formatEmailHtml } = await import("./email-format");
+  const html =
+    '<p>Hi</p><img src="https://www.knowrevo.site/api/track/open?u=a&m=b" width="1" height="1" /><img data-tracking-pixel="true" src="x.gif" />';
+  const cleaned = stripTrackingPixels(html);
+  assert.doesNotMatch(cleaned, /api\/track\/open/);
+  assert.doesNotMatch(cleaned, /data-tracking-pixel/);
+  assert.match(cleaned, /<p>Hi<\/p>/);
+  assert.doesNotMatch(formatEmailHtml(html), /api\/track\/open/);
+});
+
+test("footer Markdown renders as real links with hosted PNG icons and no raw brackets", async () => {
+  const { buildOutgoingEmailHtml, buildOutgoingEmailText } = await import("./email-template");
+  const footer = [
+    "— Ada · Knowrevo",
+    "[Portfolio](https://godswillokoi.site)",
+    "[LinkedIn](https://www.linkedin.com/in/ada)",
+    "https://cal.com/ada",
+  ].join("\n");
+
+  const html = buildOutgoingEmailHtml({
+    body: "Hi Sam,\n\nQuick idea for your site.",
+    footer,
+    template: "executive_clean",
+    appUrl: "https://www.knowrevo.site",
+    senderName: "Ada",
+    senderRole: "Founder",
+  });
+
+  assert.match(html, /<a href="https:\/\/godswillokoi.site"[^>]*>Portfolio<\/a>/);
+  assert.match(html, /\/icons\/email\/linkedin\.png/);
+  assert.match(html, /\/icons\/email\/globe\.png/);
+  assert.match(html, /\/icons\/email\/calendar\.png/);
+  assert.doesNotMatch(html, /\[Portfolio\]\(/);
+  assert.doesNotMatch(html, /<svg/i);
+
+  const text = buildOutgoingEmailText({ body: "Hi Sam,", footer });
+  assert.match(text, /Portfolio: https:\/\/godswillokoi\.site/);
+  assert.doesNotMatch(text, /\]\(/);
+
+  const unsafe = buildOutgoingEmailHtml({ body: "[click](javascript:alert(1))", footer: "", template: "accent_bar" });
+  assert.doesNotMatch(unsafe, /href="javascript:/i);
+});
+
+test("Growth Advisor prompt stays inside a free-tier input budget", async () => {
+  const { buildOrchestratedSystemPrompt } = await import("./ai/orchestrator");
+  const { estimateTokens } = await import("./llm/budget");
+  const digest = "K".repeat(20_000);
+  const prompt = await buildOrchestratedSystemPrompt({
+    workflow: "growth_advisor",
+    ownerId: null,
+    knowledgeDigest: digest,
+    taskInstructions: "Deliver the growth report as strict JSON.",
+    maxStaticPrefixChars: 4_500,
+    maxKnowledgeChars: 2_800,
+  });
+  assert.ok(prompt.system.length < 16_000, `prompt too large: ${prompt.system.length} chars`);
+  assert.ok(!prompt.system.includes("K".repeat(2_801)));
+  assert.ok(estimateTokens(prompt.system) <= 4_500);
+});
+
+test("the greeting fast path stays tiny and needs no tools", async () => {
+  const { buildFastChatSystemPrompt, isTrivialChatTurn, lastUserText } = await import("./llm/fast-path");
+  const { estimateTokens, getBudgetProfile } = await import("./llm/budget");
+
+  assert.equal(isTrivialChatTurn("hi"), true);
+  assert.equal(isTrivialChatTurn("  thanks!  "), true);
+  assert.equal(isTrivialChatTurn("build me a 200-lead campaign for dentists"), false);
+  assert.equal(lastUserText([{ role: "user", parts: [{ text: "hi" }] }]), "hi");
+
+  const prompt = buildFastChatSystemPrompt({ userName: "Ada", currentPath: "/review" });
+  assert.ok(estimateTokens(prompt) < 500);
+  assert.ok(getBudgetProfile("operator_chat").attemptMs <= 6_000);
+  assert.ok(getBudgetProfile("operator_chat").wallMs <= 20_000);
+});

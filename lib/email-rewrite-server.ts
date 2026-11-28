@@ -861,7 +861,19 @@ Step 2: Write a tailored subject (plus 2-3 subjectOptions) and complete human em
       messages: [{ role: "user", content: `${userPrompt}${feedbackAddendum}` }],
       schema: ANALYSIS_AND_WRITE_SCHEMA,
       maxTokens: 2000,
-    });
+      },
+      {
+        // Empty subject/body is a provider failure, not a rewrite: the gateway
+        // retries the next healthy model instead of surfacing "empty rewrite".
+        validate: (data) => {
+          const body = String(data?.body ?? "").trim();
+          const subject = String(data?.subject ?? "").trim();
+          if (!body || !subject) {
+            throw new Error("Rewrite produced an empty subject or body.");
+          }
+        },
+      },
+    );
 
     candidateSubject = stripUnresolvedPlaceholders(String(generated.subject ?? "")).split("\n")[0].trim();
     candidateBody = normalizeEmailGreeting(

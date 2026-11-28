@@ -28,6 +28,7 @@ const STRING_FIELDS = [
   "sender_email",
   "signature",
   "email_footer",
+  "email_template",
   "unsubscribe_email",
   "physical_address",
   "send_days",

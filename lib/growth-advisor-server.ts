@@ -256,8 +256,10 @@ export async function generateGrowthAdvisorReportServer(input: {
   const liveSearchContext =
     combinedSources.length > 0
       ? `\nVERIFIED LIVE MARKET SOURCES (cite ONLY exact URLs from this list in sourceUrl — never invent URLs):\n${combinedSources
-          .map((s, i) => `[${i + 1}] ${s.title} (${s.url})\n${s.snippet}`)
-          .join("\n\n")}`
+          .slice(0, 3)
+          .map((s, i) => `[${i + 1}] ${s.title.slice(0, 90)} (${s.url})\n${(s.snippet || "").slice(0, 280)}`)
+          .join("\n\n")
+          .slice(0, 2_400)}`
       : "\nNote: No live external snippets returned; ground every recommendation strictly in the user's business profile, metrics, and regional compliance rules without fabricating URLs.";
 
   const taskInstructions = `You are a Principal B2B Growth Advisor and Market Intelligence Strategist.
@@ -342,8 +344,12 @@ Return ONLY valid JSON:
     workflow: "growth_advisor",
     ownerId: input.ownerId ?? null,
     settings: input.settings,
-    knowledgeDigest: input.knowledgeDigest,
+    knowledgeDigest: input.knowledgeDigest.slice(0, 2_800),
     taskInstructions,
+    // Free-tier Groq seats cap input at ~5.5k tokens. Keep the whole prompt
+    // comfortably inside that envelope so a report never dies with ITPM 413.
+    maxStaticPrefixChars: 4_500,
+    maxKnowledgeChars: 2_800,
   });
 
   const user = `USER BUSINESS PROFILE:
@@ -363,7 +369,7 @@ Return ONLY valid JSON:
 - Active Regional Compliance (${compliance.frameworkName}): ${compliance.requirements.join(" | ")}
 
 PAST CAMPAIGN & LIVE WORKSPACE PIPELINE METRICS:
-${JSON.stringify(accountSnapshot.summary, null, 2).slice(0, 3500)}
+${JSON.stringify(accountSnapshot.summary).slice(0, 600)}
 
 ${
   input.analyticsInsight
@@ -582,8 +588,12 @@ Return ONLY valid JSON:
     workflow: "growth_advisor",
     ownerId: input.ownerId,
     settings: input.settings,
-    knowledgeDigest: input.knowledgeDigest,
+    knowledgeDigest: input.knowledgeDigest.slice(0, 2_800),
     taskInstructions,
+    // Free-tier Groq seats cap input at ~5.5k tokens. Keep the whole prompt
+    // comfortably inside that envelope so a report never dies with ITPM 413.
+    maxStaticPrefixChars: 4_500,
+    maxKnowledgeChars: 2_800,
   });
 
   const user = `USER PROFILE:
@@ -941,6 +951,7 @@ export async function executeGrowthStageScoreAndBuild(input: {
   const verifiedUrlCorpus = new Set(sites.flatMap((s) => [s.url.toLowerCase(), s.finalUrl.toLowerCase(), s.sourceUrl.toLowerCase()]));
 
   const siteDossier = sites
+    .slice(0, 10)
     .map((s, idx) => {
       const dmLine = s.decisionMakers?.length
         ? `\nDecision Makers: ${s.decisionMakers.map((d) => `${d.name} (${d.role})`).join("; ")}`
@@ -955,7 +966,7 @@ HTTPS: ${s.isHttps} | Viewport: ${s.hasViewport} | Contact Form: ${s.hasContactF
 Verified Emails: ${s.verifiedEmails.join(", ") || "(none found)"} (MX Verified: ${s.mxVerified}, Type: ${s.emailType})
 Verified Phones: ${s.verifiedPhones.join(", ") || "(none found)"}${dmLine}${socialLine}
 Signals/Hints: ${s.statusHints.join("; ") || "(none)"}
-Visible Site Copy: ${s.textSummary.slice(0, 400)}`;
+Visible Site Copy: ${s.textSummary.slice(0, 400)}`.slice(0, 800);
     })
     .join("\n\n");
 
@@ -997,8 +1008,12 @@ Return ONLY valid JSON:
     workflow: "growth_advisor",
     ownerId: input.ownerId,
     settings: input.settings,
-    knowledgeDigest: input.knowledgeDigest,
+    knowledgeDigest: input.knowledgeDigest.slice(0, 2_800),
     taskInstructions,
+    // Free-tier Groq seats cap input at ~5.5k tokens. Keep the whole prompt
+    // comfortably inside that envelope so a report never dies with ITPM 413.
+    maxStaticPrefixChars: 4_500,
+    maxKnowledgeChars: 2_800,
   });
 
   const user = `CAMPAIGN STRATEGY:

@@ -27,6 +27,7 @@ import {
   type RecommendationCategory,
 } from "@/lib/growth-advisor";
 import { useGrowthAdvisor } from "@/lib/useGrowthAdvisor";
+import { usePersistedPageState } from "@/lib/usePersistedPageState";
 
 function GrowthAdvisorContent() {
   const { user } = useAuth();
@@ -52,7 +53,10 @@ function GrowthAdvisorContent() {
     runResearch,
   } = useGrowthAdvisor(user.uid, { autoResearch: true });
 
-  const [categoryFilter, setCategoryFilter] = useState<"all" | RecommendationCategory>("all");
+  const [categoryFilter, setCategoryFilter] = usePersistedPageState<"all" | RecommendationCategory>(
+    "growth:category",
+    "all",
+  );
   const [profileExpandedOverride, setProfileExpanded] = useState<boolean | null>(null);
   const [executeRec, setExecuteRec] = useState<GrowthRecommendation | null>(null);
   const [executeOpen, setExecuteOpen] = useState(false);
