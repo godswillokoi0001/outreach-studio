@@ -7,6 +7,7 @@ import Link from "next/link";
 import { useAuth } from "@/components/AuthProvider";
 import { BatchRunner } from "@/components/Runner";
 import { Badge, Banner, Card, Empty, Stat } from "@/components/ui";
+import { MobileFeedRow } from "@/components/ui/MobileFeedRow";
 import { errorMessage } from "@/lib/client";
 import { loadFollowupsBundle } from "@/lib/store";
 import { fmtDate, label, statusTone } from "@/lib/format";
@@ -106,7 +107,20 @@ export default function FollowupsPage() {
               reply).
             </Empty>
           ) : (
-            <div className="table-wrap">
+            <>
+            <div className="m-feed mobile-only">
+              {data?.due.map((item) => (
+                <MobileFeedRow
+                  key={`${item.leadId}-${item.step}`}
+                  title={item.business ?? item.email ?? "Untitled prospect"}
+                  subtitle={item.campaignName}
+                  meta={`${item.daysSince}d since contact · ${fmtDate(item.lastContactedAt)}`}
+                  status={`Step ${item.step}`}
+                  statusTone="info"
+                />
+              ))}
+            </div>
+            <div className="table-wrap desktop-only">
               <table>
                 <thead>
                   <tr>
@@ -135,6 +149,7 @@ export default function FollowupsPage() {
                 </tbody>
               </table>
             </div>
+            </>
           )}
         </Card>
 
@@ -142,7 +157,20 @@ export default function FollowupsPage() {
           {(data?.drafted.length ?? 0) === 0 ? (
             <Empty title="No drafted follow-ups yet" />
           ) : (
-            <div className="table-wrap">
+            <>
+            <div className="m-feed mobile-only">
+              {data?.drafted.map((message) => (
+                <MobileFeedRow
+                  key={message.id}
+                  title={message.business ?? message.lead_email ?? "Untitled prospect"}
+                  subtitle={message.subject ?? "No subject"}
+                  meta={`Step ${message.step} · ${fmtDate(message.created_at)}`}
+                  status={label(message.status)}
+                  statusTone={message.status === "approved" ? "ok" : "info"}
+                />
+              ))}
+            </div>
+            <div className="table-wrap desktop-only">
               <table>
                 <thead>
                   <tr>
@@ -168,6 +196,7 @@ export default function FollowupsPage() {
                 </tbody>
               </table>
             </div>
+            </>
           )}
         </Card>
       </div>

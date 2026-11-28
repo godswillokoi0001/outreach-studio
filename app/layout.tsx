@@ -10,6 +10,7 @@ import "./features.css";
 import "./dark.css";
 import "./feedback.css";
 import "./responsive.css";
+import "./mobile.css";
 import { THEME_SCRIPT } from "@/lib/theme";
 import { AuthProvider } from "@/components/AuthProvider";
 import { FeedbackProvider } from "@/components/Feedback";

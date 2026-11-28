@@ -38,6 +38,7 @@ import {
 import type { AdminRole } from "@/lib/platform/types";
 import type { SearchQuotaRecord } from "@/lib/search/quotaAndCache";
 import { Badge, Banner, Card, Empty, Field, Modal } from "../ui";
+import { MobileFeedRow } from "../ui/MobileFeedRow";
 import { BrandLoader } from "../BrandLoader";
 import { useToast } from "../Feedback";
 import { AdminClientError, adminFetch } from "./admin-client";
@@ -1330,7 +1331,20 @@ function ReceiptsTable({
           ))}
         </select>
       </div>
-      <div style={{ overflowX: "auto" }}>
+      <div className="m-feed mobile-only">
+        {rows.map((log) => (
+          <MobileFeedRow
+            key={log.id}
+            title={log.feature}
+            subtitle={`${log.actualProvider ?? "—"} ${log.actualModel ?? ""}`.trim()}
+            meta={`${formatTime(log.createdAt)} · ${log.taskType} · ${log.fallbackHops} hops`}
+            side={`${log.latencyMs}ms`}
+            status={log.status}
+            statusTone={log.status === "success" ? "ok" : "bad"}
+          />
+        ))}
+      </div>
+      <div style={{ overflowX: "auto" }} className="desktop-only">
         <table className="table" style={{ width: "100%", fontSize: 12.5 }}>
           <thead>
             <tr>

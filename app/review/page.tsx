@@ -7,6 +7,7 @@ import { Check, ChevronLeft, Loader2, Save, Sparkles, Trash2, X } from "lucide-r
 import { useAuth } from "@/components/AuthProvider";
 import { BatchRunner } from "@/components/Runner";
 import { Badge, Banner, Card, Empty, Pager } from "@/components/ui";
+import { MobileFeedRow } from "@/components/ui/MobileFeedRow";
 import { EmailBodyEditor } from "@/components/EmailBodyEditor";
 import { EmailRewriteWorkspace } from "@/components/EmailRewriteWorkspace";
 import type { RewriteScope } from "@/lib/email-rewrite";
@@ -596,7 +597,22 @@ export default function ReviewPage() {
               </Empty>
             </div>
           ) : (
-            <div className="table-wrap">
+            <>
+            <div className="m-feed mobile-only">
+              {paged.map((message) => (
+                <MobileFeedRow
+                  key={message.id}
+                  title={message.displayName}
+                  subtitle={message.subject ?? "No subject yet"}
+                  meta={`${hasSendableEmail(message.lead_email) ? message.lead_email : "no email"} · ${fmtDate(message.created_at)}`}
+                  side={message.score ?? "—"}
+                  status={label(message.status)}
+                  statusTone={statusTone(message.status) as "ok" | "warn" | "bad" | "info"}
+                  onClick={() => openReview(message)}
+                />
+              ))}
+            </div>
+            <div className="table-wrap desktop-only">
               <table>
                 <thead>
                   <tr>
@@ -676,6 +692,7 @@ export default function ReviewPage() {
                 </tbody>
               </table>
             </div>
+            </>
           )}
           <div style={{ padding: "0 16px 14px" }}>
             <Pager page={page} pageSize={PAGE_SIZE} total={filtered.length} onPage={setPage} />

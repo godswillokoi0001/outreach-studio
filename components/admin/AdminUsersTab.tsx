@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import type { AdminRole, AdminUserSummary } from "@/lib/platform/types";
 import { Badge, Banner, Card, Empty, Field, Modal, Pager } from "../ui";
+import { MobileFeedRow } from "../ui/MobileFeedRow";
 import { BrandLoader } from "../BrandLoader";
 import { useConfirm, useToast } from "../Feedback";
 import { AdminClientError, adminFetch } from "./admin-client";
@@ -416,7 +417,21 @@ export function AdminUsersTab({
           <Empty title="No matching users found" />
         ) : (
           <>
-            <div className="table-wrap">
+            <div className="m-feed mobile-only">
+              {users.map((u) => (
+                <MobileFeedRow
+                  key={u.ownerId}
+                  title={u.name}
+                  subtitle={u.email}
+                  meta={`${u.aiRequestsMonth} req · ${new Date(u.lastActiveAt).toLocaleDateString()}`}
+                  side={u.role.replace("_", " ")}
+                  status={u.status === "suspended" ? "Suspended" : u.onboardingCompleted ? "Active" : "Onboarding"}
+                  statusTone={u.status === "suspended" ? "bad" : u.onboardingCompleted ? "ok" : "warn"}
+                  onClick={() => void openUserDetail(u.ownerId)}
+                />
+              ))}
+            </div>
+            <div className="table-wrap desktop-only">
               <table>
                 <thead>
                   <tr>

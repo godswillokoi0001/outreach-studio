@@ -5,6 +5,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import { CountUp } from "./motion/CountUp";
 
 export function Card({
+  id,
   title,
   sub,
   actions,
@@ -12,6 +13,7 @@ export function Card({
   tight,
   className,
 }: {
+  id?: string;
   title?: string;
   sub?: string;
   actions?: ReactNode;
@@ -20,7 +22,7 @@ export function Card({
   className?: string;
 }) {
   return (
-    <section className={`card${tight ? " tight" : ""}${className ? ` ${className}` : ""}`}>
+    <section id={id} className={`card${tight ? " tight" : ""}${className ? ` ${className}` : ""}`}>
       {(title || actions) && (
         <header className="card-head" style={tight ? { padding: "16px 18px 0", marginBottom: 12 } : undefined}>
           <div>

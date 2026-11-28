@@ -66,6 +66,9 @@ import { TaskDockProvider, useTaskDock } from "./Loading";
 import { WorkspaceIssueNotice } from "./WorkspaceIssueNotice";
 import { PageMotion } from "./motion/PageMotion";
 import { useToast } from "./Feedback";
+import { MobileHeader } from "./mobile/MobileHeader";
+import { MobileTabBar } from "./mobile/MobileTabBar";
+import { MobileMenuSheet } from "./mobile/MobileMenuSheet";
 
 const NAV_STATE_KEY = "os:nav:collapsed";
 
@@ -145,6 +148,7 @@ function ShellInner({ children }: { children: ReactNode }) {
   }, [user.uid]);
 
   const [open, setOpen] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
   const [chatOpen, setChatOpen] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
@@ -415,6 +419,28 @@ function ShellInner({ children }: { children: ReactNode }) {
     item.href === "/" ? pathname === "/" : pathname.startsWith(item.href),
   );
 
+  // Concise phone header titles: one or two words, never a breadcrumb.
+  const MOBILE_TITLES: Record<string, string> = {
+    "/": "Knowrevo",
+    "/leads": "Leads",
+    "/review": "Review",
+    "/campaigns": "Campaigns",
+    "/research": "Research",
+    "/growth-advisor": "Advisor",
+    "/conversations": "Inbox",
+    "/followups": "Follow-ups",
+    "/sent": "Sent",
+    "/analytics": "Analytics",
+    "/knowledge": "Knowledge",
+    "/integrations": "Integrations",
+    "/settings": "Settings",
+    "/sheets": "Sheets",
+  };
+  const mobileTitle =
+    Object.entries(MOBILE_TITLES).find(([href]) =>
+      href === "/" ? pathname === "/" : pathname === href || pathname.startsWith(`${href}/`),
+    )?.[1] ?? currentSection?.label ?? "Knowrevo";
+
   // Distraction-free onboarding wrapper (no header bar, no sidebar, no chatbot icon — zero flash on enter or exit).
   if (isOnboardingRoute) {
     return (
@@ -444,6 +470,11 @@ function ShellInner({ children }: { children: ReactNode }) {
   // Never flash dashboard chrome or chatbot before onboarding status is verified for new sign-ups.
   if (!onboardingChecked || !onboardingDone) {
     return <BrandLoader fullScreen />;
+  }
+
+  // The admin console owns its own shell and bottom navigation.
+  if (pathname.startsWith("/admin")) {
+    return <>{children}</>;
   }
 
   return (
@@ -540,7 +571,40 @@ function ShellInner({ children }: { children: ReactNode }) {
       />
 
       <div className="main" data-refresh={refreshKey} data-agent-page>
-        <header className="topbar">
+        <MobileHeader
+          title={mobileTitle}
+          brand={pathname === "/"}
+          backHref={pathname === "/" ? undefined : "/"}
+          end={
+            <>
+              <button
+                type="button"
+                className="m-icon-btn m-icon-btn-round"
+                onClick={() => void runSync()}
+                disabled={syncing}
+                aria-label={syncing ? "Syncing replies" : "Sync replies"}
+              >
+                <RefreshCw size={17} aria-hidden="true" />
+              </button>
+              <button
+                type="button"
+                className="m-icon-btn m-icon-btn-round"
+                onClick={() => setMenuOpen(true)}
+                aria-label="Open menu"
+                aria-expanded={menuOpen}
+              >
+                <UserAvatar
+                  photoURL={user.photoURL}
+                  name={displayName}
+                  email={user.email}
+                  size={36}
+                />
+              </button>
+            </>
+          }
+        />
+
+        <header className="topbar desktop-only">
           <button
             className="topbar-burger"
             onClick={() => setOpen((v) => !v)}
@@ -789,6 +853,26 @@ function ShellInner({ children }: { children: ReactNode }) {
         open={chatOpen}
         onClose={() => setChatOpen(false)}
         onDataMutated={() => setRefreshKey((k) => k + 1)}
+      />
+
+      <MobileTabBar
+        reviewCount={counts.review}
+        menuOpen={menuOpen}
+        onMenu={() => setMenuOpen((value) => !value)}
+      />
+
+      <MobileMenuSheet
+        open={menuOpen}
+        onClose={() => setMenuOpen(false)}
+        displayName={displayName}
+        email={user.email}
+        photoURL={user.photoURL}
+        workspaceConnected={Boolean(workspaceToken)}
+        workspaceEmail={workspaceEmail}
+        syncing={syncing}
+        onSync={() => void runSync()}
+        onSignOut={() => void signOut()}
+        counts={counts}
       />
 
       {signals.length > 0 && (

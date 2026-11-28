@@ -6,6 +6,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { RotateCcw, Trash2 } from "lucide-react";
 import { useAuth } from "@/components/AuthProvider";
 import { Badge, Banner, Card, Empty, Modal, Pager } from "@/components/ui";
+import { MobileFeedRow } from "@/components/ui/MobileFeedRow";
 import { useConfirm, useToast } from "@/components/Feedback";
 import { errorMessage } from "@/lib/client";
 import {
@@ -264,7 +265,21 @@ export default function SentPage() {
               </Empty>
             </div>
           ) : (
-            <div className="table-wrap">
+            <>
+            <div className="m-feed mobile-only">
+              {paged.map((message) => (
+                <MobileFeedRow
+                  key={message.id}
+                  title={message.business ?? "Untitled prospect"}
+                  subtitle={message.subject ?? "No subject"}
+                  meta={fmtDate(message.sent_at)}
+                  status={openStats.get(message.id) ? `Opened ${openStats.get(message.id)!.count}×` : label(message.status)}
+                  statusTone={openStats.get(message.id) ? "ok" : message.status === "failed" ? "bad" : "info"}
+                  onClick={() => setOpen(message)}
+                />
+              ))}
+            </div>
+            <div className="table-wrap desktop-only">
               <table>
                 <thead>
                   <tr>
@@ -310,6 +325,7 @@ export default function SentPage() {
                 </tbody>
               </table>
             </div>
+            </>
           )}
           <div style={{ padding: "0 16px 14px" }}>
             <Pager page={page} pageSize={PAGE_SIZE} total={filtered.length} onPage={setPage} />

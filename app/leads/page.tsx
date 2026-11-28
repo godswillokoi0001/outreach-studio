@@ -6,6 +6,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Bot, Plus, SlidersHorizontal, X } from "lucide-react";
 import { useAuth } from "@/components/AuthProvider";
 import { Badge, Banner, Card, Empty, Field, Modal, Pager } from "@/components/ui";
+import { MobileFeedRow } from "@/components/ui/MobileFeedRow";
 import { confirmDialog } from "@/components/Feedback";
 import { errorMessage } from "@/lib/client";
 import { isLeadMissingVerifiedContact } from "@/lib/search/contactGate";
@@ -970,7 +971,22 @@ export default function LeadsPage() {
               </Empty>
             </div>
           ) : (
-            <div className="table-wrap">
+            <>
+            <div className="m-feed mobile-only">
+              {paged.map((lead) => (
+                <MobileFeedRow
+                  key={lead.id}
+                  title={lead.business ?? lead.email ?? "Untitled lead"}
+                  subtitle={lead.email ?? lead.contact_name ?? "No email yet"}
+                  meta={[lead.location, lead.industry].filter(Boolean).join(" · ")}
+                  side={lead.score ?? "—"}
+                  status={label(lead.status)}
+                  statusTone={statusTone(lead.status) as "ok" | "warn" | "bad" | "info"}
+                  onClick={() => setSelected(lead)}
+                />
+              ))}
+            </div>
+            <div className="table-wrap desktop-only">
               {checked.length > 0 && (
                 <div className="row" style={{ padding: "0 16px 12px", gap: 8 }}>
                   <span className="tiny">
@@ -1108,6 +1124,7 @@ export default function LeadsPage() {
                 </tbody>
               </table>
             </div>
+            </>
           )}
           <div style={{ padding: "0 16px 14px" }}>
             <Pager page={page} pageSize={PAGE_SIZE} total={filtered.length} onPage={setPage} />

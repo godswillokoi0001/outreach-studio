@@ -43,6 +43,9 @@ import { AdminSecurityTab } from "@/components/admin/AdminSecurityTab";
 import { AdminSystemCheckTab } from "@/components/admin/AdminSystemCheckTab";
 import { AdminUsersTab } from "@/components/admin/AdminUsersTab";
 import { adminFetch } from "@/components/admin/admin-client";
+import { MobileHeader } from "@/components/mobile/MobileHeader";
+import { AdminTabBar } from "@/components/mobile/AdminTabBar";
+import { AdminMenuSheet } from "@/components/mobile/AdminMenuSheet";
 
 type AdminSection =
   | "overview"
@@ -78,6 +81,7 @@ export default function AdminPage() {
   const [bellOpen, setBellOpen] = useState(false);
   const [assistantOpen, setAssistantOpen] = useState(false);
   const [assistantPrompt, setAssistantPrompt] = useState<string | null>(null);
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   const [reauthModal, setReauthModal] = useState<{
     open: boolean;
@@ -338,7 +342,39 @@ export default function AdminPage() {
       />
 
       <div className="main">
-        <header className="topbar">
+        <MobileHeader
+          title={activeLabel}
+          backHref="/"
+          end={
+            <>
+              <button
+                type="button"
+                className="m-icon-btn m-icon-btn-round"
+                onClick={() => setSection("notifications")}
+                aria-label="Admin notifications"
+                style={{ position: "relative" }}
+              >
+                <Bell size={17} aria-hidden="true" />
+                {unreadCount > 0 ? (
+                  <span className="m-tab-badge" style={{ top: 2, right: 2 }}>
+                    {unreadCount > 9 ? "9+" : unreadCount}
+                  </span>
+                ) : null}
+              </button>
+              <button
+                type="button"
+                className="m-icon-btn m-icon-btn-round"
+                onClick={() => setMobileMenuOpen(true)}
+                aria-label="Open admin menu"
+                aria-expanded={mobileMenuOpen}
+              >
+                <Menu size={17} aria-hidden="true" />
+              </button>
+            </>
+          }
+        />
+
+        <header className="topbar desktop-only">
           <button
             type="button"
             className="btn btn-ghost btn-sm menu-btn"
@@ -543,6 +579,28 @@ export default function AdminPage() {
           )}
         </main>
       </div>
+
+      <AdminTabBar
+        active={section}
+        providersAllowed={canManageOps}
+        menuOpen={mobileMenuOpen}
+        onSelect={(next) => {
+          setSection(next);
+          setMobileMenuOpen(false);
+        }}
+        onMenu={() => setMobileMenuOpen((value) => !value)}
+      />
+
+      <AdminMenuSheet
+        open={mobileMenuOpen}
+        onClose={() => setMobileMenuOpen(false)}
+        onSelect={(next) => setSection(next as AdminSection)}
+        role={admin.role}
+        email={admin.email}
+        unreadCount={unreadCount}
+        canManageOps={canManageOps}
+        onSignOut={() => void handleLogout()}
+      />
 
       {canManageOps && (
         <AdminAssistantDrawer
