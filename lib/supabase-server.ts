@@ -27,6 +27,7 @@ const STRING_FIELDS = [
   "sender_company",
   "sender_email",
   "signature",
+  "email_footer",
   "unsubscribe_email",
   "physical_address",
   "send_days",
@@ -135,7 +136,17 @@ export async function getSupabaseSettingsServer(ownerId: string): Promise<Settin
       return await getMirrorSettings(ownerId);
     }
 
-    if (data) return data as unknown as Settings;
+    if (data) {
+      const row = data as unknown as Settings;
+      // A column added after the row existed (or a migration that has not run
+      // yet) reads back as undefined. The owner-scoped mirror may hold the
+      // value, so a saved footer is never invisible.
+      if (row.email_footer === undefined || row.email_footer === null) {
+        const mirror = await getMirrorSettings(ownerId);
+        if (mirror?.email_footer) return { ...row, email_footer: mirror.email_footer };
+      }
+      return row;
+    }
     return await getMirrorSettings(ownerId);
   } catch {
     return await getMirrorSettings(ownerId);
@@ -167,7 +178,8 @@ export async function saveSupabaseSettingsServer(
       continue;
     }
 
-    fields[key] = value.slice(0, key === "ai_providers" ? 20_000 : 2000);
+    const maxLength = key === "ai_providers" ? 20_000 : key === "email_footer" ? 4000 : 2000;
+    fields[key] = value.slice(0, maxLength);
   }
 
   for (const key of NUMBER_FIELDS) {

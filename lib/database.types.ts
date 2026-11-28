@@ -10,6 +10,7 @@ type SettingsRow = {
   sender_company: string;
   sender_email: string;
   signature: string;
+  email_footer?: string;
   daily_limit: number;
   campaign_limit: number;
   interval_seconds: number;

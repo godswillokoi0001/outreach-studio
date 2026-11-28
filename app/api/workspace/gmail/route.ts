@@ -9,7 +9,8 @@ import {
 } from "@/lib/guardrails";
 import { verifyRequest } from "@/lib/server-auth";
 import { buildOpenPixelUrl, buildRawEmail, encodeBase64Url, type RawEmailInput } from "@/lib/outreach-utils";
-import { supabaseServer } from "@/lib/supabase-server";
+import { getSupabaseSettingsServer, supabaseServer } from "@/lib/supabase-server";
+import { applyEmailFooter } from "@/lib/email-format";
 import type { Campaign, Lead } from "@/lib/types";
 
 const GMAIL_API = "https://gmail.googleapis.com/gmail/v1/users/me";
@@ -257,8 +258,19 @@ export async function POST(req: NextRequest) {
               leadId: tracking.leadId ?? null,
             })
           : null;
+      // 4. Account footer: the one footer saved in Settings is appended here, on
+      // the server, so every email that leaves the app carries it — initial,
+      // follow-up and reply alike — no matter which page triggered the send.
+      let accountFooter = "";
+      try {
+        accountFooter = (await getSupabaseSettingsServer(user.ownerId))?.email_footer ?? "";
+      } catch {
+        accountFooter = "";
+      }
+
       const raw = buildRawEmail({
         ...body.email,
+        body: applyEmailFooter(body.email.body, accountFooter),
         openPixelUrl: pixelUrl,
         plainTextOnly: enforcePlainText,
       });

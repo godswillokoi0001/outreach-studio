@@ -83,3 +83,22 @@ export function wrapEmailHtml(body: string, extraHtml = ""): string {
     body,
   )}</div>${extraHtml}</body></html>`;
 }
+
+/**
+ * Append the account-wide footer saved in Settings to an outgoing body.
+ *
+ * Applied at dispatch time so it lands on every email — initial, follow-up and
+ * reply — without the AI ever rewriting it and without it being stored twice in
+ * a draft. `[Label](https://…)` links inside the footer are rendered by the same
+ * formatter as the body, in both the text/plain and text/html parts.
+ */
+export function applyEmailFooter(body: string, footer: string): string {
+  const cleanFooter = (footer ?? "").replace(/\r\n/g, "\n").trim();
+  if (!cleanFooter) return body;
+
+  const cleanBody = (body ?? "").replace(/\r\n/g, "\n").replace(/[ \t]+$/gm, "").trim();
+  if (!cleanBody) return cleanFooter;
+  if (cleanBody.endsWith(cleanFooter)) return cleanBody;
+
+  return `${cleanBody}\n\n${cleanFooter}`;
+}

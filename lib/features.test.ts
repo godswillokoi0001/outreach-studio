@@ -5068,3 +5068,24 @@ test("a saved PageSpeed key resolves as active even under legacy provider ids", 
   assert.equal(pagespeed?.status, "active");
   assert.equal(isSearchProviderSelectable(pagespeed?.status ?? "not_configured"), true);
 });
+
+test("the saved email footer is appended once, on every send, with working links", async () => {
+  const { applyEmailFooter, formatEmailHtml, formatEmailText } = await import("./email-format");
+  const body = "Hi Ada, quick question about your site.";
+  const footer = "— Ada · Knowrevo\n[Book a call](https://cal.com/ada)";
+
+  const withFooter = applyEmailFooter(body, footer);
+  assert.equal(withFooter, `${body}\n\n${footer}`);
+
+  // Sending the same message again never doubles the footer.
+  assert.equal(applyEmailFooter(withFooter, footer), withFooter);
+
+  // No footer saved (or only whitespace) leaves the email untouched.
+  assert.equal(applyEmailFooter(body, ""), body);
+  assert.equal(applyEmailFooter(body, "   "), body);
+
+  // The footer's Markdown link survives in both the text and HTML parts.
+  assert.match(formatEmailText(withFooter), /Book a call \(https:\/\/cal\.com\/ada\)/);
+  assert.match(formatEmailHtml(withFooter), /<a href="https:\/\/cal\.com\/ada"/);
+});
+

@@ -275,6 +275,8 @@ export interface Settings {
   sender_company: string;
   sender_email: string;
   signature: string;
+  /** Account-wide footer appended to every outgoing email. Supports links. */
+  email_footer: string;
   daily_limit: number;
   campaign_limit: number;
   interval_seconds: number;
@@ -311,6 +313,7 @@ export const DEFAULT_SETTINGS: Settings = {
   sender_company: "",
   sender_email: "",
   signature: "",
+  email_footer: "",
   daily_limit: 25,
   campaign_limit: 50,
   interval_seconds: 45,

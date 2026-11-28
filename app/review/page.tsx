@@ -32,6 +32,7 @@ import {
   updateMessageStatus,
 } from "@/lib/store";
 import { fmtDate, label, statusTone } from "@/lib/format";
+import { formatEmailHtml } from "@/lib/email-format";
 import { buildLiveKnowledgeDigest, sendMessageNow } from "@/lib/pipeline-client";
 import type { Campaign, Lead, Message } from "@/lib/types";
 
@@ -82,6 +83,7 @@ export default function ReviewPage() {
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [leads, setLeads] = useState<Lead[]>([]);
   const [messages, setMessages] = useState<Message[]>([]);
+  const [emailFooter, setEmailFooter] = useState("");
   const [loading, setLoading] = useState(true);
 
   const reload = useCallback(async () => {
@@ -109,12 +111,14 @@ export default function ReviewPage() {
       listCampaigns(user.uid),
       listLeads(user.uid),
       listMessages(user.uid),
+      getSettings(user.uid),
     ]).then(
-      ([c, l, m]) => {
+      ([c, l, m, settings]) => {
         if (!active) return;
         setCampaigns(c);
         setLeads(l);
         setMessages(m);
+        setEmailFooter(settings.email_footer ?? "");
         setLoading(false);
       },
       (err) => {
@@ -695,6 +699,7 @@ export default function ReviewPage() {
             onClick={(e) => e.stopPropagation()}
             role="dialog"
             aria-label="Email review panel"
+            className="review-drawer"
             style={{
               width: "min(760px, 100vw)",
               height: "100%",
@@ -798,6 +803,15 @@ export default function ReviewPage() {
                 </div>
 
                 <EmailBodyEditor value={body} onChange={setBody} minHeight={260} />
+
+                {emailFooter.trim() && (
+                  <div className="footer-preview">
+                    <div className="tiny strong" style={{ marginBottom: 6 }}>
+                      Email footer — added automatically when this is sent
+                    </div>
+                    <div dangerouslySetInnerHTML={{ __html: formatEmailHtml(emailFooter) }} />
+                  </div>
+                )}
 
                 <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
                   <button

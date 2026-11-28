@@ -23,6 +23,7 @@ import {
 import { fmtDate } from "@/lib/format";
 import { DEFAULT_SETTINGS, type Settings, type Suppression } from "@/lib/types";
 import { AiProviderSettingsCard } from "@/components/AiProviderSettingsCard";
+import { formatEmailHtml } from "@/lib/email-format";
 import { ClearActivityModal } from "@/components/ClearActivityModal";
 import {
   OPERATOR_MEMORY_CHANGED,
@@ -452,6 +453,51 @@ export default function SettingsPage() {
               onChange={(e) => set("physical_address", e.target.value)}
             />
           </Field>
+        </Card>
+
+        <Card
+          title="Email footer"
+          sub="One footer, added to every email you send — initial outreach, follow-ups and replies."
+        >
+          <div className="stack" style={{ gap: 10 }}>
+            <Field
+              label="Footer text"
+              hint="Leave empty for no footer. Line breaks are kept and a Markdown link such as [Book a call](https://cal.com/you) becomes a real link in the email."
+            >
+              <textarea
+                className="textarea"
+                rows={5}
+                maxLength={4000}
+                value={form.email_footer}
+                onChange={(e) => set("email_footer", e.target.value)}
+                placeholder={"—\nAda · Knowrevo\n[Knowrevo](https://knowrevo.com) · [Book a call](https://cal.com/ada)"}
+              />
+            </Field>
+            <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
+              <span className="tiny">
+                {form.email_footer.length}/4000 characters · added at send time
+              </span>
+              <button
+                className="btn btn-primary btn-sm"
+                onClick={() => void save()}
+                disabled={busy}
+                type="button"
+              >
+                {busy ? "Saving…" : "Save footer"}
+              </button>
+            </div>
+            {form.email_footer.trim() && (
+              <div>
+                <div className="tiny strong" style={{ marginBottom: 6 }}>
+                  Preview
+                </div>
+                <div
+                  className="footer-preview"
+                  dangerouslySetInnerHTML={{ __html: formatEmailHtml(form.email_footer) }}
+                />
+              </div>
+            )}
+          </div>
         </Card>
 
         <div id="ai-engine">

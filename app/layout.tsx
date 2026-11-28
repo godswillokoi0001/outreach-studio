@@ -9,6 +9,7 @@ import "./ui-kit.css";
 import "./features.css";
 import "./dark.css";
 import "./feedback.css";
+import "./responsive.css";
 import { THEME_SCRIPT } from "@/lib/theme";
 import { AuthProvider } from "@/components/AuthProvider";
 import { FeedbackProvider } from "@/components/Feedback";

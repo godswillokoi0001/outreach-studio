@@ -25,6 +25,7 @@ const STRING_LIMITS: Record<string, number> = {
   sender_company: 200,
   sender_email: 320,
   signature: 2000,
+  email_footer: 4000,
   unsubscribe_email: 320,
   physical_address: 400,
   send_days: 32,
