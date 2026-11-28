@@ -142,9 +142,18 @@ export async function getSupabaseSettingsServer(ownerId: string): Promise<Settin
       // A column added after the row existed (or a migration that has not run
       // yet) reads back as undefined. The owner-scoped mirror may hold the
       // value, so a saved footer is never invisible.
-      if (row.email_footer === undefined || row.email_footer === null) {
+      if (
+        row.email_footer === undefined ||
+        row.email_footer === null ||
+        row.email_template === undefined ||
+        row.email_template === null
+      ) {
         const mirror = await getMirrorSettings(ownerId);
-        if (mirror?.email_footer) return { ...row, email_footer: mirror.email_footer };
+        return {
+          ...row,
+          ...(mirror?.email_footer ? { email_footer: mirror.email_footer } : {}),
+          ...(mirror?.email_template ? { email_template: mirror.email_template } : {}),
+        };
       }
       return row;
     }
